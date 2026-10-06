@@ -8,7 +8,7 @@
 // `npm run release -- <N> --update [--push]`: a fix to week N, already committed on main: its tag
 // moves to the commit you're on, so students who have week N get the fix too.
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { check } from "./check-stubs";
 import { released, writeExclude } from "./exclude";
@@ -22,10 +22,11 @@ export function withWeek(text: string, week: number): string {
   return `${JSON.stringify({ ...course, week }, null, 2)}\n`;
 }
 
-/** Week N's own paths: its guide and page, its note template, its tests. */
-export function weekPaths(week: number): string[] {
+/** Week N's own files that exist: its guide and page, its note template (design weeks), its tests. */
+export function weekPaths(week: number, root = "."): string[] {
   const nn = String(week).padStart(2, "0");
-  return [`docs/weeks/week-${nn}.*`, `docs/notes/week-${nn}.md`, `tests/week-${nn}`];
+  const pages = existsSync(`${root}/docs/weeks`) ? readdirSync(`${root}/docs/weeks`).filter((f) => f.startsWith(`week-${nn}.`)).map((f) => `docs/weeks/${f}`) : [];
+  return [...pages, `docs/notes/week-${nn}.md`, `tests/week-${nn}`].filter((p) => existsSync(`${root}/${p}`));
 }
 
 function push(tag: string): void {
@@ -52,16 +53,24 @@ function main(): void {
 
   if (week !== released() + 1) throw new Error(`The next week to release is ${released() + 1} (course.json says ${released()}).`);
   if (git(["status", "--porcelain", "--untracked-files=no"])) throw new Error("Commit or put away your changes first: a release is one commit of its own.");
+  const paths = weekPaths(week);
+  if (!paths.some((p) => p.startsWith("docs/weeks/"))) throw new Error(`Week ${week} has no guide here (docs/weeks/week-${String(week).padStart(2, "0")}.md): nothing to release.`);
   writeFileSync("course.json", withWeek(readFileSync("course.json", "utf8"), week));
   writeExclude(week);
-  run(["add", "course.json", "--", ...weekPaths(week)]);
-  const problems = check("--index");
-  if (problems.length) {
+  // Anything that goes wrong from here puts course.json and the hidden weeks back as they were.
+  const undo = (why: string) => {
     run(["reset", "-q"]);
     writeFileSync("course.json", withWeek(readFileSync("course.json", "utf8"), week - 1));
     writeExclude(week - 1);
-    throw new Error(`Not released: the leak check found\n${problems.map((p) => `  ${p.path}: ${p.why}`).join("\n")}`);
+    return new Error(why);
+  };
+  try {
+    run(["add", "course.json", "--", ...paths]);
+  } catch (error) {
+    throw undo(`Not released: git add failed (${error instanceof Error ? error.message : String(error)})`);
   }
+  const problems = check("--index");
+  if (problems.length) throw undo(`Not released: the leak check found\n${problems.map((p) => `  ${p.path}: ${p.why}`).join("\n")}`);
   run(["commit", "-q", "-m", `[PD]: Release week ${week}`]);
   run(["tag", "-f", tag]);
   console.log(`✓ week ${week} released: ${git(["rev-parse", "--short", "HEAD"])}, tagged ${tag}`);

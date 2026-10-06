@@ -2609,6 +2609,9 @@ export function createStudio(ctx, steps, meta = {}) {
      * @returns {string | null}
      */
     weekPageOnline: (week) => {
+      // Only before the course is on this laptop (setup): once it is, a week's page shows when the
+      // week is in the student's work, as always.
+      if (ctx.state.repoDir) return null;
       const g = (meta.groups ?? []).find((x) => x.week === week);
       if (!g || !["setup", "done", "inwork", "get"].includes(g.status)) return null;
       for (const rel of [g.page, g.guide ?? `docs/weeks/week-${pad2(week)}.md`]) if (rel && /^docs\/weeks\/week-\d{2}\.(html|md)$/.test(rel)) return rel;
