@@ -1,0 +1,52 @@
+# Publishes your board to GitHub Pages every time you push your `work` branch:
+#   https://<your GitHub username>.github.io/<your repo's name>/board/
+# The whole computer runs inside that page (no server), so it works on static hosting.
+#
+# One-time setup: run `npm run pages:enable` (week 8). It makes `work` your fork's default branch
+# (Pages only deploys from the default branch), turns GitHub Actions on (a new fork has them off)
+# and sets Pages to build with GitHub Actions. By hand instead: Settings → General → Default
+# branch: work; the Actions tab → "I understand my workflows, go ahead and enable them";
+# Settings → Pages → Source: "GitHub Actions".
+name: Deploy the board to GitHub Pages
+
+on:
+  push:
+    branches: [work]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run programs
+      # The same build and checks as `npm run pages:check` on your laptop. The base path is your
+      # repo's name, so it still works if you renamed your fork.
+      - run: node scripts/board/pages-check.mjs --base "/${{ github.event.repository.name }}"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}board/
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

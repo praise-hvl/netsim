@@ -1,0 +1,27 @@
+# The course repository's own check: nothing public may hold a solution, an instructor file or an
+# unreleased week (scripts/course/check-stubs.ts), and the course's tools work. Runs only on the
+# course's repository, never in a student's fork (where filled-in regions are the point).
+name: Course check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    if: github.repository == 'praiseisaac/netsim'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Leak check (every commit)
+        run: node node_modules/tsx/dist/cli.mjs scripts/course/check-stubs.ts --all
+      - name: The tools' tests
+        run: node node_modules/vitest/vitest.mjs run tests/tools

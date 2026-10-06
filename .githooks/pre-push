@@ -1,0 +1,15 @@
+#!/bin/sh
+# The leak check, on everything being pushed (Praise's copy turns this on: npm run instructor:setup).
+# Nothing with a solution, a teacher note, an instructor tool or an unreleased week may leave.
+zero=0000000000000000000000000000000000000000
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue # deleting a ref
+  if [ "$remote_sha" = "$zero" ]; then
+    node node_modules/tsx/dist/cli.mjs scripts/course/check-stubs.ts --history "$local_sha" || status=1
+  else
+    node node_modules/tsx/dist/cli.mjs scripts/course/check-stubs.ts "$remote_sha..$local_sha" || status=1
+  fi
+done
+[ $status -eq 0 ] || echo "pre-push: not pushed (see above)." >&2
+exit $status

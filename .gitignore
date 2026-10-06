@@ -1,0 +1,60 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# simulator saves
+/saves/
+
+
+# The instructor's copy only (never in this public repository; npm run private backs them up).
+# See scripts/course/private-paths.ts, which the leak check (npm run check-stubs) uses.
+/teacher/
+/course/
+/tests/studio/
+/scripts/studio/
+/scripts/make-week-branches.ts
+/solutions/
+/private/
+/archive/
+/.private.git/
+/docs/notes/week-*-board.*
+# generated from programs/*.asm by npm run programs (postinstall)
+/programs/bundle.ts

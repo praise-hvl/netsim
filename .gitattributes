@@ -1,0 +1,7 @@
+# Files that can hold @student regions go through the solutions filter, in the instructor's copy
+# only (npm run instructor:setup configures it). Anywhere else the filter isn't set up and git
+# leaves these files alone.
+*.ts filter=netsim-solutions
+*.tsx filter=netsim-solutions
+*.asm filter=netsim-solutions
+docs/notes/*.md filter=netsim-solutions

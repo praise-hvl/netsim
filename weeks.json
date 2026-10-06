@@ -1,0 +1,77 @@
+{
+  "note": "The weeks NetSim Studio lists, in order (it reads this file from the newest published week on GitHub). A week is out once its week-N-start branch is published. Each week: kind (setup, design, build, demo), guide and page (docs/weeks/week-NN.md and .html: the studio shows the page, or the guide when there's no page), note (a design week's note), board (the week has a board to open). Room for later fields (a build week's tasks, Join class): the studio keeps what it doesn't use.",
+  "weeks": [
+    {
+      "week": 1,
+      "title": "Setup & system roles",
+      "kind": "setup",
+      "guide": "docs/weeks/week-01.md",
+      "page": "docs/weeks/week-01.html",
+      "note": "docs/notes/week-01.md",
+      "board": false
+    },
+    {
+      "week": 2,
+      "title": "Design: the machine and its bus",
+      "kind": "design",
+      "guide": "docs/weeks/week-02.md",
+      "page": "docs/weeks/week-02.html",
+      "note": "docs/notes/week-02.md",
+      "board": false
+    },
+    {
+      "week": 3,
+      "title": "Build: bus + memory on screen",
+      "kind": "build",
+      "guide": "docs/weeks/week-03.md",
+      "page": null,
+      "note": null,
+      "board": true
+    },
+    {
+      "week": 4,
+      "title": "Design: the CPU",
+      "kind": "design",
+      "guide": "docs/weeks/week-04.md",
+      "page": null,
+      "note": "docs/notes/week-04.md",
+      "board": false
+    },
+    {
+      "week": 5,
+      "title": "Build: a CPU that runs programs",
+      "kind": "build",
+      "guide": "docs/weeks/week-05.md",
+      "page": null,
+      "note": null,
+      "board": true
+    },
+    {
+      "week": 6,
+      "title": "Design: scheduling + interrupts",
+      "kind": "design",
+      "guide": "docs/weeks/week-06.md",
+      "page": null,
+      "note": "docs/notes/week-06.md",
+      "board": false
+    },
+    {
+      "week": 7,
+      "title": "Build: cores, scheduler, interrupts",
+      "kind": "build",
+      "guide": "docs/weeks/week-07.md",
+      "page": null,
+      "note": null,
+      "board": true
+    },
+    {
+      "week": 8,
+      "title": "Demo: ship it",
+      "kind": "demo",
+      "guide": "docs/weeks/week-08.md",
+      "page": null,
+      "note": null,
+      "board": true
+    }
+  ]
+}
