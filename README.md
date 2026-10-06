@@ -14,9 +14,12 @@ curl -fsSL https://raw.githubusercontent.com/praiseisaac/netsim/HEAD/setup.mjs -
 irm https://raw.githubusercontent.com/praiseisaac/netsim/HEAD/setup.mjs -OutFile setup.mjs; node setup.mjs
 ```
 
-**Every class after**, in your course folder:
+Setup puts the course in a folder called `netsim`, inside the folder you choose in step 9 (the
+studio shows the exact path when it's done). **Every class after**, go into that folder, then start
+the studio:
 
 ```bash
+cd ~/netsim      # your course folder: <the folder you chose>/netsim
 npm start
 ```
 
@@ -40,8 +43,7 @@ checks. Its sidebar lists every week (the ones not out yet are greyed).
 
 ## The course
 
-I'm Praise Daramola, and I teach this course: Mondays, 1 hour per session. After the setup
-week, sessions alternate: in a **design** session you learn an idea and design that part of the
+The course meets on Mondays, 1 hour per session. After the setup week, sessions alternate: in a **design** session you learn an idea and design that part of the
 machine on paper (your design note and a sketch of the board); in the next **build** session you
 build it, writing the core mechanisms yourself and working with your AI agent on the board. By the
 end you have a portfolio piece: **a multi-core computer you designed and built, with a bus,
@@ -79,9 +81,9 @@ design**: you decide the approach and the structure, and Codex does the typing. 
 course has an `AGENTS.md` that makes Codex ask how you want to approach something (or offer two
 options) before it writes, follow your design, explain what it wrote, and never edit the tests.
 What's graded is whether you understand the hardware idea and your own code: each week's work is
-checked in a short **explain-it-back** with me before the next session, **without notes or AI**:
-a booked 5-minute slot, or a 3-minute video (your face and your screen) answering two questions
-I post after class. You walk through what you built and why. A good rule: if you can't explain a
+checked in a short **explain-it-back** before the next session, **without notes or AI**: a booked
+5-minute slot, or a 3-minute video (your face and your screen) answering two questions posted
+after class. You walk through what you built and why. A good rule: if you can't explain a
 line, you don't have it yet.
 
 ## How the code is laid out

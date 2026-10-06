@@ -123,9 +123,9 @@ Ctrl+C there stops it). The studio goes through the 15 steps **one at a time**:
 - Nothing moves on by itself: every step ends with you pressing Enter. Optional steps have
   **Skip**. If something fails, the studio says what went wrong and how to fix it.
 - **Rerun it any time** and it checks everything again from the top. Once the course is cloned,
-  rerun it from inside the course folder with `npm start`. Prefer the terminal? `npm start --
+  go into the course folder (`cd` to the `netsim` folder step 9 made) and run `npm start`. Prefer the terminal? `npm start --
   --terminal` walks the same steps there.
-- **It's the whole course in one app.** Every class starts with `npm start` in your course folder:
+- **It's the whole course in one app.** Every class starts with `cd` into your course folder, then `npm start`:
   the studio gets the week, then shows its lesson page, your note, the board and the checks.
 
 **The steps**, exactly as the studio shows them:

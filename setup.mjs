@@ -3850,7 +3850,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     const folder = snap.repoDir || "your netsim folder";
     const week1 = snap.groups.find((g) => g.week === 1);
     if (week1 && snap.repoDir)
-      return `<div class="banner ok"><b>You're set up!</b> Your laptop has everything the course needs, and your copy of the course is on GitHub and here. From now on, every class starts with <code>npm start</code> in <code>${esc(folder)}</code>. <button class="btn ghost" data-do="machine">See the computer you'll build</button></div>${weekView(week1)}`;
+      return `<div class="banner ok"><b>You're set up!</b> Your laptop has everything the course needs, and your copy of the course is on GitHub and here. From now on, every class starts with <code>cd ${esc(/\s/.test(folder) ? `"${folder}"` : folder)}</code> then <code>npm start</code>. <button class="btn ghost" data-do="machine">See the computer you'll build</button></div>${weekView(week1)}`;
     return `<div class="finish"><p class="eyebrow">Week 1 · Setup</p><h1>You're set up!</h1>
       <p class="why" style="margin-top:10px">Your laptop has everything the course needs, and your own copy of the course is on GitHub and on this laptop.</p>
       ${snap.codexVersion ? `<p class="note" style="margin-top:10px">Codex version: <code>${esc(snap.codexVersion)}</code></p>` : ""}</div>
