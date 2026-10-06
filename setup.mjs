@@ -4446,6 +4446,13 @@ function dryRunStream(argv, cwd, onData) {
  * @returns {{ steps: Step[], meta: { mode: "setup" | "week", week?: number, published?: boolean, setupSteps?: number, autoSteps?: number, inWork?: boolean, next?: number, groups?: WeekGroup[], update?: boolean } }}
  */
 export function chooseFlow(ctx, { forceSetup = false, withSetup = false, weekList = COURSE_WEEKS } = {}) {
+  // A folder remembered from last time that isn't a copy of this course (an old netsim-starter copy,
+  // or one that's gone) is forgotten, with what was checked in it: its pages and its doctor result
+  // aren't this course's. Setup makes the new copy.
+  if (ctx.state.repoDir && (!ctx.exists(join(ctx.state.repoDir, ".git")) || notACourseCopy(ctx, ctx.state.repoDir))) {
+    delete ctx.state.repoDir;
+    delete ctx.state.doctorOk;
+  }
   const dir = forceSetup || ctx.fresh ? null : findClone(ctx);
   const titled = (/** @type {number} */ n) => weekList.find((w) => w.week === n)?.title ?? `Week ${n}`;
   /** A week from the list (its resources: page, note, board…), or just its number and title. @param {number} n */
