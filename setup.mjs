@@ -2602,6 +2602,18 @@ export function createStudio(ctx, steps, meta = {}) {
       }
       return null;
     },
+    /**
+     * A released week's page to fetch from the course on GitHub, when this laptop doesn't have it
+     * yet (week 1 during setup, before the course is downloaded). Same paths only; null otherwise.
+     * @param {number} week
+     * @returns {string | null}
+     */
+    weekPageOnline: (week) => {
+      const g = (meta.groups ?? []).find((x) => x.week === week);
+      if (!g || !["setup", "done", "inwork", "get"].includes(g.status)) return null;
+      for (const rel of [g.page, g.guide ?? `docs/weeks/week-${pad2(week)}.md`]) if (rel && /^docs\/weeks\/week-\d{2}\.(html|md)$/.test(rel)) return rel;
+      return null;
+    },
     /** The course folder, once there is one. */
     repoDir: () => ctx.state.repoDir ?? null,
     output: () => ({ id: outputId, text: out }),
@@ -2870,9 +2882,24 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
     // A week's page: its lesson page (or guide) in the course folder, once the week is in.
     const weekMatch = /^\/week\/(\d{1,2})$/.exec(url.pathname);
     if (req.method === "GET" && weekMatch) {
-      const page = studio.weekPage(Number(weekMatch[1]));
+      const week = Number(weekMatch[1]);
+      const page = studio.weekPage(week);
       if (!page) {
-        res.writeHead(404, { ...secure, "content-type": "text/plain" }).end("That week isn't in your work yet.");
+        // Not on this laptop yet (week 1 before the course is downloaded): the course's own copy on GitHub.
+        const online = studio.weekPageOnline(week);
+        const text = online ? await fromCourse(week, online) : null;
+        if (online && text !== null) {
+          res.writeHead(200, {
+            ...secure,
+            "content-type": "text/html; charset=utf-8",
+            "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+          });
+          res.end(online.endsWith(".md") ? markdownPage(`Week ${week}`, text) : text);
+          return;
+        }
+        res
+          .writeHead(404, { ...secure, "content-type": "text/plain; charset=utf-8" })
+          .end(online ? `Week ${week}'s page couldn't be fetched from GitHub (offline?). It shows here once the course is on this laptop (step 9).` : `Week ${week} isn't out yet.`);
         return;
       }
       res.writeHead(302, { ...secure, location: `/${page}` }).end();
