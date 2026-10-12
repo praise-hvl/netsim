@@ -28,23 +28,35 @@ Keep Zoom's **chat** open: I post the time for each block there.
   minute or two. Everyone shares at least once over the design weeks. While someone shares,
   answer in the chat: what did you write differently?
 
-Fill in your own design note: open `docs/notes/week-02.md` (it arrives with this week's merge,
-with the nine headings from [the design-note template](../notes/design-note-template.md) and a
-comment under each saying what goes there). If it isn't there, copy the template to that path.
+Fill in your own design note: `docs/notes/week-02.md` (the app shows it on Week 2's **Design note**
+tab). It comes with the course, with the nine headings from
+[the design-note template](../notes/design-note-template.md) and a comment under each saying what
+goes there. If it isn't there, copy the template to that path.
 
-1. **Open the app (5 min).** In your course folder, run `npm start`. (This first time, your week-1
-   folder doesn't have it yet: run `node setup.mjs` instead, which brings it in.) The app is where
-   every class starts: it gets week 2 ready (saves your work, brings the week in, checks), then
-   shows this page, your design note and the board. If the app won't start, the same by hand:
+1. **Set up the course (10 min).** The course has a new home, **praiseisaac/netsim**, so today
+   everyone runs the setup once, in a **new, empty folder**. In a terminal:
 
    ```bash
-   git fetch upstream && git merge upstream/week-2
+   # macOS
+   mkdir ~/netsim-course && cd ~/netsim-course
+   curl -fsSL https://raw.githubusercontent.com/praiseisaac/netsim/HEAD/setup.mjs -o setup.mjs && node setup.mjs
    ```
 
-   ✅ The studio's checks are green (or `npm run doctor` ends with `doctor: all 8 checks passed`).
-   Then open this page (`docs/weeks/week-02.html`) and your design note, `docs/notes/week-02.md`.
+   ```powershell
+   # Windows (PowerShell)
+   mkdir ~/netsim-course; cd ~/netsim-course
+   irm https://raw.githubusercontent.com/praiseisaac/netsim/HEAD/setup.mjs -OutFile setup.mjs; node setup.mjs
+   ```
 
-2. **Act it out in the chat (10 min).** Four of you get roles and rename yourselves when I ask
+   NetSim Studio opens in your browser and walks you through it; most steps are already done
+   from week 1. When it's finished, open **Week 2** in the app: its **Lesson page** (this page) and
+   its **Design note**. From next class on, it's `npm start` in your course folder.
+
+   If setup gets stuck, follow along on my screen for now; we'll fix it right after class.
+
+   ✅ The app shows Week 2's Lesson page and your Design note.
+
+2. **Act it out in the chat (5 min).** Four of you get roles and rename yourselves when I ask
    (Participants → your name → More → Rename): `CPU-1`, `CPU-2`, `MEMORY` and `BUTTON`. I'm the
    **bus** and the **clock**. I send `MEMORY` four numbers privately: the bytes at addresses 0
    to 3. Everyone else watches the chat and notes what goes wrong. The rules:
@@ -54,11 +66,8 @@ comment under each saying what goes there). If it isn't there, copy the template
    - When you've done your part for the tick, send me `done`. The next tick starts only when
      everyone has.
 
-   **Round 1** (no names): CPUs send me `read 2`; `MEMORY` answers me with just the number,
-   e.g. `42`. I post the answers to everyone. Who gets which number?
-
-   **Round 2** (ticket numbers): every message gets an `id`, and every reply says which `id` it
-   answers:
+   **Ticket numbers:** every message gets an `id`, and every reply says which `id` it answers, so
+   each CPU knows which answer is its own:
 
    ```
    CPU-1  → bus:  id=c1-1 to=memory mem.read 2
@@ -87,8 +96,7 @@ comment under each saying what goes there). If it isn't there, copy the template
 
 5. **One read, tick by tick (10 min).** Fill in section 5 for this scenario: *a component reads
    the byte at `0x010`.* Who sends what on which tick, who waits, and when the reply is used. Ask
-   yourself: why does the reply get **used** on the next tick, not the moment it arrives? (Think
-   of round 1 of the activity.) After the shares, I put the tick timeline on screen.
+   yourself: why does the reply get **used** on the next tick, not the moment it arrives? (Think of the activity: you only acted after the next tick was posted.) After the shares, I put the tick timeline on screen.
 
 6. **Sketch the board (9 min).** Draw what this will look like on screen: where the bus and
    memory sit, how a request and its reply travel, how a memory cell shows it was just read or
