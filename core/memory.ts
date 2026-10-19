@@ -25,9 +25,9 @@ function checkRange(address: number, length: number): string | null {
 
 export function read(memory: Memory, address: number, length: number): MemoryResult<number[]> {
   // @student week=3 part=home id=memory-read "Return `length` bytes starting at `address`, or a fault if any of them is outside memory"
-  // TODO(week 3, memory-read): Return `length` bytes starting at `address`, or a fault if any of them is outside memory
-  // Tests: tests/week-03/   Guide: docs/weeks/week-03.md
-  return todo("week 3: memory-read", memory, address, length);
+  const fault = checkRange(address, length);
+  if (fault) return { ok: false, fault };
+  return { ok: true, value: memory.bytes.slice(address, address + length) };
   // @end
 }
 
