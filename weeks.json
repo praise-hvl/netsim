@@ -33,7 +33,7 @@
       "title": "Design: the CPU",
       "kind": "design",
       "guide": "docs/weeks/week-04.md",
-      "page": null,
+      "page": "docs/weeks/week-04.html",
       "note": "docs/notes/week-04.md",
       "board": false
     },
@@ -42,7 +42,7 @@
       "title": "Build: a CPU that runs programs",
       "kind": "build",
       "guide": "docs/weeks/week-05.md",
-      "page": null,
+      "page": "docs/weeks/week-05.html",
       "note": null,
       "board": true
     },
@@ -51,7 +51,7 @@
       "title": "Design: scheduling + interrupts",
       "kind": "design",
       "guide": "docs/weeks/week-06.md",
-      "page": null,
+      "page": "docs/weeks/week-06.html",
       "note": "docs/notes/week-06.md",
       "board": false
     },
@@ -60,7 +60,7 @@
       "title": "Build: cores, scheduler, interrupts",
       "kind": "build",
       "guide": "docs/weeks/week-07.md",
-      "page": null,
+      "page": "docs/weeks/week-07.html",
       "note": null,
       "board": true
     },

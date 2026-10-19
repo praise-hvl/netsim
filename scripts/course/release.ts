@@ -1,18 +1,21 @@
 // `npm run release -- <N> [--push]`: release week N to the students, in Praise's copy.
 //   1. course.json's week becomes N, and week N's files stop being hidden (.git/info/exclude)
-//   2. its guide, lesson page, note template and tests are added (the filter stubs any regions)
+//   2. its guide, lesson page, note template and tests are added (the filter stubs any regions),
+//      with the studio's hint text for its in-class tasks (studio/hints/week-NN.json, scripts/course/hints.ts)
 //   3. the leak check runs on what's staged: nothing private and nothing unreleased goes
 //   4. one commit, "Release week N", tagged week-N; with --push, main and the tag go to GitHub
 // Students get it with npm start (the studio fetches the week-N tags as upstream/week-N).
 //
 // `npm run release -- <N> --update [--push]`: a fix to week N, already committed on main: its tag
-// moves to the commit you're on, so students who have week N get the fix too. That's also how an
+// moves to the commit you're on, so students who have week N get the fix too. The week's studio hints
+// are written again first (and committed when they changed). That's also how an
 // in-class exercise's export (docs/weeks/in-class/week-NN/, written by course/live/) reaches them.
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { check } from "./check-stubs";
 import { released, writeExclude } from "./exclude";
+import { hintsPath, writeHints } from "./hints";
 
 const git = (args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
 const run = (args: string[]) => execFileSync("git", args, { stdio: "inherit" });
@@ -33,6 +36,11 @@ export function weekPaths(week: number, root = "."): string[] {
   return [...pages, `docs/notes/week-${nn}.md`, `tests/week-${nn}`, `docs/weeks/in-class/week-${nn}`].filter((p) => existsSync(`${root}/${p}`));
 }
 
+/** Is week N's hints file in the commit you're on? */
+function hintsTracked(week: number): boolean {
+  return git(["ls-files", "--", hintsPath(week)]) !== "";
+}
+
 function push(tag: string): void {
   // The pre-push hook runs the leak check on everything that goes.
   run(["push", "origin", "main", `+refs/tags/${tag}:refs/tags/${tag}`]);
@@ -47,6 +55,21 @@ function main(): void {
 
   if (args.includes("--update")) {
     if (week > released()) throw new Error(`Week ${week} isn't released yet: npm run release -- ${week}`);
+    // The week's studio hints, from the solutions as they are now: committed first if they changed.
+    const before = hintsTracked(week);
+    const hints = writeHints(week);
+    if (hints && git(["status", "--porcelain", "--", hints])) {
+      run(["add", "--", hints]);
+      const staged = check("--index");
+      if (staged.length) {
+        // Put the hints file back as it was (or remove it, when it's new).
+        run(["reset", "-q", "--", hints]);
+        if (before) run(["checkout", "--", hints]);
+        else rmSync(hints, { force: true });
+        throw new Error(`The leak check failed on week ${week}'s hints:\n${staged.map((p) => `  ${p.path}: ${p.why}`).join("\n")}`);
+      }
+      run(["commit", "-q", "-m", `[PD]: Week ${week}'s studio hints`, "--", hints]);
+    }
     const problems = check("HEAD");
     if (problems.length) throw new Error(`The leak check failed on HEAD:\n${problems.map((p) => `  ${p.path}: ${p.why}`).join("\n")}`);
     run(["tag", "-f", tag]);
@@ -59,11 +82,15 @@ function main(): void {
   if (git(["status", "--porcelain", "--untracked-files=no"])) throw new Error("Commit or put away your changes first: a release is one commit of its own.");
   const paths = weekPaths(week);
   if (!paths.some((p) => p.startsWith("docs/weeks/"))) throw new Error(`Week ${week} has no guide here (docs/weeks/week-${String(week).padStart(2, "0")}.md): nothing to release.`);
+  // The studio's hint text for the week's tasks (the Code tab's grey code and walk-through), from the solutions here.
+  const hints = writeHints(week);
+  if (hints) paths.push(hints);
   writeFileSync("course.json", withWeek(readFileSync("course.json", "utf8"), week));
   writeExclude(week);
   // Anything that goes wrong from here puts course.json and the hidden weeks back as they were.
   const undo = (why: string) => {
     run(["reset", "-q"]);
+    if (hints) rmSync(hints, { force: true });
     writeFileSync("course.json", withWeek(readFileSync("course.json", "utf8"), week - 1));
     writeExclude(week - 1);
     return new Error(why);

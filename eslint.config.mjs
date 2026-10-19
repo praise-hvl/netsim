@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // The studio's code box, bundled (scripts/studio/build-editor.sh).
+    "studio/editor.js",
   ]),
 ]);
 

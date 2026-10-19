@@ -11,7 +11,8 @@
 // a file with @student regions has every region stubbed. Exit 1 and a list when anything fails.
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { findRegions, isRegionFile, isStubbed } from "../lib/regions";
+import { findRegions, isRegionFile, isStubbed, type Region } from "../lib/regions";
+import { EXPLAIN, hintsProblem, hintsWeek } from "./hints";
 import { privateReason } from "./private-paths";
 
 export type Problem = { commit: string; path: string; why: string };
@@ -37,7 +38,25 @@ export function checkTree(commit: string, files: ReadonlyMap<string, () => strin
     return [{ commit, path: "course.json", why: "not valid JSON, so which weeks are released can't be told" }];
   }
   const problems: Problem[] = [];
+  /** Every region in the tree (read only when there's a hints file to check). */
+  let regions: Region[] | null = null;
+  const allRegions = () =>
+    (regions ??= [...files].flatMap(([path, read]) => {
+      if (!isRegionFile(path)) return [];
+      const text = read();
+      try {
+        return text.includes("@student") ? findRegions(path, text) : [];
+      } catch {
+        return [];
+      }
+    }));
   for (const [path, read] of files) {
+    const hinted = hintsWeek(path);
+    if (hinted !== null) {
+      const why = hintsProblem(hinted, released, read(), allRegions());
+      if (why) problems.push({ commit, path, why: `hint file: ${why}` });
+      continue;
+    }
     const reason = privateReason(path, released);
     if (reason) {
       problems.push({ commit, path, why: reason });
@@ -45,6 +64,17 @@ export function checkTree(commit: string, files: ReadonlyMap<string, () => strin
     }
     if (!isRegionFile(path)) continue;
     const text = read();
+    // A solution's explanation ("// > …") outside its region would ship with the stub.
+    if (!path.endsWith(".md") && text.includes(" >")) {
+      let inside: Region[] = [];
+      try {
+        inside = text.includes("@student") ? findRegions(path, text) : [];
+      } catch {
+        // unreadable regions are reported below
+      }
+      const stray = text.split("\n").findIndex((line, i) => EXPLAIN.test(line) && !inside.some((r) => i > r.start && i < r.end));
+      if (stray >= 0) problems.push({ commit, path, why: `line ${stray + 1}: a solution's explanation (// >) outside its region` });
+    }
     if (!text.includes("@student")) continue;
     try {
       if (!fullyStubbed(path, text)) problems.push({ commit, path, why: "an @student region holds code, not its stub (a solution)" });

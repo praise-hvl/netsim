@@ -18,13 +18,13 @@
 // No dependencies: only Node's built-in modules, so it runs before the course repo exists.
 // @ts-check
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const STARTER = "praiseisaac/netsim";
 /** The course's repository before it became one repo (week branches): a copy of it is an old copy. */
@@ -83,7 +83,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 4;
+export const STUDIO_VERSION = 5;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -95,10 +95,10 @@ export const COURSE_WEEKS = [
   { week: 1, title: "Setup & system roles", kind: "setup", guide: "docs/weeks/week-01.md", page: "docs/weeks/week-01.html", note: "docs/notes/week-01.md", board: false },
   { week: 2, title: "Design: the machine and its bus", kind: "design", guide: "docs/weeks/week-02.md", page: "docs/weeks/week-02.html", note: "docs/notes/week-02.md", board: false },
   { week: 3, title: "Build: bus + memory on screen", kind: "build", guide: "docs/weeks/week-03.md", page: "docs/weeks/week-03.html", note: null, board: true },
-  { week: 4, title: "Design: the CPU", kind: "design", guide: "docs/weeks/week-04.md", page: null, note: "docs/notes/week-04.md", board: false },
-  { week: 5, title: "Build: a CPU that runs programs", kind: "build", guide: "docs/weeks/week-05.md", page: null, note: null, board: true },
-  { week: 6, title: "Design: scheduling + interrupts", kind: "design", guide: "docs/weeks/week-06.md", page: null, note: "docs/notes/week-06.md", board: false },
-  { week: 7, title: "Build: cores, scheduler, interrupts", kind: "build", guide: "docs/weeks/week-07.md", page: null, note: null, board: true },
+  { week: 4, title: "Design: the CPU", kind: "design", guide: "docs/weeks/week-04.md", page: "docs/weeks/week-04.html", note: "docs/notes/week-04.md", board: false },
+  { week: 5, title: "Build: a CPU that runs programs", kind: "build", guide: "docs/weeks/week-05.md", page: "docs/weeks/week-05.html", note: null, board: true },
+  { week: 6, title: "Design: scheduling + interrupts", kind: "design", guide: "docs/weeks/week-06.md", page: "docs/weeks/week-06.html", note: "docs/notes/week-06.md", board: false },
+  { week: 7, title: "Build: cores, scheduler, interrupts", kind: "build", guide: "docs/weeks/week-07.md", page: "docs/weeks/week-07.html", note: null, board: true },
   { week: 8, title: "Demo: ship it", kind: "demo", guide: "docs/weeks/week-08.md", page: null, note: null, board: true },
 ];
 /**
@@ -1988,6 +1988,7 @@ export function createStudio(ctx, steps, meta = {}) {
       groups: meta.groups ?? [],
       board: { phase: board.phase, error: board.error, url: BOARD_URL },
       checks: { week: checks.week, phase: checks.phase, out: cleanOutput(checks.out) },
+      code,
       focus: meta.focus ?? 0,
       update: Boolean(meta.update),
       next: meta.next ?? 0,
@@ -2312,6 +2313,66 @@ export function createStudio(ctx, steps, meta = {}) {
     return ok;
   }
 
+  // ── Tasks written in the studio (the week's Code tab) ──
+  /** @type {Record<string, { phase: "running" | "passed" | "failed" | "error", passed?: number, failed?: number, failures?: { test: string, message: string, own?: boolean }[], waiting?: string[], error?: string, committed?: string }>} */
+  let code = {};
+  /** @type {Running | null} */
+  let codeRun = null;
+
+  /** A week the student has in their work (its page, board, checks and code open). @param {number} week */
+  function weekIn(week) {
+    const g = (meta.groups ?? []).find((x) => x.week === week);
+    return Boolean(g && (["setup", "done", "inwork"].includes(g.status) || (g.status === "get" && current >= steps.length)));
+  }
+
+  /** @param {Record<string, unknown>} a */
+  async function saveCode(a) {
+    const dir = ctx.state.repoDir;
+    const week = Number(a.week);
+    if (!dir || !Number.isInteger(week) || !weekIn(week)) return reject(409, "That week isn't in your work yet.");
+    if (codeRun) return reject(409, "The tests are still running for the last save.");
+    const task = weekCode(ctx, dir, week).find((t) => t.id === a.id && t.file === a.file);
+    if (!task) return reject(404, "That isn't one of this week's tasks.");
+    const id = task.id;
+    const saved = writeRegion(dir, { file: a.file, id, week, rev: a.rev, body: a.body });
+    if ("error" in saved) return { ...reject(409, saved.error) };
+    code = { ...code, [id]: { phase: "running" } };
+    publish();
+    const report = join(tmpdir(), `netsim-studio-${process.pid}-${id}.json`);
+    const argv = [process.execPath, join(dir, "node_modules", "vitest", "vitest.mjs"), "run", ...task.tests, "--reporter=json", `--outputFile=${report}`];
+    let text = "";
+    codeRun = /** @type {NonNullable<Context["stream"]>} */ (ctx.stream)(argv, dir, (t) => (text = (text + t).slice(-20_000)));
+    void codeRun.done.then(() => {
+      codeRun = null;
+      const stubs = weekCode(ctx, dir, week).filter((t) => t.stubbed);
+      const results = taskResults(ctx.readText(report) ?? "", task, stubs);
+      try {
+        rmSync(report, { force: true });
+      } catch {
+        // a leftover report in the temp folder is harmless
+      }
+      if (!results) code = { ...code, [id]: { phase: "error", error: `The tests couldn't run:\n${cleanOutput(text).slice(-1500)}` } };
+      else code = { ...code, [id]: { phase: results.failed ? "failed" : "passed", ...results } };
+      publish();
+    });
+    return { ...ok, rev: saved.rev };
+  }
+
+  /** The commit for one task, once its tests pass: only that task's file. @param {Record<string, unknown>} a */
+  function commitCode(a) {
+    const dir = ctx.state.repoDir;
+    const week = Number(a.week);
+    if (!dir || !Number.isInteger(week) || !weekIn(week)) return reject(409, "That week isn't in your work yet.");
+    const task = weekCode(ctx, dir, week).find((t) => t.id === a.id);
+    if (!task || code[task.id]?.phase !== "passed") return reject(409, "Commit a task once its tests pass.");
+    const message = `week ${week}: ${task.id}`;
+    const r = ctx.capture(["git", "commit", "-q", "-m", message, "--", task.file], dir);
+    const said = `${r?.stdout ?? ""}${r?.stderr ?? ""}`;
+    code = { ...code, [task.id]: { ...code[task.id], committed: r?.code === 0 ? `Committed: ${message}` : /nothing (added )?to commit|no changes added/i.test(said) ? "Nothing new to commit: it's already in a commit." : `The commit didn't work: ${said.trim().split("\n")[0]}` } };
+    publish();
+    return ok;
+  }
+
   /** @param {number} week */
   async function runChecks(week) {
     const dir = ctx.state.repoDir;
@@ -2334,8 +2395,8 @@ export function createStudio(ctx, steps, meta = {}) {
 
   /**
    * One action from the browser. Anything that isn't allowed right now is refused, with a reason.
-   * @param {{ type?: unknown, stepId?: unknown, index?: unknown, typed?: unknown, values?: unknown, answer?: unknown, to?: unknown, week?: unknown }} a
-   * @returns {Promise<{ ok: boolean, status: number, error: string }>}
+   * @param {{ type?: unknown, stepId?: unknown, index?: unknown, typed?: unknown, values?: unknown, answer?: unknown, to?: unknown, week?: unknown, id?: unknown, file?: unknown, rev?: unknown, body?: unknown }} a
+   * @returns {Promise<{ ok: boolean, status: number, error: string, rev?: string }>}
    */
   async function act(a) {
     if (a.type === "board-start") return startBoard();
@@ -2345,6 +2406,8 @@ export function createStudio(ctx, steps, meta = {}) {
       return ok;
     }
     if (a.type === "checks") return runChecks(Number(a.week));
+    if (a.type === "code-save") return saveCode(a);
+    if (a.type === "code-commit") return commitCode(a);
     if (typeof a.type === "string" && a.type.startsWith("account-")) return accountAct(a);
     if (acct) return reject(409, "Finish changing the GitHub account first, or close it.");
     // Going back to an earlier step works from anywhere, the finish screen included.
@@ -2670,6 +2733,13 @@ export function createStudio(ctx, steps, meta = {}) {
     },
     /** The course folder, once there is one. */
     repoDir: () => ctx.state.repoDir ?? null,
+    /** Tests the studio started are running (a task's save, or the week's checks). */
+    busy: () => Boolean(codeRun || checksRun),
+    /**
+     * A week's tasks to write in the studio (its Code tab), once the week is in the student's work.
+     * @param {number} week
+     */
+    weekCode: (week) => (ctx.state.repoDir && weekIn(week) ? weekCode(ctx, ctx.state.repoDir, week) : null),
     output: () => ({ id: outputId, text: out }),
     /** @param {(event: string, data: unknown) => void} listener */
     subscribe: (listener) => {
@@ -2894,6 +2964,25 @@ export function courseFile(dir, urlPath) {
 }
 
 /**
+ * The code box's script, studio/editor.js: the one that came with this studio (beside it: in its
+ * course folder, or saved next to a newer studio), else the course folder's (it may be older),
+ * else null (the page falls back to a plain text box).
+ * @param {string | null} dir
+ * @returns {Buffer | null}
+ */
+export function editorBundle(dir) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const path of [join(here, "studio", "editor.js"), join(here, "editor.js"), dir && join(dir, "studio", "editor.js")]) {
+    try {
+      if (path) return readFileSync(path);
+    } catch {
+      // not there: try the next place
+    }
+  }
+  return null;
+}
+
+/**
  * Serve the studio on 127.0.0.1, on a free port. Resolves once it's listening.
  * @param {ReturnType<typeof createStudio>} studio
  * @param {{ token?: string, port?: number, onIdle?: () => void, idleMs?: number, log?: (line: string) => void }} [options]
@@ -2926,7 +3015,7 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
         ...secure,
         "content-type": "text/html; charset=utf-8",
         "content-security-policy":
-          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; frame-src 'self' http://localhost:3005 http://127.0.0.1:3005; base-uri 'none'; form-action 'none'",
+          "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; frame-src 'self' http://localhost:3005 http://127.0.0.1:3005; base-uri 'none'; form-action 'none'",
         // Same-site, this address only: lets the lesson pages and their links load inside the studio.
         "set-cookie": `netsim_studio=${token}; Path=/; HttpOnly; SameSite=Strict`,
       });
@@ -2959,9 +3048,25 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
       res.writeHead(302, { ...secure, location: `/${page}` }).end();
       return;
     }
+    // The code box (CodeMirror, bundled): from the course folder, else next to this studio.
+    if (req.method === "GET" && url.pathname === "/editor.js") {
+      const body = editorBundle(studio.repoDir());
+      if (!body) {
+        res.writeHead(404, secure).end();
+        return;
+      }
+      res.writeHead(200, { ...secure, "content-type": "text/javascript; charset=utf-8" }).end(body);
+      return;
+    }
+    // A week's tasks, for its Code tab.
+    if (req.method === "GET" && url.pathname === "/api/code") {
+      const tasks = studio.weekCode(Number(url.searchParams.get("week")));
+      res.writeHead(tasks ? 200 : 409, { ...secure, "content-type": "application/json" }).end(JSON.stringify(tasks ? { tasks } : { error: "That week isn't in your work yet." }));
+      return;
+    }
     // A file from the course folder (a lesson page, a linked document, an image), shown inside the studio.
     const dir = studio.repoDir();
-    const file = req.method === "GET" && dir && !["/events", "/api/act"].includes(url.pathname) ? courseFile(dir, url.pathname) : null;
+    const file = req.method === "GET" && dir && !["/events", "/api/act", "/api/code", "/editor.js"].includes(url.pathname) ? courseFile(dir, url.pathname) : null;
     if (file) {
       res.writeHead(200, {
         ...secure,
@@ -3020,7 +3125,8 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
   const address = () => /** @type {import("node:net").AddressInfo} */ (server.address());
   // The tab was closed: nothing connected and no heartbeat for a while.
   const idle = setInterval(() => {
-    if (onIdle && seen && clients === 0 && Date.now() - seen > idleMs) onIdle();
+    // Not while tests it started are still running (a save's, or the checks'): they finish first.
+    if (onIdle && seen && clients === 0 && Date.now() - seen > idleMs && !studio.busy?.()) onIdle();
   }, 2_000);
   idle.unref();
   return new Promise((ready) => {
@@ -3037,6 +3143,353 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
       });
     });
   });
+}
+
+// ── Code in the studio: a week's tasks, written in the app ──────────────────────────
+// Each task is an @student region in the student's own copy. The studio shows a few read-only
+// lines around it and lets the student write the body; saving writes only between the region's
+// markers, then runs the tests that cover it. VS Code and the studio edit the same file.
+
+const REGION_START = /^(\s*)(\/\/|;) @student week=(\d+|stretch) part=(class|home) id=([a-z0-9-]+) "([^"]*)"\s*$/;
+const REGION_END = /^\s*(\/\/|;) @end\s*$/;
+/** Any marker line: never allowed inside what the student writes. */
+const REGION_MARKER = /^\s*(\/\/|;|<!--) @(student|stub|end)\b/;
+/** The largest body the studio writes (a region is a function body, not a file). */
+const MAX_BODY = 40_000;
+
+/**
+ * @typedef {{ id: string, week: number, part: "class" | "home", description: string, start: number, end: number, indent: string }} CodeRegion
+ *   start/end: the 0-based lines of the @student and @end markers.
+ */
+
+/**
+ * The @student regions of one code file (.ts, .tsx, .asm). A file whose markers don't pair up has
+ * none (the studio won't write into it).
+ * @param {string} text
+ * @returns {CodeRegion[]}
+ */
+export function findCodeRegions(text) {
+  /** @type {CodeRegion[]} */
+  const regions = [];
+  /** @type {CodeRegion | null} */
+  let open = null;
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\r$/, "");
+    const start = REGION_START.exec(line);
+    if (start) {
+      if (open) return [];
+      open = { id: start[5], week: start[3] === "stretch" ? 9 : Number(start[3]), part: /** @type {"class" | "home"} */ (start[4]), description: start[6], start: i, end: -1, indent: start[1] };
+    } else if (REGION_END.test(line)) {
+      if (!open) return [];
+      regions.push({ ...open, end: i });
+      open = null;
+    }
+  }
+  return open ? [] : regions;
+}
+
+/** A region's text, markers included: what a save must find unchanged. @param {string[]} lines @param {CodeRegion} r */
+const regionRev = (lines, r) => createHash("sha256").update(lines.slice(r.start, r.end + 1).join("\n")).digest("hex").slice(0, 16);
+
+/**
+ * The read-only lines around a region: from the function (or block) it sits in, down to the
+ * marker, and after @end to that block's closing line. Long stretches are cut with "…".
+ * @param {string[]} lines
+ * @param {CodeRegion} r
+ */
+export function regionContext(lines, r) {
+  const indentOf = (/** @type {string} */ l) => /^\s*/.exec(l)?.[0].length ?? 0;
+  const own = r.indent.length;
+  // The nearest line above with less indent that opens a block: the signature (or the callback) the region is in.
+  let top = r.start;
+  for (let i = r.start - 1; i >= 0 && i >= r.start - 40; i--) {
+    const l = lines[i];
+    if (l.trim() && indentOf(l) < own && /[{(]\s*$/.test(l.trimEnd())) {
+      top = i;
+      // A signature split over lines ("export function f(\n  a,\n): T {"): start where it starts.
+      while (top > 0 && indentOf(lines[top - 1]) >= indentOf(l) && lines[top - 1].trim() && !/[;{}]\s*$/.test(lines[top - 1].trimEnd()) && top > i - 6) top--;
+      break;
+    }
+  }
+  let before = lines.slice(top, r.start);
+  if (before.length > 12) before = [...before.slice(0, 3), `${r.indent}…`, ...before.slice(-7)];
+  let after = [];
+  const opener = indentOf(lines[top] ?? "");
+  for (let i = r.end + 1; i < lines.length && after.length < 8; i++) {
+    after.push(lines[i]);
+    if (lines[i].trim() && indentOf(lines[i]) <= opener && /^\s*[})\]]/.test(lines[i])) break;
+  }
+  if (after.length === 8) after = [...after.slice(0, 6), `${r.indent}…`];
+  return { before: before.map((l) => l.replace(/\r$/, "")), after: after.map((l) => l.replace(/\r$/, "")) };
+}
+
+/**
+ * The course's code files that hold regions (tracked by git; not tests, not node_modules).
+ * @param {Context} ctx
+ * @param {string} dir
+ */
+function regionFiles(ctx, dir) {
+  const listed = ctx.capture(["git", "ls-files", "--", "*.ts", "*.tsx", "*.asm"], dir);
+  if (!listed || listed.code !== 0) return [];
+  return listed.stdout.split("\n").filter((f) => f && !f.startsWith("tests/") && !f.includes("node_modules/"));
+}
+
+/**
+ * A path in the course folder that the studio may write: inside the folder (after following links),
+ * a code file, not under .git, tests or node_modules. The absolute path, or null.
+ * @param {string} dir
+ * @param {string} rel
+ */
+export function codeFilePath(dir, rel) {
+  if (typeof rel !== "string" || !rel || rel.includes("\0") || rel.includes("\\") || rel.startsWith("/")) return null;
+  if (rel.split("/").some((part) => part === ".." || part === "." || part.startsWith(".")) || !/\.(tsx?|asm)$/.test(rel)) return null;
+  if (/^(tests|node_modules)\//.test(rel) || rel.includes("/node_modules/")) return null;
+  try {
+    const root = realpathSync(dir);
+    const file = realpathSync(join(root, rel));
+    if (!file.startsWith(root + sep) || !statSync(file).isFile()) return null;
+    // The same rules for where it really is (a link inside the folder to tests/ or .git is no better).
+    const real = file.slice(root.length + 1).split(sep).join("/");
+    if (real.split("/").some((part) => part.startsWith(".")) || !/\.(tsx?|asm)$/.test(real) || /^(tests|node_modules)\//.test(real) || real.includes("/node_modules/")) return null;
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What the week's guide says about a task: the paragraph (or list item) that names
+ * TODO(week N, id), and the ready Codex prompt after it, if the guide has one for it.
+ * @param {string} guide
+ * @param {number} week
+ * @param {string} id
+ * @param {string} file
+ */
+export function guideFor(guide, week, id, file) {
+  const lines = guide.split("\n");
+  const at = lines.findIndex((l) => l.includes(`TODO(week ${week}, ${id})`));
+  if (at < 0) return { lesson: "", prompt: "", order: Infinity };
+  let from = at;
+  while (from > 0 && lines[from - 1].trim() && !/^\s*([-*]|\d+\.)\s/.test(lines[from])) from--;
+  let to = at + 1;
+  while (to < lines.length && lines[to].trim() && !/^\s*([-*]|\d+\.)\s/.test(lines[to]) && !/^\s*```/.test(lines[to])) to++;
+  const lesson = lines.slice(from, to).map((l) => l.trim()).join(" ").replace(/^([-*]|\d+\.)\s+/, "");
+  let prompt = "";
+  if (/^board\//.test(file)) {
+    // The guide's ready prompt: the first ```text block after the task, if it names this file.
+    for (let i = at + 1; i < lines.length && i < at + 40; i++) {
+      if (/^\s*```text\s*$/.test(lines[i])) {
+        const close = lines.findIndex((l, j) => j > i && /^\s*```\s*$/.test(l));
+        const block = lines.slice(i + 1, close < 0 ? undefined : close);
+        const pad = Math.min(...block.filter((l) => l.trim()).map((l) => /^\s*/.exec(l)?.[0].length ?? 0));
+        // The guide wraps its prompt at 100 columns: put each sentence back on one line (list items keep theirs).
+        const text = block
+          .map((l) => l.slice(pad))
+          .reduce((out, l) => (out && l.trim() && !/^\s*(\d+\.|[-*])\s/.test(l) && out.at(-1)?.trim() ? [...out.slice(0, -1), `${out.at(-1)} ${l.trim()}`] : [...out, l]), /** @type {string[]} */ ([]))
+          .join("\n")
+          .trim();
+        if (text.includes(file)) prompt = text;
+        break;
+      }
+    }
+  }
+  return { lesson, prompt, order: at };
+}
+
+/**
+ * A week's tasks in lesson order (class tasks first, then take-home, each in the guide's order):
+ * each with the read-only lines around it, its body as it is now, and what the guide says.
+ * @param {Context} ctx
+ * @param {string} dir
+ * @param {number} week
+ */
+export function weekCode(ctx, dir, week) {
+  const guide = ctx.readText(join(dir, `docs/weeks/week-${pad2(week)}.md`)) ?? "";
+  // The grey hint text, as the week was released with it (studio/hints/week-NN.json).
+  /** @type {Record<string, unknown>} */
+  let hints = {};
+  try {
+    hints = JSON.parse(ctx.readText(join(dir, `studio/hints/week-${pad2(week)}.json`)) ?? "{}") ?? {};
+  } catch {
+    // no hints: the boxes start with what's in the file
+  }
+  /** @type {Map<string, { words: string[], members: string[] }>} */
+  const names = new Map();
+  const tests = ctx.capture(["git", "ls-files", "--", `tests/week-${pad2(week)}/`], dir)?.stdout.split("\n").filter((f) => /\.test\.tsx?$/.test(f)) ?? [];
+  const tasks = [];
+  for (const file of regionFiles(ctx, dir)) {
+    const text = ctx.readText(join(dir, file));
+    if (!text || !text.includes(`@student week=${week} `)) continue;
+    const lines = text.split("\n");
+    for (const r of findCodeRegions(text)) {
+      if (r.week !== week) continue;
+      const body = lines.slice(r.start + 1, r.end).map((l) => l.replace(/\r$/, "")).map((l) => (l.startsWith(r.indent) ? l.slice(r.indent.length) : l.trimStart()));
+      const said = guideFor(guide, week, r.id, file);
+      const prompt = said.prompt || (/^board\//.test(file) ? `In ${file} only, fill in TODO(week ${week}, ${r.id}): ${r.description}. Don't change any other file or any test, and explain each line you write.` : "");
+      const modulePath = file.replace(/\.(tsx?|asm)$/, "");
+      const covering = tests.filter((t) => (ctx.readText(join(dir, t)) ?? "").includes(modulePath));
+      // The file's names, and the ones its tasks' hints use (the stubs don't have them yet).
+      if (!names.has(file)) names.set(file, fileNames(ctx, dir, file, [text, ...Object.values(hints).map((h) => hintOf(h).code)].join("\n")));
+      const { code: hint, steps } = hintOf(hints[r.id]);
+      const context = regionContext(lines, r);
+      const signature = context.before.find((l) => !/^\s*(\/\*\*?|\*|\/\/)/.test(l)) ?? "";
+      const fn = /function\s+([A-Za-z_$][\w$]*)|([A-Za-z_$][\w$]*)\s*(?:=\s*(?:async\s*)?)?\(/.exec(signature);
+      tasks.push({ id: r.id, file, part: r.part, hint, steps, fn: fn?.[1] ?? fn?.[2] ?? "", endLine: r.end, .../** @type {{ words: string[], members: string[] }} */ (names.get(file)), description: r.description, ...regionContext(lines, r), indent: r.indent, body: body.join("\n"), rev: regionRev(lines, r), lesson: said.lesson, prompt, tests: covering.length ? covering : [`tests/week-${pad2(week)}`], order: said.order, line: r.start + 2, stubbed: /^(\/\/|;) TODO\(/.test(body[0] ?? "") && (body[0] ?? "").includes(`, ${r.id})`) });
+    }
+  }
+  return tasks.sort((a, b) => Number(a.part === "home") - Number(b.part === "home") || a.order - b.order);
+}
+
+/**
+ * A task's hint as a release ships it: its code and what each part does (an older studio/hints
+ * file holds just the code).
+ * @param {unknown} hint
+ * @returns {{ code: string, steps: { line: number, explain: string }[] }}
+ */
+export function hintOf(hint) {
+  if (typeof hint === "string") return { code: hint, steps: [] };
+  const h = /** @type {{ code?: unknown, steps?: unknown }} */ (hint ?? {});
+  if (typeof h.code !== "string") return { code: "", steps: [] };
+  const steps = Array.isArray(h.steps) ? h.steps.filter((x) => Number.isInteger(x?.line) && typeof x?.explain === "string") : [];
+  return { code: h.code, steps };
+}
+
+const JS_WORDS = new Set("abstract as async await break case catch class const continue debugger default delete do else enum export extends false finally for from function if implements import in instanceof interface let new null of private protected public readonly return static super switch this throw true try type typeof undefined var void while with yield".split(" "));
+
+/**
+ * Names to complete in a file's code box: the identifiers in the file and the local modules it
+ * imports (after a letter), and the members used or declared there (after a dot). No type
+ * checking: a short, useful list.
+ * @param {Context} ctx
+ * @param {string} dir
+ * @param {string} file
+ * @param {string} text
+ */
+export function fileNames(ctx, dir, file, text) {
+  const texts = [text];
+  for (const m of text.matchAll(/from\s+"((?:\.{1,2}\/|@\/)[^"]+)"/g)) {
+    const spec = m[1].startsWith("@/") ? m[1].slice(2) : join(dirname(file), m[1]);
+    for (const ext of [".ts", ".tsx", "/index.ts"]) {
+      const other = ctx.readText(join(dir, spec + ext));
+      if (other) {
+        texts.push(other);
+        break;
+      }
+    }
+  }
+  /** @type {Map<string, number>} */
+  const words = new Map();
+  /** @type {Set<string>} */
+  const members = new Set();
+  for (const t of texts) {
+    const code = t.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const [w] of code.matchAll(/[A-Za-z_$][\w$]+/g)) if (!JS_WORDS.has(w)) words.set(w, (words.get(w) ?? 0) + 1);
+    for (const m of code.matchAll(/\.([A-Za-z_$][\w$]*)/g)) members.add(m[1]);
+    for (const m of code.matchAll(/^\s*(?:readonly\s+)?([A-Za-z_$][\w$]*)\??\s*:/gm)) members.add(m[1]);
+  }
+  return { words: [...words.keys()].sort((a, b) => (words.get(b) ?? 0) - (words.get(a) ?? 0)).slice(0, 500), members: [...members].slice(0, 500) };
+}
+
+/**
+ * Write a task's body into its region, and nothing else. Refused when the path isn't a code file
+ * of the course, the region isn't found exactly once, it changed since the page loaded it (rev),
+ * or the body holds a marker.
+ * @param {string} dir
+ * @param {{ file: unknown, id: unknown, week: number, rev: unknown, body: unknown }} change
+ * @returns {{ error: string } | { file: string, rev: string }}
+ */
+export function writeRegion(dir, { file, id, week, rev, body }) {
+  const path = codeFilePath(dir, /** @type {string} */ (file));
+  if (!path) return { error: "That file isn't one of the course's code files." };
+  if (typeof body !== "string" || body.length > MAX_BODY) return { error: "That's too long for one task." };
+  if (body.split("\n").some((l) => REGION_MARKER.test(l))) return { error: "The code can't contain @student, @stub or @end lines: those mark where the task starts and ends." };
+  const text = readFileSync(path, "utf8");
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text.split("\n");
+  const found = findCodeRegions(text).filter((r) => r.id === id);
+  if (found.length !== 1 || found[0].week !== week) return { error: `Couldn't find the task ${String(id)} in ${String(file)} (its @student and @end lines must be there, once).` };
+  const r = found[0];
+  if (regionRev(lines, r) !== rev) return { error: "This task changed in the file since the studio showed it (in VS Code?). Reload it, then save again." };
+  const cr = eol === "\r\n" ? "\r" : "";
+  const written = body.replace(/\r/g, "").split("\n").map((l) => (l.trim() ? `${r.indent}${l}` : "") + cr);
+  const next = [...lines.slice(0, r.start + 1), ...written, ...lines.slice(r.end)].join("\n");
+  const tmp = `${path}.studio-${process.pid}`;
+  writeFileSync(tmp, next);
+  renameSync(tmp, path);
+  const again = findCodeRegions(next).find((x) => x.id === id);
+  return { file: /** @type {string} */ (file), rev: again ? regionRev(next.split("\n"), again) : "" };
+}
+
+/**
+ * The results of a vitest JSON report, for one task: what passed, what failed, and what only waits
+ * for another task that's still a stub: its TODO is in the message, the error came from inside its
+ * code, or the test is named after its function. This task's own failures are listed first.
+ * @typedef {{ id: string, file: string, fn?: string, line?: number, endLine?: number }} TaskRef
+ * @param {string} json
+ * @param {string | TaskRef} task
+ * @param {TaskRef[]} [stubs]  the week's other tasks that are still stubs
+ */
+export function taskResults(json, task, stubs = []) {
+  const me = typeof task === "string" ? { id: task, file: "" } : task;
+  const id = me.id;
+  const named = (/** @type {string} */ text, /** @type {string | undefined} */ fn) => Boolean(fn && fn.length > 2 && new RegExp(`\\b${fn.replace(/\$/g, "\\$")}\\b`).test(text));
+  /** Where a stack frame lands: inside which stubbed task's code. @param {string} stack */
+  const thrownIn = (stack) => {
+    for (const m of stack.matchAll(/([\w./@-]+\.(?:tsx?|asm)):(\d+):\d+/g)) {
+      const line = Number(m[2]);
+      const hit = stubs.find((s) => s.line && s.endLine && m[1].endsWith(`/${s.file}`) && line >= s.line && line <= s.endLine);
+      if (hit) return hit.id;
+    }
+    return null;
+  };
+  const mine = (/** @type {string} */ name, /** @type {string} */ message) => named(name, me.fn) || (me.file !== "" && message.includes(`/${me.file}:`));
+  /** @type {{ testResults?: { name?: string, message?: string, status?: string, assertionResults?: { fullName?: string, title?: string, status?: string, failureMessages?: string[] }[] }[] }} */
+  let report;
+  try {
+    report = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  let passed = 0;
+  /** @type {Set<string>} */
+  const waiting = new Set();
+  /** @type {{ test: string, message: string, own?: boolean }[]} */
+  const failures = [];
+  /** The other task a failure waits for, or null. @param {string} m @param {string} [name] */
+  const other = (m, name = "") => {
+    const todo = [...m.matchAll(/TODO\(week \d+: ([a-z0-9-]+)\)/g)].map((x) => x[1]).find((x) => x !== id);
+    if (todo) return todo;
+    const inside = thrownIn(m);
+    if (inside && inside !== id) return inside;
+    if (name && !named(name, me.fn)) return stubs.find((s) => s.id !== id && named(name, s.fn))?.id ?? null;
+    return null;
+  };
+  for (const file of report.testResults ?? []) {
+    const name = (file.name ?? "").replace(/^.*?(tests\/)/, "$1");
+    if (!(file.assertionResults ?? []).length && file.status === "failed") {
+      const message = file.message ?? "";
+      const waits = other(message);
+      if (waits) waiting.add(waits);
+      else failures.push({ test: name, message: message.split("\n").slice(0, 6).join("\n") });
+    }
+    for (const t of file.assertionResults ?? []) {
+      if (t.status === "passed") passed++;
+      else if (t.status === "failed") {
+        const message = (t.failureMessages ?? []).join("\n");
+        const waits = other(message, t.fullName ?? t.title ?? "");
+        if (waits) waiting.add(waits);
+        else {
+          const test = t.fullName ?? t.title ?? name;
+          const own = mine(test, message);
+          failures.push({ test, message: message.replace(/\x1b\[[0-9;]*m/g, "").split("\n").filter((l) => !/^\s+at /.test(l)).slice(0, 6).join("\n"), ...(own ? { own } : {}) });
+        }
+      }
+    }
+  }
+  // This task's own failures first: the test is named after its function, or the error came from its file.
+  failures.sort((a, b) => Number(Boolean(b.own)) - Number(Boolean(a.own)));
+  return { passed, failed: failures.length, failures: failures.slice(0, 5), waiting: [...waiting] };
 }
 
 // ── The page (HTML, CSS and the browser code, all in this file) ────────────
@@ -3379,6 +3832,34 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .tab { font: 600 13.5px/1 "Inter", sans-serif; padding: 9px 14px; border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0; background: none; cursor: pointer; color: var(--muted); }
 .tab.on { color: var(--ink); background: var(--panel); border-color: var(--line); margin-bottom: -1px; }
 .tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.codetab { display: grid; gap: 22px; padding-bottom: 40px; }
+.task { border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; display: grid; gap: 12px; background: var(--panel); }
+.taskhead { display: flex; gap: 12px; align-items: flex-start; }
+.taskhead h3 { margin: 0; font-size: 17px; }
+.taskhead .tdesc { margin: 2px 0 0; color: var(--muted); }
+.tnum { flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--green); color: #fff; display: grid; place-items: center; font: 700 13px/1 "JetBrains Mono", monospace; }
+.tpart { margin-left: auto; flex: none; font: 600 11px/1 "JetBrains Mono", monospace; text-transform: uppercase; letter-spacing: .05em; padding: 5px 8px; border-radius: 6px; background: var(--well); color: var(--muted); }
+.tpart.class { background: var(--mint); color: var(--green); }
+.lesson { margin: 0; line-height: 1.55; }
+.taskgrid { display: grid; gap: 14px; }
+.taskgrid.withprompt { grid-template-columns: minmax(0, 1fr) minmax(220px, 34%); }
+@media (max-width: 1200px) { .taskgrid.withprompt { grid-template-columns: minmax(0, 1fr); } }
+.codewrap { align-self: start; background: var(--green); border: 2px solid var(--ink); box-shadow: 4px 4px 0 var(--ink); border-radius: 10px; padding: 10px 12px 12px; min-width: 0; overflow-x: auto; }
+.cfile { font: 600 12px/1.4 "JetBrains Mono", monospace; color: #9cc5b2; margin-bottom: 6px; }
+.codewrap pre.ctx { margin: 0; padding: 2px 0 2px 4px; color: #d7ecdf; opacity: .78; font: 14px/1.5 "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; white-space: pre; background: none; border: 0; }
+.codewrap .editor { margin: 4px 0; border: 1px solid #5fc79a; border-radius: 9px; min-width: 0; }
+.codewrap .cm-editor { min-height: 90px; }
+textarea.plaincode { width: 100%; box-sizing: border-box; background: #173627; color: #f2f7f4; border: 0; border-radius: 9px; padding: 10px; font: 15px/1.5 "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; tab-size: 2; resize: vertical; }
+.prompt { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--well); display: grid; gap: 8px; align-content: start; min-width: 0; }
+.prompt h4 { margin: 0; font-size: 14px; }
+.taskgrid .aside { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.walk ol { margin: 0; padding-left: 20px; display: grid; gap: 8px; font-size: 14px; line-height: 1.45; }
+.walk li { padding: 4px 6px; border-radius: 6px; }
+.walk li.now { background: var(--mint); color: var(--green); }
+.prompt pre { margin: 0; white-space: pre-wrap; font: 12.5px/1.5 "JetBrains Mono", monospace; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 320px; overflow: auto; }
+.tresult:empty { display: none; }
+.failure { margin-top: 8px; }
+.failure .ftest { font-weight: 600; }
 /* A lesson page or the board at the panel's full width and the window's height, like opening it on its own. */
 iframe.doc { flex: 1; width: 100%; min-height: calc(100vh - 250px); border: 1px solid var(--line); border-radius: 8px; background: #fff; }
 iframe.board { min-height: calc(100vh - 220px); }
@@ -3587,6 +4068,15 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       }
     } catch {
       toast("The studio stopped. Run node setup.mjs again to reopen it.");
+    }
+  }
+  /** An action whose answer the page needs (the code tab's save). @param {Record<string, unknown>} body */
+  async function ask(body) {
+    try {
+      const res = await fetch("/api/act", { method: "POST", headers: { "content-type": "application/json", "x-studio-token": TOKEN }, body: JSON.stringify(body) });
+      return /** @type {{ ok: boolean, error?: string, rev?: string }} */ (await res.json().catch(() => ({ ok: res.ok, error: res.ok ? "" : "Something went wrong." })));
+    } catch {
+      return { ok: false, error: "The studio stopped. Run npm start again to reopen it." };
     }
   }
   function toast(/** @type {string} */ text) {
@@ -3968,9 +4458,241 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
    * more tabs later (a build week's tasks, Join class).
    * @param {{ week: number, title: string, kind?: string, page?: string | null, guide?: string | null, note?: string | null, board?: boolean }} g
    */
+  /**
+   * The Code tab: a week's tasks in lesson order. Each is a card: what the guide says, the lines
+   * around the task (read-only), an editor for the task's body, and Save, which writes the body into
+   * the file and runs the task's tests. The editors are made once per week and kept while the page
+   * redraws; what's typed and not saved yet survives switching tabs.
+   */
+  const codeTab = (() => {
+    /** @typedef {{ id: string, file: string, part: string, description: string, before: string[], after: string[], indent: string, body: string, rev: string, lesson: string, prompt: string, tests: string[], line: number, stubbed: boolean, hint: string, steps: { line: number, explain: string }[], words: string[], members: string[] }} Task */
+    /** The hint text shows unless the student hid it (remembered on this laptop). */
+    let hintsShown = true;
+    try {
+      hintsShown = localStorage.getItem("netsim-hints") !== "off";
+    } catch {
+      // storage blocked: hints show
+    }
+    /** @type {Record<string, string>} what's typed and not saved, by task */
+    const drafts = {};
+    /** @type {{ week: number, el: HTMLElement, tasks: Task[], editors: Record<string, { value: string, focus: () => void, showHint?: (show: boolean) => void }> } | null} */
+    let mounted = null;
+    /** @type {Promise<void> | null} */
+    let loading = null;
+    const md = (/** @type {string} */ text) =>
+      esc(text)
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+    /** CodeMirror from /editor.js, loaded once; a plain text box when it isn't there. */
+    function loadEditor() {
+      if (/** @type {any} */ (window).NetsimEditor || loading) return loading ?? Promise.resolve();
+      loading = new Promise((done) => {
+        const s = document.createElement("script");
+        s.src = "/editor.js";
+        s.onload = () => done();
+        s.onerror = () => done();
+        document.head.append(s);
+      });
+      return loading;
+    }
+    /** @param {HTMLElement} box @param {Task} t @param {() => void} save */
+    function makeEditor(box, t, save) {
+      // A task with a hint that's still its stub starts empty, with the hint in grey to type over.
+      const doc = drafts[t.id] ?? (t.hint && t.stubbed ? "" : t.body);
+      const lib = /** @type {any} */ (window).NetsimEditor; // set by /editor.js
+      if (lib) {
+        const ed = lib.create(box, {
+          doc,
+          tsx: t.file.endsWith(".tsx"),
+          hint: t.hint,
+          words: t.words,
+          members: t.members,
+          onChange: (/** @type {string} */ text) => {
+            drafts[t.id] = text;
+            markStep(t, text);
+          },
+          onSave: save,
+        });
+        markStep(t, doc);
+        if (!hintsShown) ed.showHint(false);
+        return ed;
+      }
+      const area = document.createElement("textarea");
+      area.className = "plaincode";
+      area.spellcheck = false;
+      area.value = doc;
+      if (t.hint && hintsShown) area.placeholder = t.hint;
+      area.rows = Math.max(6, doc.split("\n").length + 2);
+      area.addEventListener("input", () => (drafts[t.id] = area.value));
+      area.addEventListener("keydown", (e) => {
+        if (e.key === "Tab") {
+          e.preventDefault();
+          area.setRangeText("  ", area.selectionStart, area.selectionEnd, "end");
+          drafts[t.id] = area.value;
+        } else if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+          e.preventDefault();
+          save();
+        }
+      });
+      box.append(area);
+      return { get value() { return area.value; }, set value(v) { area.value = v; }, focus: () => area.focus() };
+    }
+    /**
+     * Light the explanation of the part being typed: how far the typing has followed the hint.
+     * @param {Task} t
+     * @param {string} text
+     */
+    function markStep(t, text) {
+      const lib = /** @type {any} */ (window).NetsimEditor;
+      if (!mounted || !t.steps.length || !lib?.ghostRest) return;
+      const rest = lib.ghostRest(text, t.hint);
+      const at = rest === null ? -1 : t.hint.slice(0, t.hint.length - rest.length).split("\n").length - 1;
+      let current = -1;
+      t.steps.forEach((st, i) => {
+        if (at >= st.line) current = i;
+      });
+      if (at >= 0 && current < 0) current = 0;
+      for (const li of mounted.el.querySelectorAll(`[data-task="${CSS.escape(t.id)}"] [data-step]`)) li.classList.toggle("now", Number(/** @type {HTMLElement} */ (li).dataset.step) === current);
+    }
+
+    /** @param {Task} t @param {number} n */
+    function card(t, n) {
+      const where = `${t.file} · line ${t.line}`;
+      // Coloured like the editor once /editor.js is here (plain text without it).
+      const lib = /** @type {any} */ (window).NetsimEditor;
+      const ctx = (/** @type {string[]} */ lines) => (lines.length ? `<pre class="ctx">${lib?.highlight ? lib.highlight(lines.join("\n"), t.file.endsWith(".tsx")) : esc(lines.join("\n"))}</pre>` : "");
+      const walk = t.steps.length
+        ? `<aside class="prompt walk"><h4>What this code does</h4><ol>${t.steps.map((st, i) => `<li data-step="${i}" data-line="${st.line}">${md(st.explain)}</li>`).join("")}</ol></aside>`
+        : "";
+      const prompt = t.prompt
+        ? `<aside class="prompt"><h4>Codex prompt</h4><p class="sub">Run <code>codex</code> in a terminal in your course folder and paste this; read what it writes before you keep it.</p><pre>${esc(t.prompt)}</pre><button class="btn ghost" data-code-copy="${esc(t.id)}">Copy the prompt</button></aside>`
+        : "";
+      return `<section class="task" data-task="${esc(t.id)}">
+        <div class="taskhead"><span class="tnum">${n}</span><div><h3><code>${esc(t.id)}</code></h3><p class="tdesc">${esc(t.description)}</p></div><span class="tpart ${t.part}">${t.part === "class" ? "in class" : "take-home"}</span></div>
+        ${t.lesson ? `<p class="lesson">${md(t.lesson)}</p>` : ""}
+        <div class="taskgrid ${prompt || walk ? "withprompt" : ""}"><div class="codewrap"><div class="cfile">${esc(where)}</div>${ctx(t.before)}<div class="editor" style="margin-left:${t.indent.length}ch" data-ed="${esc(t.id)}"></div>${ctx(t.after)}</div>${walk || prompt ? `<div class="aside">${walk}${prompt}</div>` : ""}</div>
+        ${t.hint ? `<div class="row hintrow"><span class="muted" data-hint-says>${hintsShown ? "Type over the grey code, or press <kbd>Tab</kbd> for its next word; any code that passes the tests is fine." : "The hint is hidden. <kbd>Tab</kbd> after a letter or a dot lists the names that fit."}</span><button class="btn ghost" data-code-paste="${esc(t.id)}">Paste it all</button><button class="btn ghost" data-code-hints>${hintsShown ? "Hide the hint" : "Show the hint"}</button></div>` : ""}
+        <div class="row"><button class="btn primary" data-code-save="${esc(t.id)}">Save and run its tests <kbd>⌘S</kbd></button><span class="muted">Writes only this task into <code>${esc(t.file)}</code>, then runs <code>${esc(t.tests.join(" "))}</code>.</span></div>
+        <div class="tresult" data-result="${esc(t.id)}"></div>
+      </section>`;
+    }
+    /** @param {number} week @param {HTMLElement} el */
+    async function mount(week, el) {
+      mounted = { week, el, tasks: [], editors: {} };
+      const mine = mounted;
+      const [res] = await Promise.all([fetch(`/api/code?week=${week}`, { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null), loadEditor()]);
+      if (mounted !== mine) return;
+      if (!res?.tasks) {
+        el.innerHTML = `<p class="why">${esc(res?.error ?? "The studio couldn't read this week's tasks.")}</p>`;
+        return;
+      }
+      mine.tasks = res.tasks;
+      if (!mine.tasks.length) {
+        el.innerHTML = `<p class="why">There's no code to write this week: the work is in your design note.</p>`;
+        return;
+      }
+      el.innerHTML = `<p class="why">This week's tasks, in the order of the lesson. Write each one here or in VS Code: it's the same file. <b>Save</b> writes only the task's lines and runs its tests; when they pass, commit it.</p>${mine.tasks.map((t, i) => card(t, i + 1)).join("")}`;
+      for (const t of mine.tasks) {
+        const box = /** @type {HTMLElement} */ (el.querySelector(`[data-ed="${CSS.escape(t.id)}"]`));
+        mine.editors[t.id] = makeEditor(box, t, () => save(t.id));
+      }
+      update();
+    }
+    /** @param {string} id */
+    async function save(id) {
+      const m = mounted;
+      const t = m?.tasks.find((x) => x.id === id);
+      if (!m || !t) return;
+      const body = m.editors[id].value;
+      const r = await ask({ type: "code-save", week: m.week, id, file: t.file, rev: t.rev, body });
+      if (!r.ok) {
+        const box = m.el.querySelector(`[data-result="${CSS.escape(id)}"]`);
+        if (box) box.innerHTML = `<div class="status bad"><span class="icon">!</span><div><b>${esc(r.error ?? "It didn't save.")}</b>${/changed/.test(r.error ?? "") ? `<div class="row"><button class="btn ghost" data-code-reload="${esc(id)}">Reload it from the file</button></div>` : ""}</div></div>`;
+        return;
+      }
+      t.rev = r.rev ?? t.rev;
+      t.body = body;
+      delete drafts[id];
+    }
+    /** @param {string} id */
+    function reload(id) {
+      delete drafts[id];
+      if (mounted) {
+        const { week, el } = mounted;
+        mounted = null;
+        void mount(week, el);
+      }
+    }
+    /** Results and commits, from the studio's state. */
+    function update() {
+      if (!mounted || !snap) return;
+      for (const t of mounted.tasks) {
+        const box = mounted.el.querySelector(`[data-result="${CSS.escape(t.id)}"]`);
+        const r = snap.code?.[t.id];
+        if (!box || !r) continue;
+        const waiting = r.waiting?.length ? `<div class="sub">${esc(r.waiting.length === 1 ? "Some tests also need" : "Some tests also need these tasks")}: ${r.waiting.map((w) => `<code>${esc(w)}</code>`).join(", ")} (not done yet, so they don't count against this one).</div>` : "";
+        let html = "";
+        if (r.phase === "running") html = `<div class="status run"><i class="spin"></i><div><b>Saved. Running ${esc(t.tests.join(" "))}…</b></div></div>`;
+        else if (r.phase === "error") html = `<div class="status bad"><span class="icon">!</span><div><b>The tests couldn't run.</b><pre class="log">${esc(r.error)}</pre></div></div>`;
+        else if (r.phase === "failed")
+          html = `<div class="status bad"><span class="icon">!</span><div><b>${r.failed} test${r.failed === 1 ? "" : "s"} fail${r.failed === 1 ? "s" : ""} (${r.passed} pass).</b>${r.waiting?.length ? `<div class="sub">Tests that need unfinished tasks are left out, but one of these may still come from them.</div>` : ""}${(r.failures ?? []).map((f) => `<div class="failure"><div class="ftest">${esc(f.test)}${f.own ? ` <span class="muted">(this task)</span>` : ""}</div><pre class="log">${esc(f.message)}</pre></div>`).join("")}${waiting}</div></div>`;
+        else if (r.phase === "passed") {
+          const commit = `git commit -m "week ${mounted.week}: ${t.id}" -- ${t.file}`;
+          html = `<div class="status ok"><span class="icon">✓</span><div><b>Its tests pass (${r.passed}).</b>${waiting}</div></div>
+            ${r.committed ? `<div class="status ok"><span class="icon">✓</span><div><b>${esc(r.committed)}</b></div></div>` : `<div class="row"><button class="btn primary" data-code-commit="${esc(t.id)}">Commit it</button><code class="muted">${esc(commit)}</code></div><p class="muted">It commits the whole file, with anything else you changed in it.</p>`}`;
+        }
+        if (box.innerHTML !== html) box.innerHTML = html;
+      }
+    }
+    /** After each render: mount the tab when it's shown, refresh its results. */
+    function sync() {
+      const el = /** @type {HTMLElement | null} */ (document.querySelector("[data-codetab]"));
+      if (!el) {
+        mounted = null;
+        return;
+      }
+      const week = Number(el.dataset.codetab);
+      if (!mounted || mounted.el !== el || mounted.week !== week) void mount(week, el);
+      else update();
+    }
+    document.addEventListener("click", (e) => {
+      const el = /** @type {HTMLElement} */ (e.target).closest("[data-code-save],[data-code-commit],[data-code-copy],[data-code-reload],[data-code-paste],[data-code-hints]");
+      if (!(el instanceof HTMLElement) || !mounted) return;
+      if (el.dataset.codeSave) void save(el.dataset.codeSave);
+      else if (el.dataset.codePaste) {
+        const t = mounted.tasks.find((x) => x.id === el.dataset.codePaste);
+        const ed = t && mounted.editors[t.id];
+        if (t && ed) {
+          ed.value = t.hint;
+          drafts[t.id] = t.hint;
+          ed.focus();
+        }
+      } else if (el.dataset.codeHints !== undefined) {
+        hintsShown = !hintsShown;
+        try {
+          localStorage.setItem("netsim-hints", hintsShown ? "on" : "off");
+        } catch {
+          // not remembered: fine
+        }
+        for (const ed of Object.values(mounted.editors)) ed.showHint?.(hintsShown);
+        for (const b of mounted.el.querySelectorAll("[data-code-hints]")) b.textContent = hintsShown ? "Hide the hint" : "Show the hint";
+        for (const say of mounted.el.querySelectorAll("[data-hint-says]"))
+          say.innerHTML = hintsShown ? "Type over the grey code, or press <kbd>Tab</kbd> for its next word; any code that passes the tests is fine." : "The hint is hidden. <kbd>Tab</kbd> after a letter or a dot lists the names that fit.";
+      }
+      else if (el.dataset.codeCommit) void act({ type: "code-commit", week: mounted.week, id: el.dataset.codeCommit });
+      else if (el.dataset.codeReload) reload(el.dataset.codeReload);
+      else if (el.dataset.codeCopy) {
+        const t = mounted.tasks.find((x) => x.id === el.dataset.codeCopy);
+        if (t) void navigator.clipboard?.writeText(t.prompt).then(() => toast("Copied: paste it into Codex."), () => toast("Select the prompt and copy it."));
+      }
+    });
+    return { sync };
+  })();
+
   function weekView(g) {
     const nn = String(g.week).padStart(2, "0");
-    const tabs = [["page", g.page ? "Lesson page" : "Guide"], ...(g.note ? [["note", g.kind === "setup" ? "Your notes" : "Design note"]] : []), ["board", "Board"], ["checks", "Checks"]];
+    const tabs = [["page", g.page ? "Lesson page" : "Guide"], ...(g.kind !== "setup" ? [["code", "Code"]] : []), ...(g.note ? [["note", g.kind === "setup" ? "Your notes" : "Design note"]] : []), ["board", "Board"], ["checks", "Checks"]];
     const tab = tabs.some(([id]) => id === weekTab) ? weekTab : "page";
     const bar = `<div class="tabs" role="tablist">${tabs.map(([id, label]) => `<button role="tab" class="tab ${id === tab ? "on" : ""}" data-do="tab" data-tab="${id}" aria-selected="${id === tab}">${esc(label)}</button>`).join("")}</div>`;
     /** @type {string} */
@@ -3979,6 +4701,8 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     else if (tab === "note")
       body = `<p class="sub">Your ${g.kind === "setup" ? "notes" : "design note"}, <code>${esc(g.note ?? "")}</code>. Write it in VS Code (<code>code ${esc(g.note ?? "")}</code>); it shows here as you save.</p><iframe class="doc" title="Week ${g.week} note" src="/${esc(g.note ?? "")}"></iframe>`;
     else if (tab === "board") body = boardPanel();
+    // The tasks are drawn by codeTab (their editors outlive the page's re-renders).
+    else if (tab === "code") body = `<div class="codetab" data-codetab="${esc(g.week)}"><p class="why">Loading this week's tasks…</p></div>`;
     else body = checksPanel(g.week, g.kind === "setup" ? "npm run doctor" : `npx vitest run tests/week-${nn}`);
     return `<div class="weekhead"><p class="eyebrow">Week ${esc(g.week)}${g.kind ? ` · ${esc(g.kind)}` : ""}</p><h1 class="q">${esc(g.title)}</h1></div>${bar}<div class="tabbody">${body}</div>`;
   }
@@ -4097,6 +4821,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     detailHtml = wide ? html : "";
     paintLine();
     paintOutput();
+    codeTab.sync();
     const input = focused ? /** @type {HTMLInputElement | null} */ (document.querySelector(`input[name="${focused}"]`)) : null;
     if (input) {
       // Put the cursor back at the end (email fields have no setSelectionRange, so reset the value instead).
@@ -4748,6 +5473,9 @@ export async function newerStudio(newest, dir = dirname(STATE_FILE)) {
   const path = join(dir, `studio-v${version}.mjs`);
   mkdirSync(dir, { recursive: true });
   writeFileSync(path, text);
+  // Its code box comes with it (a course folder from an earlier week doesn't have one yet).
+  const editor = await fromCourse(newest, "studio/editor.js");
+  if (editor) writeFileSync(join(dir, "editor.js"), editor);
   return path;
 }
 

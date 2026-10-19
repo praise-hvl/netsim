@@ -1,0 +1,242 @@
+{
+  "board-cell-activity": {
+    "code": "const cells = new Map<number, CellActivity>();\nfor (const access of frame.accesses) {\n  for (let address = access.address; address < access.address + access.length && address < MEMORY_SIZE; address++) {\n    if (cells.get(address)?.kind === \"write\") continue;\n    cells.set(address, { kind: access.kind, core: access.core, by: access.by });\n  }\n}\nreturn cells;",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "One entry per memory cell (byte address) touched this tick, so a cell read twice still lights once."
+      },
+      {
+        "line": 1,
+        "explain": "Each access covers `length` bytes from `address`: walk every one of them, stopping at the end of memory."
+      },
+      {
+        "line": 3,
+        "explain": "A write wins: if this cell was already written this tick, a read of it doesn't change how it lights."
+      },
+      {
+        "line": 4,
+        "explain": "Remember what happened to the cell, and which core (and which part) did it, for its colour and its tooltip."
+      },
+      {
+        "line": 7,
+        "explain": "The map from address to what happened: what `MemoryLayer` lights."
+      }
+    ]
+  },
+  "board-packet-progress": {
+    "code": "const answer = packet.type === \"mem.data\" || packet.type === \"mem.ack\";\nconst start = answer ? 0.5 : 0.05;\nconst end = start + 0.4;\nvoid packets;\nif (progress < start || progress > end) return null;\nreturn (progress - start) / (end - start);",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Questions (`mem.read`, `mem.write`) go out first; answers (`mem.data`, `mem.ack`) come back in the second half of the tick, after memory has had them."
+      },
+      {
+        "line": 1,
+        "explain": "Each packet travels for 40% of the tick, starting at its own moment: questions at 5%, answers at 50%."
+      },
+      {
+        "line": 3,
+        "explain": "The other packets don't change this rule; they're there for a board that wants to stagger them."
+      },
+      {
+        "line": 4,
+        "explain": "Outside its moment the packet isn't on the wire (null). Inside, how far along it is, from 0 at the start to 1 at the end."
+      }
+    ]
+  },
+  "board-draw-memory": {
+    "code": "const activity = cellActivity(frame);\nreturn (\n  <g>\n    <Label x={MEMORY_AREA.x + MEMORY_AREA.w / 2} y={MEMORY_AREA.y - 3} size={12} weight={700}>\n      Memory · 1024 bytes\n    </Label>\n    <MemoryGrid\n      rect={MEMORY_AREA}\n      size={MEMORY_SIZE}\n      columns={MEMORY_COLUMNS}\n      colourOf={(address) => {\n        const cell = activity.get(address);\n        if (cell) return cell.core !== null ? coreColour(cell.core) : INK.yellow;\n        return frame.memory[address] !== 0 ? \"#8fb5a3\" : null;\n      }}\n      titleOf={(address) => {\n        const cell = activity.get(address);\n        return explainCell(address, frame.memory[address], { read: cell?.kind === \"read\", written: cell?.kind === \"write\", by: cell?.by });\n      }}\n    />\n  </g>\n);",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "What each cell did this tick, from `cellActivity`."
+      },
+      {
+        "line": 1,
+        "explain": "Draw a title over the memory area, then the grid: one small square per byte, in rows of `MEMORY_COLUMNS`."
+      },
+      {
+        "line": 10,
+        "explain": "A cell's colour: read or written this tick, the colour of the core that did it (yellow when no core did, like a program load); else a soft green if it holds something, or nothing."
+      },
+      {
+        "line": 15,
+        "explain": "Hovering a cell says its address, its value, and what happened to it this tick."
+      }
+    ]
+  },
+  "board-draw-bus": {
+    "code": "const rects = partRects(frame);\nconst word: Record<Packet[\"type\"], string> = { \"mem.read\": \"read\", \"mem.data\": \"data\", \"mem.write\": \"write\", \"mem.ack\": \"ok\", irq: \"irq\", input: \"press\", \"program.load\": \"load\" };\nconst peripherals = [...rects].filter(([id]) => id !== \"cpu\" && id !== \"memory\");\nreturn (\n  <g>\n    <Wire path={BUS_LINE} />\n    {[...rects.values()].map((rect, i) => (\n      <Wire key={i} path={[pinOf(rect), { x: pinOf(rect).x, y: BUS_LINE[0].y }]} />\n    ))}\n    {peripherals.map(([id, rect]) => (\n      <g key={id}>\n        <Box rect={rect} fill={id === \"you\" ? INK.white : INK.darkGreen} shadow={3} />\n        <Label x={rect.x + rect.w / 2} y={rect.y + rect.h + 3}>{frame.parts[id]?.label ?? \"You\"}</Label>\n        <Label x={rect.x + rect.w / 2} y={rect.y + rect.h / 2} fill={id === \"you\" ? INK.outline : INK.white} size={10}>\n          {frame.parts[id]?.state ?? \"⌨\"}\n        </Label>\n      </g>\n    ))}\n    {frame.packets.map((packet) => {\n      const t = packetProgress(packet, frame.packets, progress);\n      const from = rects.get(packet.from);\n      const to = rects.get(packet.to);\n      if (t === null || !from || !to) return null;\n      const colour = packet.core !== null ? coreColour(packet.core) : packet.type === \"irq\" ? INK.red : INK.lightGrey;\n      return <PacketOnWire key={packet.seq} path={wireBetween(from, to)} t={t} word={word[packet.type]} colour={colour} />;\n    })}\n  </g>\n);",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Where each part sits on the board, and the short word each kind of packet shows."
+      },
+      {
+        "line": 2,
+        "explain": "The parts to draw here: everything but the CPU and memory, which have their own areas."
+      },
+      {
+        "line": 3,
+        "explain": "Draw the bus, a wire from each part up to it, and each peripheral as a box with its name under it and its state inside (\"You\", the keyboard, is white)."
+      },
+      {
+        "line": 19,
+        "explain": "Then each packet of this tick, on the wire from its sender to its receiver, if it's travelling right now (`packetProgress`)."
+      },
+      {
+        "line": 23,
+        "explain": "A core's packets take its colour; interrupts are red; everything else is grey."
+      }
+    ]
+  },
+  "tick-barrier": {
+    "code": "return waitingFor.size === 0 && openRequests.size === 0;",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "The tick is over only when every clocked part has said `tick.done` AND every request sent this tick has had its reply. Otherwise a reply could land in the next tick."
+      }
+    ]
+  },
+  "client-request": {
+    "code": "return new Promise((resolve, reject) => {\n  const id = send(type, to, payload);\n  pending.set(id, { resolve, reject });\n});",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "`request()` gives back a Promise: the caller awaits it until the matching reply arrives."
+      },
+      {
+        "line": 1,
+        "explain": "Send the message; `send` gives it a fresh id (the ticket number)."
+      },
+      {
+        "line": 2,
+        "explain": "Park this request's resolve and reject under that id. When a reply with `replyTo` = id arrives, the client's message handler finds them here and settles the Promise."
+      }
+    ]
+  },
+  "handle-tick": {
+    "code": "tick = message.tick;\nfor (const handler of tickHandlers) handler(tick);\nsend(\"tick.done\", \"bus\", {});",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "The bus says a new tick has started: remember its number (every message this part sends is stamped with it)."
+      },
+      {
+        "line": 1,
+        "explain": "Let this part do its work for the tick (each handler registered with `onTick`)."
+      },
+      {
+        "line": 2,
+        "explain": "Tell the bus this part is done with the tick, so the bus can count it in the tick barrier."
+      }
+    ]
+  },
+  "handshake": {
+    "code": "return new Promise((resolve, reject) => {\n  const onMessage = (event: MessageEvent) => {\n    const parsed = parseMessage(String(event.data));\n    if (!parsed.ok) return;\n    const reply = parsed.message;\n    if (reply.type === \"welcome\") {\n      socket.removeEventListener(\"message\", onMessage);\n      resolve(reply);\n    } else if (reply.type === \"error\") {\n      socket.close();\n      reject(new Error(`bus refused ${options.id}: ${reply.payload.message}`));\n    }\n  };\n  socket.addEventListener(\"message\", onMessage);\n  socket.addEventListener(\"error\", () => reject(new Error(`could not reach the bus at ${socket.url}`)), { once: true });\n  socket.addEventListener(\"open\", () => {\n    const payload = { role: options.role, label: options.label, ...(options.kind && { kind: options.kind }) };\n    socket.send(JSON.stringify(envelope(\"hello\", options.id, \"bus\", payload, { id: `${options.id}-hello`, tick: 0 })));\n  }, { once: true });\n});",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "The handshake is a Promise: it resolves with the bus's `welcome`, or rejects with a clear error."
+      },
+      {
+        "line": 1,
+        "explain": "Every message from the bus arrives as text: parse it, and ignore anything that isn't a valid message."
+      },
+      {
+        "line": 5,
+        "explain": "`welcome` means we're in: stop listening here (the client's own handler takes over) and resolve."
+      },
+      {
+        "line": 8,
+        "explain": "`error` means the bus refused us (say, the id is taken): close the socket and reject, with the bus's reason."
+      },
+      {
+        "line": 13,
+        "explain": "Listen for replies, and fail clearly if the socket can't reach the bus at all."
+      },
+      {
+        "line": 15,
+        "explain": "Once the socket is open, say `hello`: who we are (id, role, label) as an envelope to the bus, at tick 0."
+      }
+    ]
+  },
+  "memory-handler": {
+    "code": "if (message.type === \"mem.read\") {\n  const { address, length } = message.payload;\n  const result = read(memory, address, length);\n  if (!result.ok) return void client.reply(message, \"fault\", { code: \"OUT_OF_RANGE\", message: result.fault });\n  lastRead = { address, length };\n  client.reply(message, \"mem.data\", { address, bytes: result.value });\n} else if (message.type === \"mem.write\" || message.type === \"program.load\") {\n  const { address, bytes } = message.payload;\n  const result = write(memory, address, bytes);\n  if (!result.ok) return void client.reply(message, \"fault\", { code: \"OUT_OF_RANGE\", message: result.fault });\n  memory = result.value;\n  lastWrite = { address, length: bytes.length };\n  client.reply(message, \"mem.ack\", { address, length: bytes.length });\n}",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "A read: look up the bytes in memory."
+      },
+      {
+        "line": 3,
+        "explain": "Outside memory: answer with a `fault`, so the asker always hears back."
+      },
+      {
+        "line": 4,
+        "explain": "Otherwise remember the read (the board shows it) and reply `mem.data` with the bytes."
+      },
+      {
+        "line": 6,
+        "explain": "A write (or a program being loaded): write the bytes into memory."
+      },
+      {
+        "line": 9,
+        "explain": "Outside memory: a `fault` again."
+      },
+      {
+        "line": 10,
+        "explain": "Otherwise keep the new memory, remember the write, and reply `mem.ack` so the writer knows it happened."
+      }
+    ]
+  },
+  "memory-read": {
+    "code": "const fault = checkRange(address, length);\nif (fault) return { ok: false, fault };\nreturn { ok: true, value: memory.bytes.slice(address, address + length) };",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Every byte asked for must be inside memory; if one isn't, say why with a fault."
+      },
+      {
+        "line": 2,
+        "explain": "Otherwise return a copy of those `length` bytes (a slice, so the caller can't change memory through it)."
+      }
+    ]
+  },
+  "memory-write": {
+    "code": "const fault = checkRange(address, bytes.length);\nif (fault) return { ok: false, fault };\nif (bytes.some((b) => !Number.isInteger(b) || b < 0 || b > 0xff)) return { ok: false, fault: \"every value must be a byte (0-255)\" };\nconst copy = memory.bytes.slice();\ncopy.splice(address, bytes.length, ...bytes);\nreturn { ok: true, value: { bytes: copy } };",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Every byte written must land inside memory."
+      },
+      {
+        "line": 2,
+        "explain": "And every value must fit in a byte: a whole number from 0 to 255."
+      },
+      {
+        "line": 3,
+        "explain": "Memory is never changed in place: copy it, put the bytes in the copy, and return the copy."
+      }
+    ]
+  },
+  "parse-message": {
+    "code": "let value: unknown;\ntry {\n  value = JSON.parse(raw);\n} catch {\n  return { ok: false, error: \"not valid JSON\" };\n}\nconst result = messageSchema.safeParse(value);\nif (!result.success) return { ok: false, error: z.prettifyError(result.error) };\nreturn { ok: true, message: result.data };",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "First, is it JSON at all? If not, say so instead of crashing."
+      },
+      {
+        "line": 6,
+        "explain": "Then check it against `messageSchema`: the right fields with the right types, for its message type. If not, return the schema's explanation."
+      },
+      {
+        "line": 8,
+        "explain": "Only now is it a `Message` the rest of NetSim can trust."
+      }
+    ]
+  }
+}
