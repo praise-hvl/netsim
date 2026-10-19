@@ -21,5 +21,8 @@ export default defineConfig({
     include: [...weeks.map((w) => `tests/week-${w}/**/*.test.ts`), "tests/studio/**/*.test.ts", "tests/tools/**/*.test.ts", ...(stretch === true ? ["tests/stretch/**/*.test.ts"] : [])],
     environment: "node",
     testTimeout: 10_000,
+    // A GitHub token in the terminal that runs the tests makes gh (and the studio) act as its
+    // account; the tests use their own fake gh accounts, so it's cleared here (empty = not set).
+    env: { GH_TOKEN: "", GITHUB_TOKEN: "" },
   },
 });

@@ -83,7 +83,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 5;
+export const STUDIO_VERSION = 6;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -203,6 +203,7 @@ const CODEX_FLAGS = ["-c", "check_for_update_on_startup=false"];
  *   color: boolean,
  *   style: Style,
  *   capture: (argv: string[], cwd?: string) => RunResult | null,
+ *   env?: Record<string, string | undefined>,
  *   execute: (argv: string[], cwd?: string) => number,
  *   stream?: (argv: string[], cwd: string | undefined, onData: (text: string) => void) => Running,
  *   openUrl?: (url: string) => void,
@@ -534,13 +535,45 @@ export function ghAccounts(ctx) {
 }
 
 /**
- * The account gh (and so git) uses now. It reads gh's own settings, without going to GitHub, so
- * the studio can show it at any time.
+ * The token this terminal gives gh, by name: GH_TOKEN, else GITHUB_TOKEN (gh uses it instead of the
+ * accounts it's signed in to), or null. Never its value.
+ * @param {Context} ctx
+ * @returns {"GH_TOKEN" | "GITHUB_TOKEN" | null}
+ */
+export function ghTokenVar(ctx) {
+  const env = ctx.env ?? process.env;
+  return env.GH_TOKEN ? "GH_TOKEN" : env.GITHUB_TOKEN ? "GITHUB_TOKEN" : null;
+}
+
+/** Whose each token is, asked of GitHub once per token (kept only in memory). @type {Map<string, string | null>} */
+const tokenLogins = new Map();
+
+/**
+ * The account gh (and so git) uses now. With a token in this terminal, that's the token's account
+ * (asked of GitHub once); otherwise gh's own setting, read without going to GitHub, so the studio
+ * can show it at any time.
  * @param {Context} ctx
  */
 export function ghActiveAccount(ctx) {
+  const name = ghTokenVar(ctx);
+  if (name) {
+    const token = /** @type {string} */ ((ctx.env ?? process.env)[name]);
+    if (!tokenLogins.has(token)) tokenLogins.set(token, ghLogin(ctx));
+    const login = tokenLogins.get(token);
+    return isGithubUsername(login) ? login : null;
+  }
   const user = output(ctx, ["gh", "config", "get", "-h", "github.com", "user"]);
   return isGithubUsername(user) ? user : null;
+}
+
+/**
+ * git, as the studio runs it for GitHub (fetch, push): with a token in this terminal, gh is git's
+ * only credential helper, so git acts as the token's account too (not whatever the keychain holds).
+ * @param {Context} ctx
+ * @param {string[]} args
+ */
+export function gitArgv(ctx, args) {
+  return ghTokenVar(ctx) ? ["git", "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential", ...args] : ["git", ...args];
 }
 
 /**
@@ -822,16 +855,19 @@ export function courseSteps() {
       example: "You're signed in to GitHub as your-github-name.",
       check: async (ctx) => {
         const login = ghLogin(ctx);
-        if (!login) return { done: false, found: "You're not signed in to GitHub yet." };
-        if (ctx.state.login === login) return { done: true, found: `You're signed in to GitHub as ${login}.` };
+        const token = ghTokenVar(ctx);
+        if (!login) return { done: false, found: token ? `This terminal's ${token} doesn't sign in to GitHub (an old or wrong token?).` : "You're not signed in to GitHub yet." };
+        // A token in this terminal decides the account: gh auth switch wouldn't change it.
+        const as = token ? `This terminal uses ${login} (${token}).` : `You're signed in to GitHub as ${login}.`;
+        if (ctx.state.login === login) return { done: true, found: as };
         ctx.state.seenLogin = login;
-        return { done: false, found: `Signed in to GitHub as ${login}.`, ask: `Is ${login} the GitHub account you'll use for this course?` };
+        return { done: false, found: token ? as : `Signed in to GitHub as ${login}.`, ask: `Is ${login} the GitHub account you'll use for this course?` };
       },
       confirm: (ctx, yes) => {
         if (yes && ctx.state.seenLogin) ctx.state.login = ctx.state.seenLogin;
       },
       // Signed in: this is where the student changes which account the course uses.
-      accountChange: (ctx) => ghActiveAccount(ctx) !== null,
+      accountChange: (ctx) => !ghTokenVar(ctx) && ghActiveAccount(ctx) !== null,
       // A dry run still asks the account question, about a pretend login.
       pretend: (ctx) => {
         ctx.state.seenLogin = ctx.state.login ?? "your-github-name";
@@ -845,7 +881,10 @@ export function courseSteps() {
           openUrl: true,
         }),
       ],
-      hint: () => "If you have two GitHub accounts, sign in with the one for this course. Signed in to both? \"Use a different account\" in this step picks the other one.",
+      hint: (ctx) =>
+        ghTokenVar(ctx)
+          ? `This terminal's ${ghTokenVar(ctx)} picks the account. For another one, run npm start in a terminal with that account's token, or without ${ghTokenVar(ctx)}.`
+          : "If you have two GitHub accounts, sign in with the one for this course. Signed in to both? \"Use a different account\" in this step picks the other one.",
     },
     {
       id: "git-helper",
@@ -990,7 +1029,7 @@ export function courseSteps() {
           // Safe to run every time: it only makes sure every released week (week-N tag) is fetched.
           { kind: "auto", command: { display: `git config --replace-all remote.upstream.fetch "${UPSTREAM_WEEKS}"`, argv: ["git", "config", "--replace-all", "remote.upstream.fetch", UPSTREAM_WEEKS], cwd: dir, what: "Makes upstream bring down every released week (week-1, week-2, …)." } },
           { kind: "auto", command: { display: "git config remote.upstream.tagOpt --no-tags", argv: ["git", "config", "remote.upstream.tagOpt", "--no-tags"], cwd: dir, what: "Keeps the course's week tags under upstream/, not mixed in with yours." } },
-          { kind: "auto", command: { display: "git fetch upstream", argv: ["git", "fetch", "upstream"], cwd: dir, what: "Gets the course's weeks from GitHub." } },
+          { kind: "auto", command: { display: "git fetch upstream", argv: gitArgv(ctx, ["fetch", "upstream"]), cwd: dir, what: "Gets the course's weeks from GitHub." } },
         ];
         if (right) return automatic;
         const verb = url ? "set-url" : "add";
@@ -1047,12 +1086,12 @@ export function courseSteps() {
         const tracking = output(ctx, ["git", "rev-parse", "--abbrev-ref", "work@{upstream}"], repoDir(ctx));
         if (tracking !== "origin/work") return { done: false, found: "Your work branch isn't on GitHub yet." };
         // Ask GitHub too (when it answers): after an account switch, the new copy may not have it yet.
-        const remote = ctx.capture(["git", "ls-remote", "--heads", "origin", "work"], repoDir(ctx));
+        const remote = ctx.capture(gitArgv(ctx, ["ls-remote", "--heads", "origin", "work"]), repoDir(ctx));
         if (remote?.code === 0 && !remote.stdout.includes("refs/heads/work")) return { done: false, found: `Your work branch isn't on ${ctx.state.login ?? "your"}'s copy on GitHub yet.` };
         return { done: true, found: "Your work branch is on GitHub, linked to origin/work." };
       },
       plan: (ctx) => [
-        cmd("git push -u origin work", ["git", "push", "-u", "origin", "work"], {
+        cmd("git push -u origin work", gitArgv(ctx, ["push", "-u", "origin", "work"]), {
           cwd: repoDir(ctx),
           what: "Sends your work branch to your fork, and remembers the link, so later a plain git push is enough.",
           words: [["push", "send commits to GitHub"], ["-u", "from now on, work goes to origin/work, so later a plain git push is enough"], ["origin", "your fork on GitHub"], ["work", "the branch to send"]],
@@ -1401,7 +1440,7 @@ export function weekSteps(week, { onWork = true } = {}) {
         if (latest && latest !== local) return { done: false, found: `The course updated week ${week} since you last fetched it.` };
         return { done: true, found: `Week ${week}'s files are on this laptop (${ref}).` };
       },
-      plan: (ctx) => [cmd("git fetch upstream", ["git", "fetch", "upstream"], { cwd: repoDir(ctx), what: "Downloads the course's new branches, including this week's.", words: [["fetch", "download what's new, without changing your files"], ["upstream", "the course's repository"]] })],
+      plan: (ctx) => [cmd("git fetch upstream", gitArgv(ctx, ["fetch", "upstream"]), { cwd: repoDir(ctx), what: "Downloads the course's new branches, including this week's.", words: [["fetch", "download what's new, without changing your files"], ["upstream", "the course's repository"]] })],
       hint: () => `If it worked but week ${week} still isn't here, it isn't published yet: check back before class.`,
     },
     {
@@ -1460,16 +1499,18 @@ export function weekSteps(week, { onWork = true } = {}) {
       plan: (ctx) => {
         const owner = cloneOwner(ctx);
         // Signed in as someone else, and gh knows the copy's owner: switch to it first.
-        const back = owner && ownerMismatch(ctx, ghActiveAccount(ctx)) && ghAccounts(ctx).some((a) => a.login.toLowerCase() === owner.toLowerCase()) ? owner : null;
+        const back = owner && !ghTokenVar(ctx) && ownerMismatch(ctx, ghActiveAccount(ctx)) && ghAccounts(ctx).some((a) => a.login.toLowerCase() === owner.toLowerCase()) ? owner : null;
         return [
           ...(back && isGithubUsername(back) ? [{ kind: /** @type {const} */ ("command"), command: { ...switchAccountCommand(back), label: `First: use ${back}, the account your copy belongs to` } }] : []),
-          cmd("git push", ["git", "push"], { cwd: repoDir(ctx), what: "Sends your work branch to your fork on GitHub.", words: [["push", "send commits to GitHub"]] }),
+          cmd("git push", gitArgv(ctx, ["push"]), { cwd: repoDir(ctx), what: "Sends your work branch to your fork on GitHub.", words: [["push", "send commits to GitHub"]] }),
         ];
       },
       // Only here, and only when it's the wrong account, does "Get week N" offer a different one.
-      accountChange: (ctx) => Boolean(ownerMismatch(ctx, ghActiveAccount(ctx))),
+      accountChange: (ctx) => !ghTokenVar(ctx) && Boolean(ownerMismatch(ctx, ghActiveAccount(ctx))),
       hint: (ctx) =>
-        ownerMismatch(ctx, ghActiveAccount(ctx))
+        ghTokenVar(ctx) && ownerMismatch(ctx, ghActiveAccount(ctx))
+          ? `${ownerMismatch(ctx, ghActiveAccount(ctx))} This terminal's ${ghTokenVar(ctx)} picks the account: run npm start in a terminal with ${cloneOwner(ctx)}'s token (export ${ghTokenVar(ctx)}=$(gh auth token --user ${cloneOwner(ctx)})), or without ${ghTokenVar(ctx)}.`
+          : ownerMismatch(ctx, ghActiveAccount(ctx))
           ? `Use the account your copy belongs to ("Use a different account" in this step). ${ownerMismatch(ctx, ghActiveAccount(ctx))}`
           : "If GitHub refused, go back to steps 5 and 6 (signing in to GitHub) in the setup steps above.",
     },
@@ -5303,7 +5344,7 @@ export function chooseFlow(ctx, { forceSetup = false, withSetup = false, weekLis
   // Comparing the weeks needs their commits: fetch the week tags if one isn't here yet (it only
   // moves upstream/week-N, never the student's work).
   const missing = (/** @type {number} */ n) => ctx.capture(["git", "cat-file", "-e", `${tips.get(n)}^{commit}`], dir)?.code !== 0;
-  if (waiting.length > 1 && !ctx.dryRun && waiting.some(missing)) ctx.capture(["git", "fetch", "-q", "upstream"], dir);
+  if (waiting.length > 1 && !ctx.dryRun && waiting.some(missing)) ctx.capture(gitArgv(ctx, ["fetch", "-q", "upstream"]), dir);
   for (const n of waiting.slice(1)) {
     const before = waiting.filter((m) => m < n);
     const holds = before.every((m) => hadBefore(m) && ctx.capture(["git", "merge-base", "--is-ancestor", /** @type {string} */ (tips.get(m)), /** @type {string} */ (tips.get(n))], dir)?.code === 0);
