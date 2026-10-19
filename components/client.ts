@@ -200,8 +200,25 @@ export async function connect(options: ClientOptions): Promise<BusClient> {
 /** Open the socket, send `hello`, and wait for the bus to answer with `welcome`. */
 function handshake(socket: BusSocket, options: ClientOptions): Promise<MessageOf<"welcome">> {
   // @student week=3 part=class id=handshake "Wait for the socket to open, send hello, resolve on welcome, reject on error"
-  // TODO(week 3, handshake): Wait for the socket to open, send hello, resolve on welcome, reject on error
-  // Tests: tests/week-03/   Guide: docs/weeks/week-03.md
-  return todo("week 3: handshake", socket, options);
+  return new Promise((resolve, reject) => {
+    const onMessage = (event: MessageEvent) => {
+      const parsed = parseMessage(String(event.data));
+      if (!parsed.ok) return;
+      const reply = parsed.message;
+      if (reply.type === "welcome") {
+        socket.removeEventListener("message", onMessage);
+        resolve(reply);
+      } else if (reply.type === "error") {
+        socket.close();
+        reject(new Error(`bus refused ${options.id}: ${reply.payload.message}`));
+      }
+    };
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("error", () => reject(new Error(`could not reach the bus at ${socket.url}`)), { once: true });
+    socket.addEventListener("open", () => {
+      const payload = { role: options.role, label: options.label, ...(options.kind && { kind: options.kind }) };
+      socket.send(JSON.stringify(envelope("hello", options.id, "bus", payload, { id: `${options.id}-hello`, tick: 0 })));
+    }, { once: true });
+    });
   // @end
 }
