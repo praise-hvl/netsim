@@ -94,7 +94,7 @@ export const STUDIO_VERSION = 3;
 export const COURSE_WEEKS = [
   { week: 1, title: "Setup & system roles", kind: "setup", guide: "docs/weeks/week-01.md", page: "docs/weeks/week-01.html", note: "docs/notes/week-01.md", board: false },
   { week: 2, title: "Design: the machine and its bus", kind: "design", guide: "docs/weeks/week-02.md", page: "docs/weeks/week-02.html", note: "docs/notes/week-02.md", board: false },
-  { week: 3, title: "Build: bus + memory on screen", kind: "build", guide: "docs/weeks/week-03.md", page: null, note: null, board: true },
+  { week: 3, title: "Build: bus + memory on screen", kind: "build", guide: "docs/weeks/week-03.md", page: "docs/weeks/week-03.html", note: null, board: true },
   { week: 4, title: "Design: the CPU", kind: "design", guide: "docs/weeks/week-04.md", page: null, note: "docs/notes/week-04.md", board: false },
   { week: 5, title: "Build: a CPU that runs programs", kind: "build", guide: "docs/weeks/week-05.md", page: null, note: null, board: true },
   { week: 6, title: "Design: scheduling + interrupts", kind: "design", guide: "docs/weeks/week-06.md", page: null, note: "docs/notes/week-06.md", board: false },

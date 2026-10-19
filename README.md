@@ -148,9 +148,13 @@ merges the new week into it; you never switch branches.
 `docs/weeks/week-NN.html` (or `.md`) in your folder:
 
 ```bash
-git fetch upstream && git merge upstream/week-N   # N = this week's number
+git fetch upstream && git merge upstream/week-N   # N = this week's number; upstream/week-N is its release
 git push && npm install
 ```
+
+(If `git merge` says `upstream/week-N` doesn't exist, your folder wasn't set up by the studio: run
+`git config --replace-all remote.upstream.fetch "+refs/tags/week-*:refs/remotes/upstream/week-*"`
+once, then the two lines again.)
 
 ## License
 

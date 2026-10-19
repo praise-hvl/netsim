@@ -8,8 +8,8 @@ export const PRIVATE_FILES = ["scripts/make-week-branches.ts", "programs/bundle.
 /** The only workflows the public repo has: the student's Pages deploy and the course's own check. */
 export const PUBLIC_WORKFLOWS = [".github/workflows/pages.yml", ".github/workflows/course.yml"] as const;
 
-/** A week's own files: its guide and lesson page, its note template, its tests. */
-const WEEK_FILE = /^(?:docs\/weeks\/week-|docs\/notes\/week-|tests\/week-)(\d\d)(?:[./-]|$)/;
+/** A week's own files: its guide and lesson page, its note template, its tests, its in-class exercise records. */
+const WEEK_FILE = /^(?:docs\/weeks\/week-|docs\/notes\/week-|tests\/week-|docs\/weeks\/in-class\/week-)(\d\d)(?:[./-]|$)/;
 /** A design week's board sketch is an example answer: never public. */
 const SKETCH = /^docs\/notes\/week-\d\d-board\.(?:png|jpe?g)$/;
 
@@ -38,7 +38,7 @@ export function unreleasedPatterns(released: number, last = 8): string[] {
   const out: string[] = [];
   for (let week = released + 1; week <= last; week++) {
     const nn = String(week).padStart(2, "0");
-    out.push(`/docs/weeks/week-${nn}.*`, `/docs/notes/week-${nn}.*`, `/docs/notes/week-${nn}-*`, `/tests/week-${nn}/`);
+    out.push(`/docs/weeks/week-${nn}.*`, `/docs/notes/week-${nn}.*`, `/docs/notes/week-${nn}-*`, `/tests/week-${nn}/`, `/docs/weeks/in-class/week-${nn}/`);
   }
   return out;
 }

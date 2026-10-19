@@ -24,7 +24,7 @@
       "title": "Build: bus + memory on screen",
       "kind": "build",
       "guide": "docs/weeks/week-03.md",
-      "page": null,
+      "page": "docs/weeks/week-03.html",
       "note": null,
       "board": true
     },

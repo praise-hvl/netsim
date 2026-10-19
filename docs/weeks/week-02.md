@@ -56,14 +56,15 @@ goes there. If it isn't there, copy the template to that path.
 
    ✅ The app shows Week 2's Lesson page and your Design note.
 
-2. **Act it out in the chat (5 min).** Four of you get roles and rename yourselves when I ask
-   (Participants → your name → More → Rename): `CPU-1`, `CPU-2`, `MEMORY` and `BUTTON`. I'm the
-   **bus** and the **clock**. I send `MEMORY` four numbers privately: the bytes at addresses 0
-   to 3. Everyone else watches the chat and notes what goes wrong. The rules:
-   - Nobody acts between ticks: you only type after I post `— tick 3 —` in the chat.
-   - Nobody talks to anyone but the bus. Send every message **to me, privately** (in the chat, pick
-     my name instead of "Everyone"), and I deliver it.
-   - When you've done your part for the tick, send me `done`. The next tick starts only when
+2. **Act it out (5 min): open the in-class link.** During class, open
+   **[netsim.praisedaramola.com](https://netsim.praisedaramola.com/)** and type your name. Four of
+   you get roles there: `CPU-1`, `CPU-2`, `MEMORY` and `BUTTON`. I'm the **bus** and the **clock**.
+   `MEMORY` sees four numbers that nobody else does: the bytes at addresses 0 to 3. Everyone else
+   watches the timeline and posts a note when something goes wrong. The rules:
+   - Nobody acts between ticks: you only send once the page says `Tick 3`.
+   - Nobody talks to anyone but the bus. Every message goes **to the bus**, and I deliver it (or
+     drop it). It reaches the other part only when I do.
+   - When you've done your part for the tick, press **Done**. The next tick starts only when
      everyone has.
 
    **Ticket numbers:** every message gets an `id`, and every reply says which `id` it answers, so
@@ -77,11 +78,13 @@ goes there. If it isn't there, copy the template to that path.
    BUTTON → bus:  id=b-1 to=cpu-1 irq
    ```
 
-   (Number your own ids: `c1-1`, `c1-2`, …) Someone will ask for address 9; `MEMORY` only has 0
-   to 3. And `BUTTON` will press in the middle of a tick: `CPU-1`, when do you react?
+   (The page numbers your ids for you: `c1-1`, `c1-2`, …) Someone will ask for address 9; `MEMORY`
+   only has 0 to 3. And `BUTTON` will press in the middle of a tick: `CPU-1`, when do you react?
 
-   Then answer in the chat: who owns time? What does the bus know about CPUs? What should happen
-   at address 9?
+   Then answer in the Zoom chat: who owns time? What does the bus know about CPUs? What should
+   happen at address 9?
+
+   After class, the record is on the in-class page (below).
 
 3. **Parts and their jobs (8 min).** Fill in sections 1 and 2 of your note for the bus, the
    clock, memory, and "a component that asks memory for something" (it'll be the CPU later). For
@@ -106,6 +109,14 @@ goes there. If it isn't there, copy the template to that path.
 
 7. **Wrap up (3 min).** What's left goes home. Next week you'll hand section 9 of this note to
    your agent, so it builds *your* design.
+
+## In-class exercise
+
+- **During class:** [netsim.praisedaramola.com](https://netsim.praisedaramola.com/). Open it when I
+  say, type your name, and keep the tab open for the activity.
+- **After class:** the link goes offline. What happened (who played what, every message tick by
+  tick, what the bus delivered or dropped, and the class's notes) is on the
+  [in-class page](in-class/week-02/index.html), in your course folder and in the app.
 
 ## Take-home
 

@@ -69,10 +69,10 @@ export function pickNext(scheduler: Scheduler): Process | undefined {
 
 /** Has this core's program had its turn, and is it safe and useful to switch now? */
 export function shouldPreempt(scheduler: Scheduler, core: Core): boolean {
-  // @student week=7 part=home id=should-preempt "True when the quantum is used up, the core is between instructions (FETCH), not in a handler, and someone is waiting"
-  // TODO(week 7, should-preempt): True when the quantum is used up, the core is between instructions (FETCH), not in a handler, and someone is waiting
-  // Tests: tests/week-07/   Guide: docs/weeks/week-07.md
-  // Until week 7 nobody is preempted: a program keeps its core until it halts.
+  // @student week=6 part=class id=should-preempt "True when the quantum is used up, the core is between instructions (FETCH), not in a handler, and someone is waiting"
+  // TODO(week 6, should-preempt): True when the quantum is used up, the core is between instructions (FETCH), not in a handler, and someone is waiting
+  // Tests: tests/week-06/   Guide: docs/weeks/week-06.md
+  // Until week 6 nobody is preempted: a program keeps its core until it halts.
   return false;
   // @end
 }

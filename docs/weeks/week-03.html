@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="glossary" content="WebSocket, schema, Promise, replyTo, payload, fault, mem.ack, tick barrier, tick.done">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetSim Week 3 · Build: bus + memory on screen</title>
+<style>
+:root{--bg:#fff;--ink:#16201b;--muted:#56615b;--line:#dfe5e1;--soft:#f3f7f4;--green:#173627;--mint:#5fc79a;--mint-ink:#1f7a55;--red:#d8142a;--yellow:#ffcb12;--code-bg:#f3f5f4;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1512;--ink:#e8efeb;--muted:#9aa8a0;--line:#26312b;--soft:#151d18;--mint-ink:#6fd3a7;--red:#ff5a67;--code-bg:#151d18;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:18px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,"Helvetica Neue",Arial,sans-serif}
+.wrap{max-width:940px;margin:0 auto;padding-inline:20px}
+h1,h2,h3{line-height:1.15;margin:0;text-wrap:balance}
+h2{font-size:clamp(26px,4vw,34px);font-weight:800}
+h3{font-size:21px;font-weight:700;margin-top:6px}
+p{margin:0}
+a{color:var(--mint-ink);text-underline-offset:3px}
+code,pre,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+code{background:var(--code-bg);padding:1px 6px;border-radius:4px;font-size:.88em}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:0;font-size:.86em;line-height:1.55}
+pre code{background:none;padding:0}
+.hero{background:var(--green);color:#fff;padding-block:52px 44px}
+.hero .wrap{display:grid;gap:12px}
+.tag{font:700 13px/1 ui-monospace,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:#a8e3c8}
+.hero h1{font-size:clamp(36px,6.5vw,60px);font-weight:800;letter-spacing:-.02em}
+.hero p{font-size:19px;color:#d7e6de;max-width:66ch}
+main{display:grid;gap:52px;padding-block:40px 72px}
+section{display:grid;gap:16px}
+.lede{font-size:19px;color:var(--muted);max-width:66ch}
+ul,ol{margin:0;padding-left:24px;display:grid;gap:6px}
+li,section,main>*{min-width:0}
+.steps>li{padding-left:4px}
+.steps>li+li{border-top:1px solid color-mix(in srgb,var(--muted) 45%,transparent);padding-top:18px;margin-top:8px}
+.steps>li>ul{margin-top:6px}
+.check{background:var(--soft);border-left:4px solid var(--mint);padding:10px 14px;border-radius:0 6px 6px 0}
+.note{background:var(--soft);border-left:4px solid var(--yellow);padding:10px 14px;border-radius:0 6px 6px 0}
+.warn{background:var(--soft);border-left:4px solid var(--red);padding:10px 14px;border-radius:0 6px 6px 0}
+.diagram{margin:0;max-width:100%;min-width:0;overflow-x:auto;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fff}
+.diagram svg{display:block;width:100%;height:auto}
+.diagram text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Arial,sans-serif}
+.diagram text.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.caption{font-size:15px;color:var(--muted)}
+.table-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:16px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.cards>div{border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;gap:8px;align-content:start}
+.minutes{font:700 13px/1 ui-monospace,Menlo,monospace;color:var(--mint-ink)}
+details{border:1px solid var(--line);border-radius:8px;padding:10px 14px}
+details+details{margin-top:8px}
+summary{cursor:pointer;font-weight:700}
+details[open] summary{margin-bottom:8px}
+.box{display:inline-block;width:18px;height:18px;border:2px solid var(--mint);border-radius:4px;vertical-align:-3px;margin-right:8px}
+ul.checklist{list-style:none;padding-left:0}
+.toc{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:15px}
+@media (max-width:640px){body{font-size:17px}.hero{padding-block:36px 30px}main{gap:40px}}
+@media print{
+  :root{--bg:#fff;--ink:#000;--muted:#333;--line:#bbb;--soft:#f4f4f4}
+  .hero{background:#fff;color:#000;border-bottom:3px solid #000;padding-block:10px}
+  .hero p,.tag{color:#000}
+  .diagram{overflow:visible;break-inside:avoid}
+  .diagram svg{min-width:0!important}
+  section{break-inside:auto}
+  h2,h3{break-after:avoid}
+  a{color:#000}
+}
+</style>
+<style data-glossary>
+.term{border-bottom:1.5px dotted currentColor;cursor:help;position:relative;outline-offset:2px}
+.term:focus-visible{outline:2px solid #1f7a55;border-radius:2px}
+.term>.tip{position:absolute;left:0;top:calc(100% + 6px);z-index:30;width:max-content;max-width:min(300px,calc(100vw - 32px));padding:8px 11px;border-radius:8px;background:#16201b;color:#f3f7f4;font:400 15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif;letter-spacing:0;text-transform:none;white-space:normal;text-align:left;box-shadow:0 4px 14px rgba(0,0,0,.22);display:none;pointer-events:none}
+.term:hover>.tip,.term:focus>.tip,.term.open>.tip{display:block}
+@media (prefers-color-scheme:dark){.term>.tip{background:#e8efeb;color:#0f1512}.term:focus-visible{outline-color:#6fd3a7}}
+</style>
+</head>
+<body>
+<header class="hero"><div class="wrap">
+<div class="tag">Week 3 · Build</div>
+<h1>Bus + memory on screen</h1>
+<p>Last week you designed the bus and memory. Today you build them, and your board starts: memory cells that light up as requests cross the bus.</p>
+</div></header>
+<main class="wrap">
+
+<section>
+<p class="lede">Today: the handshake every part uses to join the bus, the bus's rule for ending a tick, and asking memory a question and getting <i>your</i> answer back. Then the first piece of your board.</p>
+<figure class="diagram"><svg viewBox="0 0 900 305" role="img" aria-label="Today&#x27;s build: a component, the bus and memory, and the four tasks of the class" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16201b"/></marker></defs><text x="20" y="30" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">Today you build the three parts that carry one memory request, then start the board.</text><rect x="45" y="64" width="220" height="92" rx="10" fill="#5fc79a"/><rect x="40" y="60" width="220" height="92" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="150.0" y="105.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">Component</text><text x="150.0" y="122.0" font-size="13" text-anchor="middle" fill="#16201b">components/client.ts</text><rect x="345" y="64" width="220" height="92" rx="10" fill="#5fc79a"/><rect x="340" y="60" width="220" height="92" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="450.0" y="105.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">Bus</text><text x="450.0" y="122.0" font-size="13" text-anchor="middle" fill="#16201b">bus/server.ts</text><rect x="645" y="64" width="220" height="92" rx="10" fill="#d3dbdc"/><rect x="640" y="60" width="220" height="92" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="750.0" y="105.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">Memory</text><text x="750.0" y="122.0" font-size="13" text-anchor="middle" fill="#16201b">core/memory.ts · take-home</text><line x1="262" y1="92" x2="336" y2="92" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="299" y="84" font-size="12" font-weight="600" text-anchor="middle" fill="#16201b">hello</text><line x1="336" y1="124" x2="262" y2="124" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="299" y="144" font-size="12" font-weight="600" text-anchor="middle" fill="#16201b">welcome</text><line x1="562" y1="92" x2="636" y2="92" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="599" y="84" font-size="12" font-weight="600" text-anchor="middle" fill="#16201b" class="mono">mem.read</text><line x1="636" y1="124" x2="562" y2="124" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="599" y="144" font-size="12" font-weight="600" text-anchor="middle" fill="#16201b" class="mono">mem.data</text><rect x="40" y="196" width="190" height="62" rx="8" fill="#fff" stroke="#16201b" stroke-width="2"/><text x="135" y="222" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">1 · handshake()</text><text x="135" y="244" font-size="12" font-weight="400" text-anchor="middle" fill="#585654">class, together</text><rect x="240" y="196" width="190" height="62" rx="8" fill="#fff" stroke="#16201b" stroke-width="2"/><text x="335" y="222" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">2 · tick barrier</text><text x="335" y="244" font-size="12" font-weight="400" text-anchor="middle" fill="#585654">class</text><rect x="440" y="196" width="190" height="62" rx="8" fill="#fff" stroke="#16201b" stroke-width="2"/><text x="535" y="222" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">3 · request()</text><text x="535" y="244" font-size="12" font-weight="400" text-anchor="middle" fill="#585654">class, together</text><rect x="640" y="196" width="190" height="62" rx="8" fill="#fff" stroke="#16201b" stroke-width="2"/><text x="735" y="222" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">4 · the board</text><text x="735" y="244" font-size="12" font-weight="400" text-anchor="middle" fill="#585654">class, with Codex</text><text x="20" y="290" font-size="13" font-weight="400" text-anchor="start" fill="#585654">Take-home: answer the clock (handleTick), memory (read, write, answer), validate messages (parseMessage), the rest of the board.</text></svg></figure>
+<p class="caption">The four class tasks, in order. Your design note from week 2 is the plan.</p>
+</section>
+
+<section id="goals">
+<h2>Goals</h2>
+<ul>
+<li><b>Hardware idea:</b> a memory access is a <b>request</b> and a <b>reply</b> across a shared <b>bus</b>, in step with the <b>clock</b>. Memory is byte-addressable (<code>0x000</code>–<code>0x3FF</code>), and an address outside it is a <span class="term" tabindex="0" aria-describedby="tip-1">fault<span class="tip" role="tooltip" id="tip-1">A reply that says a request failed and why, for example OUT_OF_RANGE for an address memory doesn't have. It replaces the normal reply, so the asker always hears back.</span></span>. The clock only moves on when every request of the tick has its reply.</li>
+<li><b>Software idea:</b> two programs talking over a <span class="term" tabindex="0" aria-describedby="tip-2">WebSocket<span class="tip" role="tooltip" id="tip-2">A connection between two programs that stays open, so either side can send a message at any time. Every NetSim part keeps one open to the bus.</span></span> with JSON messages; a <b>handshake</b> (<code>hello</code> → <code>welcome</code>); <b>validating at the boundary</b> with a <span class="term" tabindex="0" aria-describedby="tip-3">schema<span class="tip" role="tooltip" id="tip-3">A description of what a valid message looks like: which fields, of which types. NetSim's is messageSchema, written with the zod library; it checks every message that arrives.</span></span>; <b>request/response correlation</b> (<code>id</code> and <span class="term" tabindex="0" aria-describedby="tip-4"><code>replyTo</code><span class="tip" role="tooltip" id="tip-4">On a reply, the id of the request it answers. It's how a requester matches each reply to its request, like a ticket number.</span></span>); a pure function (memory) behind a thin shell.</li>
+<li><b>On the board:</b> the memory grid with cells lighting up on a read and a write, and packets travelling the bus wires: questions first, then answers. Your design from week 2, running.</li>
+</ul>
+</section>
+
+<section id="class">
+<h2>In class (1 hour, on Zoom)</h2>
+<p class="note">Class is on Zoom, camera on, and you work <b>on your own</b> in your own repo. When a step says "together", I share my editor and code it live while you type along. At each checkpoint I ask two or three of you to share your screen. <b>Stuck?</b> Raise your Zoom hand or send me a private message with the first line of the failing test.</p>
+<p>You'll work in <code>components/client.ts</code> and <code>bus/server.ts</code>, then on the board in <code>board/student/memory-bus.tsx</code>. Commit each time a task's checks go green (see <a href="#rhythm">the commit rhythm</a>).</p>
+<ol class="steps">
+<li><p><b>Open the app and watch the tests fail (5 min).</b> In your course folder, run <code>npm start</code>. The app gets week 3 ready (saves your work, brings the week in, installs, checks), then shows this page, your design note, the board and the week's checks. If the app won't start, the same by hand:</p>
+<pre><code>git fetch upstream &amp;&amp; git merge upstream/week-3
+npm install</code></pre>
+<p class="note"><b>Not set up on the course's new home yet</b> (you missed week 2's setup)? Do it now, in a new, empty folder: the one-liner from <a href="../../README.md#start-here">the README</a>. It takes about 5 minutes (most steps are already done from week 1) and brings week 3 straight in. Stuck on a step at 0:10? Send me which one: I'll get you unstuck during the <span class="term" tabindex="0" aria-describedby="tip-5">tick barrier<span class="tip" role="tooltip" id="tip-5">The bus's rule for ending a tick: every clocked part has sent tick.done, and every request sent in the tick has had its reply.</span></span>, so you're building by <code>request()</code>.</p>
+<p>Open your design note, <code>docs/notes/week-02.md</code> (Week 2's <b>Design note</b> tab in the app): sections 3 (messages), 5 (one read, tick by tick) and 9 (agent brief) are what you'll use today. Then run the week's tests and watch them fail:</p>
+<pre><code>npx vitest tests/week-03</code></pre>
+<p class="check">✅ <code>course.json</code> says <code>"week": 3</code>, and the tests fail with errors that start <code>week 3:</code>. That's the <code>todo()</code> stub telling you where to work. Leave Vitest running; it re-runs every time you save.</p>
+<p><b>No week-2 design note (or only part of one)?</b> You can still build everything today: the code doesn't need it, and for the board use this starting design (change anything you like):</p>
+<p class="note">Memory is a grid of cells, one per byte. A cell read this tick lights <b>green</b>; a cell written this tick lights <b>yellow</b>; a cell read <i>and</i> written in the same tick shows the write (yellow). Each tick, the questions (<code>mem.read</code>, <code>mem.write</code>) travel the bus first, then the answers (<code>mem.data</code>, <span class="term" tabindex="0" aria-describedby="tip-6"><code>mem.ack</code><span class="tip" role="tooltip" id="tip-6">Memory's reply to a write that worked. A bad write gets a fault instead.</span></span>, <code>fault</code>).</p>
+<p>Paste it at the top of section 9 of <code>docs/notes/week-02.md</code> (copy <code>docs/notes/design-note-template.md</code> there if the file is missing). It's your agent brief for today; finish the rest of the note at home.</p></li>
+
+<li><p><b>The handshake (15 min, together).</b> In <code>components/client.ts</code>, <code>TODO(week 3, handshake)</code> inside <code>handshake(socket, options)</code>. Every part of the computer joins the bus through <code>connect()</code>, and the first thing <code>connect()</code> does is this:</p>
+<ul>
+<li>When the socket's <code>open</code> event fires, send <code>hello</code>. <code>envelope(type, from, to, payload, { id, tick })</code> in <code>protocol/messages.ts</code> builds it (tick 0, <code>to</code> is <code>"bus"</code>, the <span class="term" tabindex="0" aria-describedby="tip-7">payload<span class="tip" role="tooltip" id="tip-7">The contents of a message, inside the envelope: for a memory read, the address and how many bytes to read.</span></span> is your <code>role</code> and <code>label</code>).</li>
+<li>Parse each message that arrives with <code>parseMessage</code>; <b>resolve</b> with the <code>welcome</code>; <b>reject</b> if the bus answers <code>error</code>, or if the socket errors.</li>
+</ul>
+<figure class="diagram"><svg viewBox="0 0 900 370" role="img" aria-label="The handshake: the socket opens, the component sends hello, the bus answers welcome (resolve) or error (reject)" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16201b"/></marker></defs><text x="20" y="30" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">handshake(): wait for open, say hello, resolve on welcome</text><rect x="65" y="54" width="200" height="54" rx="10" fill="#5fc79a"/><rect x="60" y="50" width="200" height="54" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="160.0" y="82.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">Your component</text><rect x="645" y="54" width="200" height="54" rx="10" fill="#5fc79a"/><rect x="640" y="50" width="200" height="54" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="740.0" y="82.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">The bus</text><line x1="165" y1="110" x2="165" y2="360" stroke="#585654" stroke-width="2" stroke-dasharray="4 5"/><line x1="745" y1="110" x2="745" y2="360" stroke="#585654" stroke-width="2" stroke-dasharray="4 5"/><text x="178" y="142" font-size="14" font-weight="700" text-anchor="start" fill="#16201b">1. the socket&#x27;s open event fires</text><line x1="168" y1="178" x2="740" y2="178" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="455" y="170" font-size="14" font-weight="700" text-anchor="middle" fill="#16201b">2. send hello: to &quot;bus&quot;, tick 0, payload { role, label }</text><line x1="740" y1="232" x2="168" y2="232" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="455" y="224" font-size="14" font-weight="700" text-anchor="middle" fill="#16201b">3. the bus answers welcome</text><text x="178" y="262" font-size="14" font-weight="400" text-anchor="start" fill="#16201b">→ resolve(welcome): connect() can carry on</text><line x1="740" y1="306" x2="168" y2="306" stroke="#f4061e" stroke-width="2.4" marker-end="url(#ah)" stroke-dasharray="6 5"/><text x="455" y="298" font-size="14" font-weight="700" text-anchor="middle" fill="#f4061e">or: error (an id already taken, a bad hello)</text><text x="178" y="336" font-size="14" font-weight="400" text-anchor="start" fill="#f4061e">→ reject(new Error(...)); a socket error rejects too</text></svg></figure>
+<p class="check">✅ <code>handshake.test.ts</code> passes. Commit: <code>week 3: handshake</code>.</p></li>
+
+<li><p><b>The tick barrier (8 min).</b> In <code>bus/server.ts</code>, <code>TODO(week 3, tick-barrier)</code> in <code>isTickComplete()</code>. Until now the bus ended a tick as soon as everyone said <span class="term" tabindex="0" aria-describedby="tip-8"><code>tick.done</code><span class="tip" role="tooltip" id="tip-8">The message a clocked part sends the bus when it has finished its work for this tick.</span></span>. Make it wait for both halves of the tick barrier:</p>
+<ul>
+<li>every clocked component has sent <code>tick.done</code> for this tick (<code>waitingFor</code> is empty), <b>and</b></li>
+<li>every request sent during the tick has had its reply (<code>openRequests</code> is empty).</li>
+</ul>
+<figure class="diagram"><svg viewBox="0 0 900 305" role="img" aria-label="The tick barrier waits for every tick.done and for every open request to have its reply" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16201b"/></marker></defs><text x="20" y="30" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">The tick barrier: the bus ends tick N only when both halves hold</text><rect x="40" y="60" width="820" height="54" rx="8" fill="#d3dbdc" stroke="#16201b" stroke-width="2"/><text x="56" y="92" font-size="15" font-weight="800" text-anchor="start" fill="#16201b">tick N</text><line x1="170" y1="60" x2="170" y2="114" stroke="#16201b" stroke-width="1.5"/><text x="176" y="92" font-size="13" font-weight="600" text-anchor="start" fill="#16201b" class="mono">tick →</text><line x1="270" y1="60" x2="270" y2="114" stroke="#16201b" stroke-width="1.5"/><text x="276" y="92" font-size="13" font-weight="600" text-anchor="start" fill="#16201b" class="mono">mem.read</text><line x1="400" y1="60" x2="400" y2="114" stroke="#16201b" stroke-width="1.5"/><text x="406" y="92" font-size="13" font-weight="600" text-anchor="start" fill="#16201b" class="mono">mem.data</text><line x1="530" y1="60" x2="530" y2="114" stroke="#16201b" stroke-width="1.5"/><text x="536" y="92" font-size="13" font-weight="600" text-anchor="start" fill="#16201b" class="mono">tick.done ×2</text><line x1="690" y1="60" x2="690" y2="114" stroke="#16201b" stroke-width="1.5"/><text x="696" y="92" font-size="13" font-weight="600" text-anchor="start" fill="#585654" class="mono">next tick</text><rect x="65" y="154" width="360" height="80" rx="10" fill="#5fc79a"/><rect x="60" y="150" width="360" height="80" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="240.0" y="189.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">every clocked part</text><text x="240.0" y="206.0" font-size="13" text-anchor="middle" fill="#16201b">has sent tick.done for this tick</text><rect x="485" y="154" width="360" height="80" rx="10" fill="#5fc79a"/><rect x="480" y="150" width="360" height="80" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="660.0" y="189.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">every request of the tick</text><text x="660.0" y="206.0" font-size="13" text-anchor="middle" fill="#16201b">has had its reply (none still open)</text><text x="450" y="196" font-size="18" font-weight="800" text-anchor="middle" fill="#16201b">AND</text><text x="20" y="268" font-size="14" font-weight="400" text-anchor="start" fill="#16201b">Without the second half, a reply that&#x27;s still on its way lands in the next tick: the CPU</text><text x="20" y="290" font-size="14" font-weight="400" text-anchor="start" fill="#16201b">would use it a tick late, and the program&#x27;s answer would change. That&#x27;s section 5 of your note.</text></svg></figure>
+<p class="check">✅ Your condition has both halves. <code>order.test.ts</code> can't run yet (it needs the memory and the tick handler you write at home); it goes green once your take-home is done. Commit: <code>week 3: tick-barrier</code>.</p></li>
+
+<li><p><b>Ask and get your answer back (15 min, together).</b> <code>TODO(week 3, client-request)</code>. Read <code>settle()</code> first: when a message with a <code>replyTo</code> arrives, it looks that id up in the <code>pending</code> map and resolves (or rejects, on <code>fault</code>/<code>error</code>). Your half: send with a fresh <code>id</code>, and put this request's <code>resolve</code> and <code>reject</code> in <code>pending</code> under the id <code>send</code> returned. That's the ticket number from the week-2 activity.</p>
+<figure class="diagram"><svg viewBox="0 0 900 345" role="img" aria-label="request() stores resolve and reject in the pending Map under the message id; settle() finds them by the reply&#x27;s replyTo" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16201b"/></marker></defs><text x="20" y="30" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">request(): the id is the ticket, replyTo is the ticket stapled to the answer</text><rect x="35" y="60" width="240" height="74" rx="10" fill="#5fc79a"/><rect x="30" y="56" width="240" height="74" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="150.0" y="92.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">request()</text><text x="150.0" y="109.0" font-size="13" text-anchor="middle" fill="#16201b">sends mem.read, id c1-7</text><rect x="335" y="56" width="230" height="150" rx="10" fill="#fff" stroke="#16201b" stroke-width="2.6"/><text x="450" y="82" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">pending (a Map)</text><text x="352" y="112" font-size="13" font-weight="400" text-anchor="start" fill="#585654" class="mono">c1-6 → resolve, reject</text><text x="352" y="138" font-size="13" font-weight="700" text-anchor="start" fill="#16201b" class="mono">c1-7 → resolve, reject</text><text x="352" y="164" font-size="13" font-weight="400" text-anchor="start" fill="#585654" class="mono">c2-3 → resolve, reject</text><rect x="645" y="60" width="230" height="74" rx="10" fill="#d3dbdc"/><rect x="640" y="56" width="230" height="74" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="755.0" y="92.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">Memory</text><text x="755.0" y="109.0" font-size="13" text-anchor="middle" fill="#16201b">replies mem.data</text><line x1="272" y1="92" x2="331" y2="120" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="300" y="82" font-size="12" font-weight="700" text-anchor="middle" fill="#16201b">set</text><line x1="636" y1="93" x2="568" y2="93" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)" stroke-dasharray="6 5"/><text x="600" y="84" font-size="11" font-weight="400" text-anchor="middle" fill="#585654">via the bus</text><rect x="340" y="240" width="230" height="70" rx="10" fill="#ffcb12"/><rect x="335" y="236" width="230" height="70" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="450.0" y="270.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">settle(reply)</text><text x="450.0" y="287.0" font-size="13" text-anchor="middle" fill="#16201b">replyTo c1-7</text><line x1="760" y1="134" x2="568" y2="262" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="705" y="210" font-size="12" font-weight="700" text-anchor="middle" fill="#16201b" class="mono">mem.data replyTo c1-7</text><line x1="450" y1="232" x2="450" y2="210" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="470" y="224" font-size="12" font-weight="400" text-anchor="start" fill="#585654">look up, delete</text><line x1="332" y1="272" x2="272" y2="272" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="150" y="276" font-size="14" font-weight="700" text-anchor="middle" fill="#16201b">resolve(reply): await gets it</text><text x="20" y="332" font-size="13" font-weight="400" text-anchor="start" fill="#585654">Two requests can be in flight at once, and replies come back in any order: the Map is how each one finds its own.</text></svg></figure>
+<p class="check">✅ The <code>request()</code> tests pass. Commit: <code>week 3: client-request</code>.</p></li>
+
+<li><p><b>Your board: memory lights up (15 min).</b> In the app, open Week 3's <b>Board</b> tab and press <b>Start the board</b> (it runs the bus, the components and the board's server for you; without the app: <code>npm run dev:all</code>, then <a href="http://localhost:3005/board">localhost:3005/board</a>). The board plays a <b>recording</b> of the finished computer, so it has memory traffic to show right now, even before your memory answers. The memory area says "you build this in week 3": that's yours. You fill in two functions in <code>board/student/memory-bus.tsx</code>:</p>
+<ul>
+<li><code>TODO(week 3, board-cell-activity)</code> in <code>cellActivity()</code>: turn this tick's memory accesses into one entry per cell touched (read or write).</li>
+<li><code>TODO(week 3, board-draw-memory)</code> in <code>MemoryLayer</code>: draw memory as cells and light the ones read or written this tick.</li>
+</ul>
+<figure class="diagram"><svg viewBox="0 0 900 295" role="img" aria-label="The board&#x27;s memory grid with a read and a write lit, and the bus carrying a question before its answer" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16201b"/></marker></defs><text x="20" y="30" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">The board you start today: memory cells light up as requests cross the bus</text><rect x="40" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="74" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="108" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="142" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="176" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="210" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="244" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="278" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="312" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="346" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="380" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="414" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="448" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="482" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="516" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="550" y="60" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="40" y="94" width="30" height="30" rx="4" fill="#5fc79a" stroke="#16201b" stroke-width="1.6"/><rect x="74" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="108" y="94" width="30" height="30" rx="4" fill="#ffcb12" stroke="#16201b" stroke-width="1.6"/><rect x="142" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="176" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="210" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="244" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="278" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="312" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="346" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="380" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="414" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="448" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="482" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="516" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="550" y="94" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="40" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="74" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="108" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="142" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="176" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="210" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="244" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="278" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="312" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="346" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="380" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="414" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="448" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="482" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="516" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="550" y="128" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="40" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="74" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="108" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="142" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="176" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="210" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="244" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="278" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="312" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="346" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="380" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="414" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="448" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="482" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="516" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><rect x="550" y="162" width="30" height="30" rx="4" fill="#fff" stroke="#16201b" stroke-width="1.6"/><text x="40" y="218" font-size="12" font-weight="600" text-anchor="start" fill="#585654" class="mono">0x000</text><text x="580" y="218" font-size="12" font-weight="600" text-anchor="end" fill="#585654" class="mono">0x03F</text><text x="616" y="76" font-size="14" font-weight="700" text-anchor="start" fill="#16201b">read (0x010)</text><rect x="596" y="64" width="14" height="14" rx="3" fill="#5fc79a" stroke="#16201b"/><text x="616" y="104" font-size="14" font-weight="700" text-anchor="start" fill="#16201b">write (0x012)</text><rect x="596" y="92" width="14" height="14" rx="3" fill="#ffcb12" stroke="#16201b"/><text x="596" y="134" font-size="13" font-weight="400" text-anchor="start" fill="#585654">Your colours come from your</text><text x="596" y="152" font-size="13" font-weight="400" text-anchor="start" fill="#585654">design note&#x27;s section 6.</text><line x1="40" y1="250" x2="860" y2="250" stroke="#173627" stroke-width="10" stroke-linecap="round"/><text x="450" y="280" font-size="13" font-weight="600" text-anchor="middle" fill="#585654">the bus: questions travel first, then the answers</text><circle cx="300" cy="250" r="9" fill="#5fc79a" stroke="#16201b" stroke-width="2"/><text x="300" y="236" font-size="12" font-weight="700" text-anchor="middle" fill="#16201b" class="mono">mem.read</text><circle cx="620" cy="250" r="9" fill="#fff" stroke="#16201b" stroke-width="2" stroke-dasharray="3 3"/><text x="620" y="236" font-size="12" font-weight="700" text-anchor="middle" fill="#585654" class="mono">mem.data (after)</text></svg></figure>
+<p>Run <code>codex</code> in a terminal in your course folder and paste this (change the colours or the rule to match your design note):</p>
+<pre><code>In board/student/memory-bus.tsx only, fill in two functions. Don&#x27;t change any other file or
+any test, and explain each line you write.
+1. cellActivity(frame): one entry per byte touched by frame.accesses (an access covers
+   address .. address + length - 1, below MEMORY_SIZE), keeping kind, core and by. If a cell
+   is both read and written in this tick, it counts as written.
+2. MemoryLayer({ frame }): draw a MemoryGrid in MEMORY_AREA with MEMORY_COLUMNS and
+   MEMORY_SIZE cells, using cellActivity(frame): a cell read this tick is INK.mint, a cell
+   written this tick is INK.yellow, any other cell has no colour (null).
+</code></pre>
+<p>Read what it changed and keep only what you can explain. Still stuck at 0:53? Use the snippet below, line by line, and say each line out loud as you type it.</p>
+<details><summary>Fallback snippet (only if you're stuck)</summary>
+<pre><code>// cellActivity
+const cells = new Map&lt;number, CellActivity&gt;();
+for (const access of frame.accesses) {
+  for (let address = access.address; address &lt; access.address + access.length &amp;&amp; address &lt; MEMORY_SIZE; address++) {
+    if (cells.get(address)?.kind === &quot;write&quot;) continue; // a write wins
+    cells.set(address, { kind: access.kind, core: access.core, by: access.by });
+  }
+}
+return cells;
+
+// MemoryLayer
+const activity = cellActivity(frame);
+return (
+  &lt;MemoryGrid
+    rect={MEMORY_AREA}
+    size={MEMORY_SIZE}
+    columns={MEMORY_COLUMNS}
+    colourOf={(address) =&gt; {
+      const cell = activity.get(address);
+      if (!cell) return null;
+      return cell.kind === &quot;write&quot; ? INK.yellow : INK.mint;
+    }}
+  /&gt;
+);
+</code></pre>
+</details>
+<p class="check">✅ The <code>cellActivity</code> checks in <code>tests/week-03/board-memory-bus.test.ts</code> pass, <b>and</b> on the board your memory cells light up as the recording plays (press play; slow it down to see each tick). That's yours, running. Commit: <code>week 3: board memory</code>.</p></li>
+
+<li><p><b>Push (1 min).</b></p>
+<pre><code>git push</code></pre></li>
+</ol>
+
+<h3 id="rhythm">The commit rhythm</h3>
+<p>Each time a task's checks go green, commit just that task: <code>git add -A &amp;&amp; git commit -m "week 3: &lt;task&gt;"</code> (for example <code>week 3: memory-read</code>). Push at the end of the session. A history of small green steps is easy to explain, and easy to go back to.</p>
+
+<h3>What the code looks like (shape only)</h3>
+<pre><code>return new Promise((resolve, reject) =&gt; {
+  socket.addEventListener("open", () =&gt; socket.send(JSON.stringify(hello)), { once: true });
+  socket.addEventListener("message", onMessage);  // resolve(welcome) or reject(error)
+  socket.addEventListener("error", () =&gt; reject(new Error("could not reach the bus")));
+});</code></pre>
+<p>A <span class="term" tabindex="0" aria-describedby="tip-9">Promise<span class="tip" role="tooltip" id="tip-9">A value that isn't ready yet. handshake() and request() return one; await waits for it to resolve (the welcome or the reply) or reject (an error).</span></span> lets the caller write <code>const welcome = await handshake(...)</code> and read the sequence top to bottom. And why a <code>Map</code> for <code>request()</code>? Two requests can be in flight at once, and replies can come back in any order.</p>
+</section>
+
+<section id="home">
+<h2>Take-home</h2>
+<p>Due before next session. Commit each task when its checks go green; push at the end.</p>
+<ol class="steps">
+<li><p><b>Answer the clock:</b> <code>handleTick</code> in <code>components/client.ts</code> (<code>TODO(week 3, handle-tick)</code>). Remember the tick number, run every handler registered with <code>client.onTick(...)</code>, then send <code>tick.done</code> to the bus. Messages you send are stamped with the tick you remembered, so <code>tick.done</code> carries <b>the same tick number</b> as the tick it answers.</p></li>
+<li><p><b>Memory, pure:</b> in <code>core/memory.ts</code>, <code>read(memory, address, length)</code> (<code>TODO(week 3, memory-read)</code>) returns <code>{ ok: true, value: bytes }</code>, or <code>{ ok: false, fault }</code> if any byte is outside <code>0x000</code>–<code>0x3FF</code>. <code>write(memory, address, bytes)</code> (<code>TODO(week 3, memory-write)</code>) returns a <b>new</b> memory, or a fault on the same rule. A write that's partly out of range faults and changes nothing.</p></li>
+<li><p><b>The Memory component:</b> <code>answer()</code> in <code>components/memory.ts</code> (<code>TODO(week 3, memory-handler)</code>). <code>mem.read</code> → <code>mem.data</code>; <code>mem.write</code> or <code>program.load</code> → <code>mem.ack</code>; a bad address → <code>fault</code> with code <code>OUT_OF_RANGE</code>. <code>client.reply(request, type, payload)</code> sets <code>replyTo</code> for you.</p></li>
+<li><p><b>Validate at the boundary:</b> <code>TODO(week 3, parse-message)</code> in <code>protocol/messages.ts</code>. Until now <code>parseMessage</code> trusts everything: it <code>JSON.parse</code>s and casts. Make it real: <code>JSON.parse</code> in a <code>try</code>/<code>catch</code> (bad text → <code>{ ok: false, error: "not valid JSON" }</code>), then <code>messageSchema.safeParse</code>. On failure, say <b>which field</b> was wrong (from <code>error.issues</code>). Compare <code>messageSchema</code>'s <code>mem.*</code> lines with section 3 of your design note. ✅ The <code>parseMessage</code> tests in <code>messages.test.ts</code> pass. Once memory and <code>handleTick</code> work, <code>order.test.ts</code> checks your tick barrier from class too.</p></li>
+<li><p><b>The rest of the board, with your agent:</b> <code>board-packet-progress</code> (when each packet of the tick travels: questions first, then answers) and <code>board-draw-bus</code> (draw the bus and the parts on it, and move each packet along its wire), in <code>board/student/memory-bus.tsx</code>.</p>
+<p class="note"><b>Agent brief:</b> hand Codex section 9 of your design note and your sketch (<code>docs/notes/week-02-board.jpg</code>), or the starting design from step 1 if you don't have a note. Codex works only in <code>board/student/memory-bus.tsx</code>, and doesn't change the core-code regions (bus, memory, client) or any test. You check that <code>tests/week-03/board-memory-bus.test.ts</code> passes and that your section-5 scenario (one read at <code>0x010</code>) plays out on the board the way your table says. If it draws something you didn't design, ask it why, then keep it or change it: your call.</p></li>
+<li><p><b>Watch it with the logger:</b> it prints every message, pairing each reply with its request and timing it.</p>
+<pre><code>npm run bus                          # terminal 1
+LOG=1 npm run component -- memory    # terminal 2</code></pre></li>
+</ol>
+<h3>Acceptance criteria</h3>
+<ul class="checklist">
+<li><span class="box"></span><code>npx vitest run tests/week-03</code> passes, and so does every earlier week (<code>npx vitest run</code>).</li>
+<li><span class="box"></span>Your <code>tick.done</code> always carries the tick number of the <code>tick</code> it answers.</li>
+<li><span class="box"></span>Reads return exactly what was written; <code>0x000</code> and <code>0x3FF</code> work; <code>0x400</code> and "starts in range, ends out of range" both fault and change nothing; <code>core/memory.ts</code> imports nothing from <code>components/</code>, <code>bus/</code> or <code>app/</code>.</li>
+<li><span class="box"></span>On the board, a read and a write light the right cells in the colours from your design note, and packets travel the bus questions-first.</li>
+<li><span class="box"></span>One commit per task (<code>week 3: …</code>), and <code>work</code> is pushed to your fork.</li>
+</ul>
+</section>
+
+<section id="commands">
+<h2>Tests and commands this week</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Command</th><th>What it does</th><th>Works this week?</th></tr></thead>
+<tbody>
+<tr><td><code>npm start</code></td><td>the app: this week, its page, your note, the board and the checks</td><td>✅</td></tr>
+<tr><td><code>npx vitest tests/week-03</code></td><td>this week's tests in watch mode</td><td>✅</td></tr>
+<tr><td><code>npx vitest run</code></td><td>everything unlocked so far, once (what grading uses)</td><td>✅</td></tr>
+<tr><td><code>npm run dev:all</code></td><td>bus + components + the dashboard, with the board at <code>/board</code></td><td>✅ (the CPU arrives in week 5)</td></tr>
+<tr><td><code>npm run bus</code></td><td>just the bus</td><td>✅</td></tr>
+<tr><td><code>LOG=1 npm run component -- memory</code></td><td>your Memory component, with every message printed</td><td>✅ after the take-home</td></tr>
+<tr><td><code>npm run component -- cpu</code></td><td>the CPU</td><td>❌ <code>todo</code> until week 5</td></tr>
+</tbody></table></div>
+<details><summary>Which tests gate this week</summary>
+<ul>
+<li><code>handshake.test.ts</code>, <code>late-join.test.ts</code>: joining the bus, and a late joiner still gets everyone's status.</li>
+<li><code>messages.test.ts</code>: <code>parseMessage</code> (valid, bad JSON, unknown type, wrong field) and <code>request()</code>.</li>
+<li><code>ticks.test.ts</code>: every <code>tick</code> answered with <code>tick.done</code> for the same tick number.</li>
+<li><code>memory.test.ts</code>, <code>memory-over-bus.test.ts</code>, <code>memory-status.test.ts</code>: pure memory, memory on the bus, and what it reports.</li>
+<li><code>who-may-send.test.ts</code>: the bus refuses messages a component isn't allowed to send.</li>
+<li><code>order.test.ts</code>: every reply arrives after its request and before the next tick (the barrier).</li>
+<li><code>board-memory-bus.test.ts</code>: the board's behaviour checks (cells lit, packets in order).</li>
+<li><code>logger.test.ts</code>: the logger tool (already passes).</li>
+</ul></details>
+</section>
+
+<section id="explain">
+<h2>Explain it back</h2>
+<p>Before next session, explain your work to me without notes or AI: book a 5-minute slot, or record a 3-minute video (your face and your screen, no notes) answering the two questions I post after class. Be ready to:</p>
+<ol>
+<li><b>Walk through your <code>handshake()</code></b> line by line: when does it resolve, and what happens if <code>welcome</code> never comes?</li>
+<li><b>How does a reply find its way back</b> to the right <code>request()</code> call? Point at the line.</li>
+<li><b>What does the tick barrier wait for</b>, and what goes wrong without its second half?</li>
+<li><b>One thing on the board you asked the agent to change</b>, and why.</li>
+</ol>
+</section>
+
+<section id="codex">
+<h2>Using Codex this week</h2>
+<p>Codex may help with the writing, but you guide the design. Run <code>codex</code> in a terminal in your course folder (or use the Codex extension in VS Code). Say your approach first, in a sentence or two, and name the one function it may change. Read the change before you keep it: keep only what you can explain.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Fine to ask Codex</th><th>You must be able to explain yourself</th></tr></thead>
+<tbody>
+<tr><td>"How do I wrap a WebSocket <code>open</code> event in a Promise?"</td><td>Why <code>connect()</code> waits for <code>welcome</code></td></tr>
+<tr><td>"How do I read the <code>issues</code> in a zod <code>safeParse</code> error?"</td><td>Why validation happens once, at the socket</td></tr>
+<tr><td>"Here's my rule for a partly-out-of-range write. Write <code>write()</code> that way and explain it."</td><td>Why a faulted write must change nothing</td></tr>
+<tr><td>"Draw the cells in my two colours and explain the drawing code."</td><td>Every line you kept in <code>memory-bus.tsx</code></td></tr>
+</tbody></table></div>
+<p>Stretch (portfolio only, no extra credit): <a href="../stretch/bus-up-close.md">the bus up close</a>: a validator without zod, joining the class bus with the hello script, and the bus watchdog.</p>
+</section>
+
+</main>
+<script data-glossary>
+(function () {
+  var terms = document.querySelectorAll(".term");
+  // Keep the explanation inside the viewport (16px gutter), near the right edge too.
+  function place(t) {
+    var tip = t.querySelector(".tip");
+    // Hidden tips are display:none (so they never widen the page): show it to measure it.
+    tip.style.left = "0px";
+    tip.style.display = "block";
+    var r = tip.getBoundingClientRect(), dx = 0, max = document.documentElement.clientWidth - 16;
+    tip.style.display = "";
+    if (r.right > max) dx = max - r.right;
+    if (r.left + dx < 16) dx = 16 - r.left;
+    tip.style.left = dx + "px";
+  }
+  function closeAll(except) {
+    terms.forEach(function (t) { if (t !== except) t.classList.remove("open"); });
+  }
+  terms.forEach(function (t) {
+    t.addEventListener("mouseenter", function () { place(t); });
+    t.addEventListener("focus", function () { place(t); });
+    // Tap (touch) toggles; hover and keyboard focus are pure CSS.
+    t.addEventListener("click", function (e) {
+      e.stopPropagation();
+      closeAll(t);
+      place(t);
+      t.classList.toggle("open");
+    });
+  });
+  document.addEventListener("click", function () { closeAll(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    closeAll();
+    var a = document.activeElement;
+    if (a && a.classList.contains("term")) a.blur();
+  });
+})();
+</script>
+</body>
+</html>

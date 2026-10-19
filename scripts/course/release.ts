@@ -6,7 +6,8 @@
 // Students get it with npm start (the studio fetches the week-N tags as upstream/week-N).
 //
 // `npm run release -- <N> --update [--push]`: a fix to week N, already committed on main: its tag
-// moves to the commit you're on, so students who have week N get the fix too.
+// moves to the commit you're on, so students who have week N get the fix too. That's also how an
+// in-class exercise's export (docs/weeks/in-class/week-NN/, written by course/live/) reaches them.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -22,11 +23,14 @@ export function withWeek(text: string, week: number): string {
   return `${JSON.stringify({ ...course, week }, null, 2)}\n`;
 }
 
-/** Week N's own files that exist: its guide and page, its note template (design weeks), its tests. */
+/**
+ * Week N's own files that exist: its guide and page, its note template (design weeks), its tests,
+ * and its in-class page (docs/weeks/in-class/week-NN/: the live exercise's records, course/live/).
+ */
 export function weekPaths(week: number, root = "."): string[] {
   const nn = String(week).padStart(2, "0");
   const pages = existsSync(`${root}/docs/weeks`) ? readdirSync(`${root}/docs/weeks`).filter((f) => f.startsWith(`week-${nn}.`)).map((f) => `docs/weeks/${f}`) : [];
-  return [...pages, `docs/notes/week-${nn}.md`, `tests/week-${nn}`].filter((p) => existsSync(`${root}/${p}`));
+  return [...pages, `docs/notes/week-${nn}.md`, `tests/week-${nn}`, `docs/weeks/in-class/week-${nn}`].filter((p) => existsSync(`${root}/${p}`));
 }
 
 function push(tag: string): void {
