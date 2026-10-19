@@ -83,7 +83,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 7;
+export const STUDIO_VERSION = 8;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -2386,7 +2386,7 @@ export function createStudio(ctx, steps, meta = {}) {
     void codeRun.done.then(() => {
       codeRun = null;
       const stubs = weekCode(ctx, dir, week).filter((t) => t.stubbed);
-      const results = taskResults(ctx.readText(report) ?? "", task, stubs);
+      const results = taskResults(ctx.readText(report) ?? "", task, stubs, task.needs);
       try {
         rmSync(report, { force: true });
       } catch {
@@ -3357,6 +3357,10 @@ export function weekCode(ctx, dir, week) {
   }
   /** @type {Map<string, { words: string[], members: string[] }>} */
   const names = new Map();
+  // Which tasks each test needs, measured at release (null in an older hints file).
+  const rawNeeds = hints.$tests;
+  /** @type {Record<string, string[]> | null} */
+  const needs = rawNeeds && typeof rawNeeds === "object" && !Array.isArray(rawNeeds) ? /** @type {Record<string, string[]>} */ (rawNeeds) : null;
   const tests = ctx.capture(["git", "ls-files", "--", `tests/week-${pad2(week)}/`], dir)?.stdout.split("\n").filter((f) => /\.test\.tsx?$/.test(f)) ?? [];
   const tasks = [];
   for (const file of regionFiles(ctx, dir)) {
@@ -3369,14 +3373,16 @@ export function weekCode(ctx, dir, week) {
       const said = guideFor(guide, week, r.id, file);
       const prompt = said.prompt || (/^board\//.test(file) ? `In ${file} only, fill in TODO(week ${week}, ${r.id}): ${r.description}. Don't change any other file or any test, and explain each line you write.` : "");
       const modulePath = file.replace(/\.(tsx?|asm)$/, "");
-      const covering = tests.filter((t) => (ctx.readText(join(dir, t)) ?? "").includes(modulePath));
+      // The test files with a test that needs this task (measured at release), else the ones importing its file.
+      const measured = [...new Set(Object.entries(needs ?? {}).filter(([, ids]) => ids.includes(r.id)).map(([key]) => key.split(" > ")[0]))].filter((t) => tests.includes(t));
+      const covering = measured.length ? measured : tests.filter((t) => (ctx.readText(join(dir, t)) ?? "").includes(modulePath));
       // The file's names, and the ones its tasks' hints use (the stubs don't have them yet).
-      if (!names.has(file)) names.set(file, fileNames(ctx, dir, file, [text, ...Object.values(hints).map((h) => hintOf(h).code)].join("\n")));
+      if (!names.has(file)) names.set(file, fileNames(ctx, dir, file, [text, ...Object.entries(hints).filter(([k]) => k !== "$tests").map(([, h]) => hintOf(h).code)].join("\n")));
       const { code: hint, steps } = hintOf(hints[r.id]);
       const context = regionContext(lines, r);
       const signature = context.before.find((l) => !/^\s*(\/\*\*?|\*|\/\/)/.test(l)) ?? "";
       const fn = /function\s+([A-Za-z_$][\w$]*)|([A-Za-z_$][\w$]*)\s*(?:=\s*(?:async\s*)?)?\(/.exec(signature);
-      tasks.push({ id: r.id, file, part: r.part, hint, steps, fn: fn?.[1] ?? fn?.[2] ?? "", endLine: r.end, .../** @type {{ words: string[], members: string[] }} */ (names.get(file)), description: r.description, ...regionContext(lines, r), indent: r.indent, body: body.join("\n"), rev: regionRev(lines, r), lesson: said.lesson, prompt, tests: covering.length ? covering : [`tests/week-${pad2(week)}`], order: said.order, line: r.start + 2, stubbed: /^(\/\/|;) TODO\(/.test(body[0] ?? "") && (body[0] ?? "").includes(`, ${r.id})`) });
+      tasks.push({ id: r.id, file, part: r.part, hint, steps, fn: fn?.[1] ?? fn?.[2] ?? "", endLine: r.end, .../** @type {{ words: string[], members: string[] }} */ (names.get(file)), description: r.description, ...regionContext(lines, r), indent: r.indent, body: body.join("\n"), rev: regionRev(lines, r), lesson: said.lesson, prompt, tests: covering.length ? covering : [`tests/week-${pad2(week)}`], needs, order: said.order, line: r.start + 2, stubbed: /^(\/\/|;) TODO\(/.test(body[0] ?? "") && (body[0] ?? "").includes(`, ${r.id})`) });
     }
   }
   return tasks.sort((a, b) => Number(a.part === "home") - Number(b.part === "home") || a.order - b.order);
@@ -3463,6 +3469,17 @@ export function writeRegion(dir, { file, id, week, rev, body }) {
 }
 
 /**
+ * A test's failure in words a student can act on. vitest's JSON report says "STACK_TRACE_ERROR"
+ * for a test that ran out of time, so that becomes what it means.
+ * @param {string} message
+ */
+export function readableFailure(message) {
+  if (/^Error: STACK_TRACE_ERROR\b/.test(message) || /^Error: Test timed out/.test(message))
+    return "Timed out: the test waited and nothing answered in time. Usually a reply that never comes: something that should answer (a part, a handler) doesn't yet, or the code waits for the wrong message.";
+  return message;
+}
+
+/**
  * The results of a vitest JSON report, for one task: what passed, what failed, and what only waits
  * for another task that's still a stub: its TODO is in the message, the error came from inside its
  * code, or the test is named after its function. This task's own failures are listed first.
@@ -3470,9 +3487,13 @@ export function writeRegion(dir, { file, id, week, rev, body }) {
  * @param {string} json
  * @param {string | TaskRef} task
  * @param {TaskRef[]} [stubs]  the week's other tasks that are still stubs
+ * @param {Record<string, string[]> | null} [needs]  which tasks each test needs, measured when the week
+ *   was released (the hints file's "$tests"): a test that doesn't need this task isn't counted; one
+ *   that also needs a task still a stub waits for it. Tests it doesn't list fall back to the guesses.
  */
-export function taskResults(json, task, stubs = []) {
+export function taskResults(json, task, stubs = [], needs = null) {
   const me = typeof task === "string" ? { id: task, file: "" } : task;
+  const stubbed = new Set(stubs.map((s) => s.id));
   const id = me.id;
   const named = (/** @type {string} */ text, /** @type {string | undefined} */ fn) => Boolean(fn && fn.length > 2 && new RegExp(`\\b${fn.replace(/\$/g, "\\$")}\\b`).test(text));
   /** Where a stack frame lands: inside which stubbed task's code. @param {string} stack */
@@ -3515,10 +3536,19 @@ export function taskResults(json, task, stubs = []) {
       else failures.push({ test: name, message: message.split("\n").slice(0, 6).join("\n") });
     }
     for (const t of file.assertionResults ?? []) {
+      const need = needs?.[`${name} > ${t.fullName ?? ""}`];
+      if (need) {
+        if (!need.includes(id)) continue; // not this task's test
+        const blocked = need.filter((n) => n !== id && stubbed.has(n));
+        if (blocked.length) {
+          if (t.status !== "passed") for (const n of blocked) waiting.add(n);
+          continue;
+        }
+      }
       if (t.status === "passed") passed++;
       else if (t.status === "failed") {
-        const message = (t.failureMessages ?? []).join("\n");
-        const waits = other(message, t.fullName ?? t.title ?? "");
+        const message = readableFailure((t.failureMessages ?? []).join("\n"));
+        const waits = need ? null : other(message, t.fullName ?? t.title ?? "");
         if (waits) waiting.add(waits);
         else {
           const test = t.fullName ?? t.title ?? name;
@@ -4680,7 +4710,9 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           html = `<div class="status bad"><span class="icon">!</span><div><b>${r.failed} test${r.failed === 1 ? "" : "s"} fail${r.failed === 1 ? "s" : ""} (${r.passed} pass).</b>${r.waiting?.length ? `<div class="sub">Tests that need unfinished tasks are left out, but one of these may still come from them.</div>` : ""}${(r.failures ?? []).map((f) => `<div class="failure"><div class="ftest">${esc(f.test)}${f.own ? ` <span class="muted">(this task)</span>` : ""}</div><pre class="log">${esc(f.message)}</pre></div>`).join("")}${waiting}</div></div>`;
         else if (r.phase === "passed") {
           const commit = `git commit -m "week ${mounted.week}: ${t.id}" -- ${t.file}`;
-          html = `<div class="status ok"><span class="icon">✓</span><div><b>Its tests pass (${r.passed}).</b>${waiting}</div></div>
+          const none = !r.passed;
+          const said = none ? (r.waiting?.length ? "Nothing to check yet: every test of this task also needs another one (below)." : "No test checks this task: look at it on the board.") : `Its tests pass (${r.passed}).`;
+          html = `<div class="status ok"><span class="icon">✓</span><div><b>${said}</b>${waiting}</div></div>
             ${r.committed ? `<div class="status ok"><span class="icon">✓</span><div><b>${esc(r.committed)}</b></div></div>` : `<div class="row"><button class="btn primary" data-code-commit="${esc(t.id)}">Commit it</button><code class="muted">${esc(commit)}</code></div><p class="muted">It commits the whole file, with anything else you changed in it.</p>`}`;
         }
         if (box.innerHTML !== html) box.innerHTML = html;
