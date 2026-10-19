@@ -238,5 +238,181 @@
         "explain": "Only now is it a `Message` the rest of NetSim can trust."
       }
     ]
+  },
+  "$tests": {
+    "tests/week-03/board-memory-bus.test.ts > cellActivity: which cells light up a read lights exactly the addressed cells": [
+      "board-cell-activity"
+    ],
+    "tests/week-03/board-memory-bus.test.ts > cellActivity: which cells light up a write is marked as a write, and wins over a read of the same cell": [
+      "board-cell-activity"
+    ],
+    "tests/week-03/board-memory-bus.test.ts > cellActivity: which cells light up nothing is lit on a tick without memory traffic": [
+      "board-cell-activity"
+    ],
+    "tests/week-03/board-memory-bus.test.ts > cellActivity: which cells light up in a recorded run, every fetch lights the 4 bytes at the core's PC": [
+      "board-cell-activity"
+    ],
+    "tests/week-03/board-memory-bus.test.ts > packetProgress: packets travel during their tick is either off the wire (null) or between 0 (sent) and 1 (arrived)": [
+      "board-packet-progress"
+    ],
+    "tests/week-03/board-memory-bus.test.ts > packetProgress: packets travel during their tick every packet is on the wire at some point in the tick": [
+      "board-packet-progress"
+    ],
+    "tests/week-03/board-memory-bus.test.ts > packetProgress: packets travel during their tick an answer is never further along than the question it answers": [
+      "board-packet-progress"
+    ],
+    "tests/week-03/handshake.test.ts > handshake gets a welcome listing who is already connected": [
+      "handshake"
+    ],
+    "tests/week-03/handshake.test.ts > handshake tells everyone else when someone joins and leaves": [
+      "handshake"
+    ],
+    "tests/week-03/handshake.test.ts > handshake refuses a second component with the same id": [
+      "handshake"
+    ],
+    "tests/week-03/handshake.test.ts > handshake fails clearly when there is no bus": [
+      "handshake"
+    ],
+    "tests/week-03/late-join.test.ts > a dashboard that joins late still gets everyone's latest status": [
+      "handshake"
+    ],
+    "tests/week-03/logger.test.ts > logger describes a request and its reply in a few words": [],
+    "tests/week-03/logger.test.ts > logger pairs a reply with its request and shows how long it took": [],
+    "tests/week-03/memory-over-bus.test.ts > memory over the bus reads back what it wrote, and the reply points at the request": [
+      "client-request",
+      "handshake",
+      "memory-handler",
+      "memory-read",
+      "memory-write"
+    ],
+    "tests/week-03/memory-over-bus.test.ts > memory over the bus answers a read outside memory with a fault": [
+      "client-request",
+      "handshake",
+      "memory-handler",
+      "memory-read"
+    ],
+    "tests/week-03/memory-over-bus.test.ts > memory over the bus gets an error, not silence, when talking to someone who isn't there": [
+      "client-request",
+      "handshake"
+    ],
+    "tests/week-03/memory-over-bus.test.ts > memory over the bus the bus refuses a message that doesn't match the protocol": [
+      "parse-message"
+    ],
+    "tests/week-03/memory-status.test.ts > shows a loaded program right away, without waiting for a tick": [
+      "client-request",
+      "handshake",
+      "memory-handler",
+      "memory-write"
+    ],
+    "tests/week-03/memory.test.ts > memory starts as 1024 zero bytes": [
+      "memory-read"
+    ],
+    "tests/week-03/memory.test.ts > memory reads back what was written": [
+      "memory-read",
+      "memory-write"
+    ],
+    "tests/week-03/memory.test.ts > memory does not change the memory it was given": [
+      "memory-write"
+    ],
+    "tests/week-03/memory.test.ts > memory can use the very last byte": [
+      "memory-read",
+      "memory-write"
+    ],
+    "tests/week-03/memory.test.ts > memory faults on a read past the end": [
+      "memory-read"
+    ],
+    "tests/week-03/memory.test.ts > memory faults on a read running off the end": [
+      "memory-read"
+    ],
+    "tests/week-03/memory.test.ts > memory faults on a read below zero": [
+      "memory-read"
+    ],
+    "tests/week-03/memory.test.ts > memory faults on a write outside memory or of a non-byte": [
+      "memory-write"
+    ],
+    "tests/week-03/messages.test.ts > parseMessage accepts a valid message and keeps its type": [],
+    "tests/week-03/messages.test.ts > parseMessage rejects text that isn't JSON": [
+      "parse-message"
+    ],
+    "tests/week-03/messages.test.ts > parseMessage rejects an unknown message type": [
+      "parse-message"
+    ],
+    "tests/week-03/messages.test.ts > parseMessage rejects a payload of the wrong shape, and says where": [
+      "parse-message"
+    ],
+    "tests/week-03/messages.test.ts > parseMessage rejects a byte that doesn't fit in 8 bits": [
+      "parse-message"
+    ],
+    "tests/week-03/messages.test.ts > parseMessage rejects a message with no sender": [
+      "parse-message"
+    ],
+    "tests/week-03/order.test.ts > every memory reply arrives before the next tick starts": [
+      "tick-barrier",
+      "handle-tick",
+      "handshake",
+      "memory-handler",
+      "memory-read"
+    ],
+    "tests/week-03/ticks.test.ts > ticks answers every tick with tick.done for the same tick": [
+      "handle-tick",
+      "handshake"
+    ],
+    "tests/week-03/ticks.test.ts > ticks stamps messages with the tick they were sent in": [
+      "handle-tick",
+      "handshake"
+    ],
+    "tests/week-03/transport.test.ts > over ws joins, sees others join and leave": [
+      "handshake"
+    ],
+    "tests/week-03/transport.test.ts > over ws reads, writes and faults through memory": [
+      "client-request",
+      "handshake",
+      "memory-handler",
+      "memory-read",
+      "memory-write"
+    ],
+    "tests/week-03/transport.test.ts > over ws refuses a second component with the same id": [
+      "handshake"
+    ],
+    "tests/week-03/transport.test.ts > over inpage joins, sees others join and leave": [
+      "handshake"
+    ],
+    "tests/week-03/transport.test.ts > over inpage reads, writes and faults through memory": [
+      "client-request",
+      "handshake",
+      "memory-handler",
+      "memory-read",
+      "memory-write"
+    ],
+    "tests/week-03/transport.test.ts > over inpage refuses a second component with the same id": [
+      "handshake"
+    ],
+    "tests/week-03/transport.test.ts > fails clearly when there's no in-page bus with that name": [
+      "handshake"
+    ],
+    "tests/week-03/who-may-send.test.ts > who may send what only the bus may send tick": [
+      "handshake"
+    ],
+    "tests/week-03/who-may-send.test.ts > who may send what only the bus may send reset": [
+      "handshake"
+    ],
+    "tests/week-03/who-may-send.test.ts > who may send what only the bus may send welcome": [
+      "handshake"
+    ],
+    "tests/week-03/who-may-send.test.ts > who may send what only the bus may send joined": [
+      "handshake"
+    ],
+    "tests/week-03/who-may-send.test.ts > who may send what only the bus may send left": [
+      "handshake"
+    ],
+    "tests/week-03/who-may-send.test.ts > who may send what only the bus or a dashboard may ask for or set a snapshot": [
+      "client-request",
+      "handshake"
+    ],
+    "tests/week-03/who-may-send.test.ts > a message that breaks the protocol still gets an answer, so a request doesn't hang": [
+      "client-request",
+      "handshake",
+      "parse-message"
+    ]
   }
 }
