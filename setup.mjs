@@ -83,7 +83,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 3;
+export const STUDIO_VERSION = 4;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -1869,6 +1869,10 @@ export function createStudio(ctx, steps, meta = {}) {
   const autoSteps = meta.mode === "week" ? (meta.autoSteps ?? setupSteps) : 0;
   // Only the first pass ticks setup steps off by itself: going back to one later stays there.
   let autoSetup = autoSteps > 0;
+  // Steps "I've done all this" found done, after the first one left: they tick themselves off when
+  // the student gets to them (if they still pass).
+  /** @type {Set<number>} */
+  const vouched = new Set();
   /** @type {Set<(event: string, data: unknown) => void>} */
   const listeners = new Set();
   /** @type {Mark[]} */
@@ -2022,7 +2026,7 @@ export function createStudio(ctx, steps, meta = {}) {
         ran: ran[i],
         preview: previewsNow()[i],
       })),
-      view: current < steps.length ? { ...view, attempt, outputId, actions: plan.map(describe), canChangeAccount: canChange, canPickFolder: Boolean(ctx.pickFolder) && !ctx.dryRun } : null,
+      view: current < steps.length ? { ...view, attempt, outputId, actions: plan.map(describe), canChangeAccount: canChange, canPickFolder: Boolean(ctx.pickFolder) && !ctx.dryRun, canCheckAll: canCheckAll() } : null,
     };
   }
 
@@ -2062,7 +2066,8 @@ export function createStudio(ctx, steps, meta = {}) {
     updateCanChange();
     // Week 1's setup, shown above a week's steps: done steps tick themselves off, an optional one
     // not done yet is skipped, and the first one that needs the student stops here.
-    if (autoSetup && i < autoSteps && !ranHere && (r.done || step.optional)) {
+    const isVouched = vouched.delete(i);
+    if (((autoSetup && i < autoSteps) || isVouched) && !ranHere && (r.done || step.optional)) {
       marks[i] = r.done ? "done" : "skipped";
       if (r.done && !ctx.dryRun) ctx.save?.();
       return enter(i + 1);
@@ -2184,6 +2189,48 @@ export function createStudio(ctx, steps, meta = {}) {
       return publish();
     }
     fail({ what: `Still not done: ${r.found}`, fix: step.hint(ctx) });
+  }
+
+  /** The current step's week: where its steps end in the list. */
+  const groupEnd = () => {
+    const g = (meta.groups ?? []).find((x) => x.count > 0 && current >= x.start && current < x.start + x.count);
+    return g ? g.start + g.count : steps.length;
+  };
+
+  /**
+   * Whether "I've done all this" is offered: while nothing is checking or running, and on a step
+   * that's done only when more of its week comes after it (the studio lands on done steps too).
+   */
+  function canCheckAll() {
+    if (!["ready", "passed", "failed", "waiting"].includes(view.phase) && !(view.phase === "running" && view.waitFor === "browser")) return false;
+    return view.phase !== "passed" || current + 1 < groupEnd();
+  }
+
+  /**
+   * "I've done all this": every check of the current step's week (from the current step on), no
+   * actions. The steps that pass are done; it lands on the first one left, or after the week.
+   */
+  async function checkAll() {
+    const g = (meta.groups ?? []).find((x) => x.count > 0 && current >= x.start && current < x.start + x.count);
+    const end = groupEnd();
+    child?.kill();
+    child = null;
+    const mine = ++attempt;
+    plan = [];
+    view = { ...blank("checking"), note: `Checking every step${g ? ` of week ${g.week}` : ""}…` };
+    publish();
+    let first = -1;
+    for (let i = current; i < end; i++) {
+      const r = await checkStep(steps[i], ctx);
+      if (mine !== attempt) return;
+      found[i] = r.found;
+      if (r.done) marks[i] = "done";
+      if (first >= 0 && (r.done || steps[i].optional)) vouched.add(i);
+      else if (!r.done && !steps[i].optional && first < 0) first = i;
+      else if (!r.done && first < 0) marks[i] = "skipped";
+    }
+    if (!ctx.dryRun) ctx.save?.();
+    void enter(first < 0 ? end : first);
   }
 
   /** @param {number} mine */
@@ -2426,6 +2473,10 @@ export function createStudio(ctx, steps, meta = {}) {
         publish();
         return ok;
       }
+      case "check-all":
+        if (view.phase === "checking" || (view.phase === "running" && view.waitFor !== "browser")) return reject(409, "Wait for this step to finish first.");
+        void checkAll();
+        return ok;
       case "change": {
         if (!step.changeable || view.phase !== "passed") return reject(409, "This step can't be changed here.");
         attempt++;
@@ -3393,6 +3444,7 @@ h1.q { font-size: 32px; }
 .btn.run { background: var(--mint); color: var(--green); border-color: var(--ink); padding: 9px 14px; animation: pop .25s ease-out; }
 @keyframes pop { from { transform: scale(.8); opacity: 0; } }
 .btn.ghost { border-color: var(--line); font-weight: 500; }
+.donerow { margin-top: 20px; padding-top: 14px; border-top: 1px dashed var(--line); }
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 
 .status { display: flex; gap: 12px; align-items: flex-start; border-radius: 10px; padding: 14px 16px; font-size: 15.5px; border: 2px solid var(--ink); }
@@ -3737,7 +3789,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       .join("");
     const skip = step.optional ? `<button class="btn ghost" data-do="skip">Skip for now</button>` : "";
     let body = "";
-    if (v.phase === "checking") body = `<div class="status run"><i class="spin"></i><div><b>Checking…</b></div></div>`;
+    if (v.phase === "checking") body = `<div class="status run"><i class="spin"></i><div><b>${esc(v.note || "Checking…")}</b></div></div>`;
     else if (v.phase === "passed") {
       body = `${v.already ? "" : earlier}
         <div class="status ok"><span class="icon">✓</span><div><b>${esc(step.found)}</b>${v.already ? `<div class="sub">Already done: nothing to type.</div>` : ""}</div></div>
@@ -3815,7 +3867,20 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const why = v.phase === "ready" ? `<div class="status wait"><span class="icon">!</span><div><b>${esc(step.found)}</b></div></div>` : "";
       body = snap.account.panel ? `${status}${accountInline()}` : `${noticeBlock()}${why}${body}${accountInline()}`;
     } else if (v.phase !== "passed" && v.phase !== "confirm") body = `${noticeBlock()}${body}`;
-    return `${head(step, step.optional ? "Optional: you can skip this one" : "")}${body}`;
+    return `${head(step, step.optional ? "Optional: you can skip this one" : "")}${body}${doneAllBlock(v)}`;
+  }
+
+  /**
+   * "I've done all this": for a student who did the week's steps by hand. Runs every check left in
+   * this week (nothing else) and carries on from the first thing still to do.
+   * @param {{ canCheckAll?: boolean }} v
+   */
+  function doneAllBlock(v) {
+    if (!v.canCheckAll) return "";
+    const snap = present();
+    const g = snap.groups.find((x) => x.count > 0 && snap.current >= x.start && snap.current < x.start + x.count);
+    const what = g ? (g.status === "setup" ? "the setup" : g.update ? `week ${g.week}'s update` : `week ${g.week}`) : "these steps";
+    return `<div class="row donerow"><button class="btn ghost" data-do="check-all">I've done all this — check and continue</button><span class="muted">Checks every step left in ${esc(what)} (it runs nothing else) and carries on from the first one still to do.</span></div>`;
   }
 
   function otherView(/** @type {StepView} */ step) {
@@ -4502,9 +4567,26 @@ export function chooseFlow(ctx, { forceSetup = false, withSetup = false, weekLis
     const onWork = output(ctx, ["git", "branch", "--show-current"], dir) === "work";
     return { steps: weekSteps(week, { onWork }), meta: { mode: "week", week, published: true } };
   }
-  const { published, merged } = weekStates(ctx, dir);
-  const toGet = published.find((n) => !merged.includes(n)) ?? null;
+  const { published, merged, tips } = weekStates(ctx, dir);
   const newest = Math.max(1, ...merged);
+  // Week N had been in work before (an older version of it): getting it again is an update.
+  const hadBefore = (/** @type {number} */ n) => n === 1 || n <= newest || ctx.capture(["git", "cat-file", "-e", `work:docs/weeks/week-${String(n).padStart(2, "0")}.md`], dir)?.code === 0;
+  const waiting = published.filter((n) => !merged.includes(n));
+  let toGet = waiting[0] ?? null;
+  // Updates waiting before a newer week that already holds them (each release is built on the last)
+  // come along with it: the student gets the newest week straight away, not the update first.
+  // Comparing the weeks needs their commits: fetch the week tags if one isn't here yet (it only
+  // moves upstream/week-N, never the student's work).
+  const missing = (/** @type {number} */ n) => ctx.capture(["git", "cat-file", "-e", `${tips.get(n)}^{commit}`], dir)?.code !== 0;
+  if (waiting.length > 1 && !ctx.dryRun && waiting.some(missing)) ctx.capture(["git", "fetch", "-q", "upstream"], dir);
+  for (const n of waiting.slice(1)) {
+    const before = waiting.filter((m) => m < n);
+    const holds = before.every((m) => hadBefore(m) && ctx.capture(["git", "merge-base", "--is-ancestor", /** @type {string} */ (tips.get(m)), /** @type {string} */ (tips.get(n))], dir)?.code === 0);
+    if (!holds) break;
+    toGet = n;
+  }
+  const getting = toGet;
+  const brought = getting === null ? [] : waiting.filter((m) => m < getting);
   /** @type {Step[]} */
   const steps = [];
   /** @type {WeekGroup[]} */
@@ -4515,12 +4597,15 @@ export function chooseFlow(ctx, { forceSetup = false, withSetup = false, weekLis
     steps.push(...list);
   };
   add(1, "setup", courseSteps());
-  for (const n of merged.filter((m) => m > 1)) add(n, n === newest && toGet === null ? "inwork" : "done", n === newest && toGet === null ? inWorkSteps(n) : doneWeekSteps(n));
+  for (const n of [...new Set([...merged, ...brought])].filter((m) => m > 1).sort((a, b) => a - b)) {
+    if (brought.includes(n)) add(n, "done", doneWeekSteps(n, `Week ${n}'s update comes with week ${toGet}.`));
+    else add(n, n === newest && toGet === null ? "inwork" : "done", n === newest && toGet === null ? inWorkSteps(n) : doneWeekSteps(n));
+  }
   const autoSteps = steps.length;
   if (toGet !== null) {
     add(toGet, "get", weekSteps(toGet, { onWork: output(ctx, ["git", "branch", "--show-current"], dir) === "work" }));
     // An earlier week changed after a later one came in (a fix Praise published): an update, not a second week 1.
-    if (toGet === 1 || toGet <= newest) groups[groups.length - 1].update = true;
+    if (hadBefore(toGet)) groups[groups.length - 1].update = true;
   }
   for (const w of later(2)) {
     if (groups.some((g) => g.week === w.week)) continue;
@@ -4546,16 +4631,18 @@ export function weekStates(ctx, dir) {
   for (const [n, sha] of remoteWeeks(ctx, dir)) tips.set(n, sha);
   const published = [...tips.keys()].sort((a, b) => a - b);
   const merged = published.filter((n) => ctx.capture(["git", "merge-base", "--is-ancestor", /** @type {string} */ (tips.get(n)), "work"], dir)?.code === 0);
-  return { published, merged };
+  return { published, merged, tips };
 }
 
 /**
- * Week N's steps once a later week is in work too: all done (they can still be looked at).
+ * Week N's steps once a later week is in work too (or coming with the week to get): all done (they
+ * can still be looked at).
  * @param {number} week
+ * @param {string} [found]
  * @returns {Step[]}
  */
-export function doneWeekSteps(week) {
-  return weekSteps(week).map((step) => ({ ...step, check: async () => ({ done: true, found: `Done: week ${week} is in your work.` }) }));
+export function doneWeekSteps(week, found = `Done: week ${week} is in your work.`) {
+  return weekSteps(week).map((step) => ({ ...step, check: async () => ({ done: true, found }) }));
 }
 
 /**
