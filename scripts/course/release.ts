@@ -57,7 +57,7 @@ function main(): void {
     if (week > released()) throw new Error(`Week ${week} isn't released yet: npm run release -- ${week}`);
     // The week's studio hints, from the solutions as they are now: committed first if they changed.
     const before = hintsTracked(week);
-    const hints = writeHints(week);
+    const hints = writeHints(week, process.cwd(), console.log);
     if (hints && git(["status", "--porcelain", "--", hints])) {
       run(["add", "--", hints]);
       const staged = check("--index");
@@ -83,7 +83,7 @@ function main(): void {
   const paths = weekPaths(week);
   if (!paths.some((p) => p.startsWith("docs/weeks/"))) throw new Error(`Week ${week} has no guide here (docs/weeks/week-${String(week).padStart(2, "0")}.md): nothing to release.`);
   // The studio's hint text for the week's tasks (the Code tab's grey code and walk-through), from the solutions here.
-  const hints = writeHints(week);
+  const hints = writeHints(week, process.cwd(), console.log);
   if (hints) paths.push(hints);
   writeFileSync("course.json", withWeek(readFileSync("course.json", "utf8"), week));
   writeExclude(week);
