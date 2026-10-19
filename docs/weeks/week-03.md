@@ -19,15 +19,19 @@ the bus.
 
 ## In class (1 hour, on Zoom)
 
-Class is on Zoom, camera on, and you work **on your own** in your own repo. When a step says
-"together", I share my editor and code it live while you type along. At each checkpoint I
-ask two or three of you to share your screen.
+Class is on Zoom, camera on, and you work **on your own** in your own repo. You write today's
+code in the app: Week 3 → **Code**. Each task is a card with its file, the lines around it, and
+grey code you can type over (Tab takes the next word) or fill in with **Paste it all**. **Save and
+run its tests** writes the task into your file and runs its tests: the card turns green when they
+pass, then **Commit it**. When a step says "together", I share my Code tab and write it live while
+you write it in yours. Prefer VS Code? It's the same file: edit it there and run
+`npx vitest tests/week-03`. At each checkpoint I ask two or three of you to share your screen.
 
 **Stuck?** Raise your Zoom hand or send me a private message with the first line of the
 failing test.
 
 You'll work in `components/client.ts` and `protocol/messages.ts`, then on the board in
-`board/student/memory-bus.tsx`. Commit each time a task's checks go green (see "The commit
+`board/student/memory-bus.tsx`. Commit each time a task's card goes green (see "The commit
 rhythm" below).
 
 1. **Open the app and watch the tests fail (5 min).** In your course folder, run `npm start`. The
@@ -57,7 +61,8 @@ rhythm" below).
 
    ✅ Tests fail with errors that start `week 3:`. That's the `todo()` stub telling you where to
    work. Leave Vitest running; it re-runs every time you save. (Week 3's **Checks** tab in the app
-   runs the same tests once.)
+   runs the same tests once.) Then open Week 3's **Code** tab: one card per task, today's first,
+   in the order below.
 
    **No week-2 design note (or only part of one)?** You can still build everything today: the
    code doesn't need it, and for the board use this starting design (change anything you like):
@@ -80,7 +85,7 @@ rhythm" below).
    - Parse each message that arrives with `parseMessage`; **resolve** with the `welcome`;
      **reject** if the bus answers `error`, or if the socket errors.
 
-   ✅ `handshake.test.ts` passes. Commit: `week 3: handshake`.
+   ✅ The handshake card turns green (`handshake.test.ts` passes). **Commit it**: `week 3: handshake`.
 
 3. **The tick barrier (8 min).** In `bus/server.ts`, `TODO(week 3, tick-barrier)`. Until now
    the bus ended a tick as soon as everyone said `tick.done`. Make it wait for both:
@@ -93,7 +98,7 @@ rhythm" below).
 
    ✅ Check it: does your condition have both halves? `order.test.ts` can't
    run yet (it needs the memory and the tick handler you write at home); it goes green once your
-   take-home is done. Commit: `week 3: tick-barrier`.
+   take-home is done, so its card may stay red until then. **Commit it**: `week 3: tick-barrier`.
 
 4. **Ask and get your answer back (15 min, together).** `TODO(week 3, client-request)`. Read
    `settle()` first: when a message with a `replyTo` arrives, it looks that id up in the `pending`
@@ -101,7 +106,8 @@ rhythm" below).
    this request's `resolve` and `reject` in `pending` under the id `send` returned. That's the
    ticket number from the week-2 activity.
 
-   ✅ The `request()` tests pass. Commit: `week 3: client-request`.
+   ✅ The client-request card turns green (the `request()` tests pass). **Commit it**:
+   `week 3: client-request`.
 
 5. **Your board: memory lights up (15 min).** In the app, open Week 3's **Board** tab and press
    **Start the board** (it runs the bus, the components and the board's server for you; without
@@ -115,8 +121,9 @@ rhythm" below).
    - `TODO(week 3, board-draw-memory)` in `MemoryLayer`: draw memory as cells and light the ones
      read or written this tick.
 
-   Run `codex` in a terminal in your course folder and paste this (change the colours or the rule
-   to match your design note):
+   Both have a card in the Code tab, with this prompt beside it (**Copy the prompt**). Run `codex`
+   in a terminal in your course folder and paste it (change the colours or the rule to match your
+   design note):
 
    ```text
    In board/student/memory-bus.tsx only, fill in two functions. Don't change any other file or
@@ -163,9 +170,10 @@ rhythm" below).
 
    </details>
 
-   ✅ The `cellActivity` checks in `tests/week-03/board-memory-bus.test.ts` pass, **and** on the
-   board your memory cells light up as the recording plays (press play; slow it down to see each
-   tick). That's yours, running. Commit: `week 3: board memory`.
+   ✅ The board-cell-activity card turns green (press **Save and run its tests** after Codex is
+   done; the checks are in `tests/week-03/board-memory-bus.test.ts`), **and** on the board your
+   memory cells light up as the recording plays (press play; slow it down to see each tick).
+   That's yours, running. Commit: `week 3: board memory`.
 
 6. **Push (1 min).**
 
@@ -175,8 +183,9 @@ rhythm" below).
 
 ### The commit rhythm
 
-Each time a task's checks go green, commit just that task: `git add -A && git commit -m
-"week 3: <task>"` (for example `week 3: memory-read`). Push at the end of the session. A history
+Each time a task's card goes green, press **Commit it**: it commits that task's file as
+`week 3: <task>` (for example `week 3: memory-read`). In VS Code instead: `git add -A && git commit
+-m "week 3: <task>"`. Push at the end of the session. A history
 of small green steps is easy to explain, and easy to go back to.
 
 ### What the code looks like (shape only)
