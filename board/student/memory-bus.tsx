@@ -18,9 +18,14 @@ export type CellActivity = { kind: "read" | "write"; core: number | null; by: st
 /** Which memory cells were read or written this tick, by whom. A cell both read and written counts as written. */
 export function cellActivity(frame: Pick<Frame, "accesses">): Map<number, CellActivity> {
   // @student week=3 part=class id=board-cell-activity "Turn this tick's memory accesses into one entry per cell touched"
-  // TODO(week 3, board-cell-activity): Turn this tick's memory accesses into one entry per cell touched
-  // Tests: tests/week-03/   Guide: docs/weeks/week-03.md
-  return todo("week 3: board-cell-activity", frame);
+  const cells = new Map<number, CellActivity>();
+  for (const access of frame.accesses) {
+    for (let address = access.address; address < access.address + access.length && address < MEMORY_SIZE; address++) {
+      if (cells.get(address)?.kind === "write") continue;
+      cells.set(address, { kind: access.kind, core: access.core, by: access.by });
+    }
+  }
+  return cells;
   // @end
 }
 
