@@ -34,9 +34,12 @@ export function read(memory: Memory, address: number, length: number): MemoryRes
 /** Returns a new Memory; the old one is left untouched. */
 export function write(memory: Memory, address: number, bytes: readonly number[]): MemoryResult<Memory> {
   // @student week=3 part=home id=memory-write "Return a copy of memory with `bytes` written at `address`, or a fault"
-  // TODO(week 3, memory-write): Return a copy of memory with `bytes` written at `address`, or a fault
-  // Tests: tests/week-03/   Guide: docs/weeks/week-03.md
-  return todo("week 3: memory-write", memory, address, bytes);
+  const fault = checkRange(address, bytes.length);
+  if (fault) return { ok: false, fault };
+  if (bytes.some((b) => !Number.isInteger(b) || b < 0 || b > 0xff)) return { ok: false, fault: "every value must be a byte (0-255)" };
+  const copy = memory.bytes.slice();
+  copy.splice(address, bytes.length, ...bytes);
+  return { ok: true, value: { bytes: copy } };
   // @end
 }
 
