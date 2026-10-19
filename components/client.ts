@@ -109,9 +109,9 @@ export async function connect(options: ClientOptions): Promise<BusClient> {
 
   function handleTick(message: MessageOf<"tick">): void {
     // @student week=3 part=home id=handle-tick "Remember the tick, run the tick handlers, then send tick.done to the bus"
-    // TODO(week 3, handle-tick): Remember the tick, run the tick handlers, then send tick.done to the bus
-    // Tests: tests/week-03/   Guide: docs/weeks/week-03.md
-    return todo("week 3: handle-tick", message);
+    tick = message.tick;
+    for (const handler of tickHandlers) handler(tick);
+    send("tick.done", "bus", {});
     // @end
   }
 
