@@ -217,10 +217,7 @@ export function createBus(options: BusCoreOptions = {}): BusCore {
   /** True when every clocked component is done and every request has had its reply. */
   function isTickComplete(): boolean {
     // @student week=3 part=class id=tick-barrier "The tick is over when nobody is still working and no request is still open"
-    // TODO(week 3, tick-barrier): The tick is over when nobody is still working and no request is still open
-    // Tests: tests/week-03/   Guide: docs/weeks/week-03.md
-    // Until you build this, the bus only waits for tick.done. Week 3 shows why that isn't enough.
-    return waitingFor.size === 0;
+    return waitingFor.size === 0 && openRequests.size === 0;
     // @end
   }
 

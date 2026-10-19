@@ -89,9 +89,10 @@ export async function connect(options: ClientOptions): Promise<BusClient> {
 
   function request<T extends MessageType>(type: T, to: string, payload: PayloadOf<T>): Promise<Message> {
     // @student week=3 part=class id=client-request "Send with a fresh id and resolve when the matching reply arrives"
-    // TODO(week 3, client-request): Send with a fresh id and resolve when the matching reply arrives
-    // Tests: tests/week-03/   Guide: docs/weeks/week-03.md
-    return todo("week 3: client-request", type, to, payload);
+    return new Promise((resolve, reject) => {
+      const id = send(type, to, payload);
+      pending.set(id, { resolve, reject });
+    });
     // @end
   }
 

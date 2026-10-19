@@ -46,9 +46,28 @@ export type LayerProps = { frame: Frame; progress: number };
 /** Memory: one cell per byte, lit by whoever reads or writes it. */
 export function MemoryLayer({ frame }: LayerProps) {
   // @student week=3 part=class id=board-draw-memory "Draw memory as cells and light the ones read or written this tick"
-  // TODO(week 3, board-draw-memory): Draw memory as cells and light the ones read or written this tick
-  // Tests: tests/week-03/   Guide: docs/weeks/week-03.md
-  return notBuilt("week 3: board-draw-memory", frame);
+  const activity = cellActivity(frame);
+  return (
+    <g>
+      <Label x={MEMORY_AREA.x + MEMORY_AREA.w / 2} y={MEMORY_AREA.y - 3} size={12} weight={700}>
+        Memory · 1024 bytes
+      </Label>
+      <MemoryGrid
+        rect={MEMORY_AREA}
+        size={MEMORY_SIZE}
+        columns={MEMORY_COLUMNS}
+        colourOf={(address) => {
+          const cell = activity.get(address);
+          if (cell) return cell.core !== null ? coreColour(cell.core) : INK.yellow;
+          return frame.memory[address] !== 0 ? "#8fb5a3" : null;
+        }}
+        titleOf={(address) => {
+          const cell = activity.get(address);
+          return explainCell(address, frame.memory[address], { read: cell?.kind === "read", written: cell?.kind === "write", by: cell?.by });
+        }}
+      />
+    </g>
+  );
   // @end
 }
 

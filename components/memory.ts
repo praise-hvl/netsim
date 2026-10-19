@@ -18,9 +18,20 @@ export async function startMemory(options: { url?: string; id?: string } = {}): 
   /** Handle one request and send exactly one reply. */
   function answer(message: Message): void {
     // @student week=3 part=home id=memory-handler "Reply mem.data to mem.read, mem.ack to mem.write/program.load, fault when out of range"
-    // TODO(week 3, memory-handler): Reply mem.data to mem.read, mem.ack to mem.write/program.load, fault when out of range
-    // Tests: tests/week-03/   Guide: docs/weeks/week-03.md
-    return todo("week 3: memory-handler", message);
+    if (message.type === "mem.read") {
+      const { address, length } = message.payload;
+      const result = read(memory, address, length);
+      if (!result.ok) return void client.reply(message, "fault", { code: "OUT_OF_RANGE", message: result.fault });
+      lastRead = { address, length };
+      client.reply(message, "mem.data", { address, bytes: result.value });
+    } else if (message.type === "mem.write" || message.type === "program.load") {
+      const { address, bytes } = message.payload;
+      const result = write(memory, address, bytes);
+      if (!result.ok) return void client.reply(message, "fault", { code: "OUT_OF_RANGE", message: result.fault });
+      memory = result.value;
+      lastWrite = { address, length: bytes.length };
+      client.reply(message, "mem.ack", { address, length: bytes.length });
+    }
     // @end
   }
 
