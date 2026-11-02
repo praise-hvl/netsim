@@ -50,7 +50,50 @@ export function decode(bytes: Bytes4): DecodeResult {
   // @student week=4 part=class id=decode "Turn 4 bytes into an Instruction (bad opcode, register or address -> error)"
   // TODO(week 4, decode): Turn 4 bytes into an Instruction (bad opcode, register or address -> error)
   // Tests: tests/week-04/   Guide: docs/weeks/week-04.md
-  return todo("week 4: decode", bytes);
+  if (bytes.some((value) => !Number.isInteger(value) || value < 0 || value > 0xff)) {
+    return { ok: false, error: "Instruction bytes must be integers from 0 to 255" };
+  }
+  const [opcode, a, b, c] = bytes;
+  const address = (b << 8) | c;
+
+  switch (opcode) {
+    case OPCODES.NOP:
+      return { ok: true, instruction: { op: "NOP" } };
+    case OPCODES.LOAD:
+      if (!isRegister(a)) return { ok: false, error: `R${a} is not a register` };
+      if (address >= MEMORY_SIZE) return { ok: false, error: `${hex(address)} is outside memory` };
+      return { ok: true, instruction: { op: "LOAD", reg: a, address } };
+    case OPCODES.STORE:
+      if (!isRegister(a)) return { ok: false, error: `R${a} is not a register` };
+      if (address >= MEMORY_SIZE) return { ok: false, error: `${hex(address)} is outside memory` };
+      return { ok: true, instruction: { op: "STORE", reg: a, address } };
+    case OPCODES.ADD:
+      if (!isRegister(a)) return { ok: false, error: `R${a} is not a register` };
+      if (!isRegister(b)) return { ok: false, error: `R${b} is not a register` };
+      return { ok: true, instruction: { op: "ADD", reg: a, src: b } };
+    case OPCODES.SUB:
+      if (!isRegister(a)) return { ok: false, error: `R${a} is not a register` };
+      if (!isRegister(b)) return { ok: false, error: `R${b} is not a register` };
+      return { ok: true, instruction: { op: "SUB", reg: a, src: b } };
+    case OPCODES.JMP:
+      if (address >= MEMORY_SIZE) return { ok: false, error: `${hex(address)} is outside memory` };
+      return { ok: true, instruction: { op: "JMP", address } };
+    case OPCODES.LOADI:
+      if (!isRegister(a)) return { ok: false, error: `R${a} is not a register` };
+      return { ok: true, instruction: { op: "LOADI", reg: a, value: c } };
+    case OPCODES.JZ:
+      if (address >= MEMORY_SIZE) return { ok: false, error: `${hex(address)} is outside memory` };
+      return { ok: true, instruction: { op: "JZ", address } };
+    case OPCODES.JNZ:
+      if (address >= MEMORY_SIZE) return { ok: false, error: `${hex(address)} is outside memory` };
+      return { ok: true, instruction: { op: "JNZ", address } };
+    case OPCODES.IRET:
+      return { ok: true, instruction: { op: "IRET" } };
+    case OPCODES.HALT:
+      return { ok: true, instruction: { op: "HALT" } };
+    default:
+      return { ok: false, error: `unknown opcode ${hex(opcode, 2)}` };
+  }
   // @end
 }
 
