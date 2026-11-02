@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="glossary" content="">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetSim Week 7 · Build: many cores on the board</title>
+<style>
+:root{--bg:#fff;--ink:#16201b;--muted:#56615b;--line:#dfe5e1;--soft:#f3f7f4;--green:#173627;--mint:#5fc79a;--mint-ink:#1f7a55;--red:#d8142a;--yellow:#ffcb12;--code-bg:#f3f5f4;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1512;--ink:#e8efeb;--muted:#9aa8a0;--line:#26312b;--soft:#151d18;--mint-ink:#6fd3a7;--red:#ff5a67;--code-bg:#151d18;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:18px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,"Helvetica Neue",Arial,sans-serif}
+.wrap{max-width:940px;margin:0 auto;padding-inline:20px}
+h1,h2,h3{line-height:1.15;margin:0;text-wrap:balance}
+h2{font-size:clamp(26px,4vw,34px);font-weight:800}
+h3{font-size:21px;font-weight:700;margin-top:6px}
+p{margin:0}
+a{color:var(--mint-ink);text-underline-offset:3px}
+code,pre,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+code{background:var(--code-bg);padding:1px 6px;border-radius:4px;font-size:.88em}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:0;font-size:.86em;line-height:1.55}
+pre code{background:none;padding:0}
+pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere}
+.round{border-top:1px solid var(--line);padding-top:18px}
+details.notes{min-width:0}
+.hero{background:var(--green);color:#fff;padding-block:52px 44px}
+.hero .wrap{display:grid;gap:12px}
+.tag{font:700 13px/1 ui-monospace,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:#a8e3c8}
+.hero h1{font-size:clamp(36px,6.5vw,60px);font-weight:800;letter-spacing:-.02em}
+.hero p{font-size:19px;color:#d7e6de;max-width:66ch}
+main{display:grid;gap:52px;padding-block:40px 72px}
+section{display:grid;gap:16px}
+.lede{font-size:19px;color:var(--muted);max-width:66ch}
+ul,ol{margin:0;padding-left:24px;display:grid;gap:6px}
+li,section,main>*{min-width:0}
+.steps>li{padding-left:4px}
+.steps>li+li{border-top:1px solid color-mix(in srgb,var(--muted) 45%,transparent);padding-top:18px;margin-top:8px}
+.steps>li>ul{margin-top:6px}
+.check{background:var(--soft);border-left:4px solid var(--mint);padding:10px 14px;border-radius:0 6px 6px 0}
+.note{background:var(--soft);border-left:4px solid var(--yellow);padding:10px 14px;border-radius:0 6px 6px 0}
+.warn{background:var(--soft);border-left:4px solid var(--red);padding:10px 14px;border-radius:0 6px 6px 0}
+.diagram{margin:0;max-width:100%;min-width:0;overflow-x:auto;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fff}
+.diagram svg{display:block;width:100%;height:auto}
+.diagram text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Arial,sans-serif}
+.diagram text.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.caption{font-size:15px;color:var(--muted)}
+.table-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:16px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.cards>div{border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;gap:8px;align-content:start}
+.minutes{font:700 13px/1 ui-monospace,Menlo,monospace;color:var(--mint-ink)}
+details{border:1px solid var(--line);border-radius:8px;padding:10px 14px}
+details+details{margin-top:8px}
+summary{cursor:pointer;font-weight:700}
+details[open] summary{margin-bottom:8px}
+.box{display:inline-block;width:18px;height:18px;border:2px solid var(--mint);border-radius:4px;vertical-align:-3px;margin-right:8px}
+ul.checklist{list-style:none;padding-left:0}
+.toc{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:15px}
+@media (max-width:640px){body{font-size:17px}.hero{padding-block:36px 30px}main{gap:40px}}
+@media print{
+  :root{--bg:#fff;--ink:#000;--muted:#333;--line:#bbb;--soft:#f4f4f4}
+  .hero{background:#fff;color:#000;border-bottom:3px solid #000;padding-block:10px}
+  .hero p,.tag{color:#000}
+  .diagram{overflow:visible;break-inside:avoid}
+  .diagram svg{min-width:0!important}
+  section{break-inside:auto}
+  h2,h3{break-after:avoid}
+  a{color:#000}
+}
+</style>
+</head>
+<body>
+<header class="hero"><div class="wrap">
+<div class="tag">Week 7 · Build</div>
+<h1>Many cores on the board</h1>
+<p>Your computer runs programs, takes turns and handles interrupts. These steps put all of it on the board, on 1 to 8 cores: one lane per core, the scheduler's moves, and interrupts arriving. Do them at home after weeks 5 and 6 (the Build tab lists anything still open first). Monday 16 Nov is a check-in: bring what's stuck, show where you are, and I introduce many cores.</p>
+</div></header>
+<main class="wrap">
+<section id="s1">
+<h2>How each step works</h2>
+<p>The steps are grouped into components, the parts of your computer. Each one starts with what it is and what it will do, and ends by showing it working. The Build tab walks you through them in order.</p>
+<ol><li>Read the idea (2-3 lines).</li>
+<li>Press <b>Send to the agent</b>, then read what it changed in the diff. Keep only what you can explain.</li>
+<li>When the tab says the step's tests pass, press <b>Commit it</b>, then <b>Next step</b>.</li>
+<li>Check you can answer the step's <b>Ask</b> in your own words: I use those questions in explain-it-back.</li></ol>
+<p>If a step fails, read its <b>Stuck?</b> line first. Push from the app whenever you stop. The Build tab remembers where you are: open it again and it shows your next step.</p>
+
+</section>
+<section id="s2">
+<h2>Getting help between classes</h2>
+<p>Post in the class chat: the step's number, and the first line of the failing test (or what the agent said). I answer there, and anyone who's past that step can help too. Mondays are check-ins: bring what's stuck.</p>
+<p>Due: every step on this page, and everything still open, before the demo on Monday 23 Nov.</p>
+
+</section>
+<section id="s3">
+<h2>Component 1 · Many cores on the board</h2>
+<p>The board shows every core: one lane each, the scheduler moving programs between them, and interrupts arriving. When it's done, you can watch your computer on 1 to 8 cores.</p>
+<p class="note"><b>When it works:</b> on the Board, press play on 2 cores and then 8: one lane per core, with moves and interrupts shown.<br>Check: <code>npx vitest run tests/week-07/board-cores.test.ts</code></p>
+<details class="notes"><summary>Design notes</summary>
+<div class="table-wrap"><table><thead><tr><th>Part</th><th>What it shows</th></tr></thead><tbody><tr><td>Lanes</td><td>one per core, top to bottom, inside the CPU area, never overlapping</td></tr><tr><td>A core's lane</td><td>your core view: its steps, program and PC</td></tr><tr><td>Moves</td><td>a program whose core changed since the last tick: landed, left or switched</td></tr><tr><td>"raised"</td><td>an interrupt packet on the bus this tick, from its device</td></tr><tr><td>"taken"</td><td>a core that started a handler this tick (it wasn't in one a tick ago)</td></tr></tbody></table></div>
+<p>On 2 cores and on 8 cores, the programs end with the same memory: a program's result doesn't depend on which core ran it.</p>
+</details>
+<h3 class="round">Step 1 · One lane per core</h3>
+<p>The CPU area is split into one lane per core, top to bottom: every lane inside the area, none overlapping, for any count from 1 to 8.</p>
+<pre><code>Use this approach: split the area's height evenly by the count, one rect per core from top to
+bottom, with a small gap between lanes.
+
+In board/student/cores.tsx only, fill in TODO(week 7, board-lane-rects) in laneRects. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it, and
+explain each line you write. Then run: npx vitest run tests/week-07/board-cores.test.ts -t "laneRects"</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-07/board-cores.test.ts -t "laneRects"</code> · Commit: <code>week 7: board-lane-rects</code><br>Ask: 8 cores in an area 160 high: how tall is each lane?<br><b>Stuck?</b> If lanes overlap or spill out, add up their heights and gaps: they have to fit in the area.</p>
+<h3 class="round">Step 2 · The scheduler's moves</h3>
+<p>Compare which core each program is on between the last tick and this one. Every program whose core changed is a move: it landed, left, or switched.</p>
+<pre><code>Use this approach: for each process in this frame, compare its core with that process's core in the
+previous frame, and list it when they differ.
+
+In board/student/cores.tsx only, fill in TODO(week 7, board-scheduler-moves) in schedulerMoves.
+Don't change anything outside that region, or any test. Tell me what you'll change before you change
+it, and explain each line you write. Then run:
+npx vitest run tests/week-07/board-cores.test.ts -t "schedulerMoves"</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-07/board-cores.test.ts -t "schedulerMoves"</code> · Commit: <code>week 7: board-scheduler-moves</code><br>Ask: a program stays on core 1 for ten ticks. How many moves is that?<br><b>Stuck?</b> If every program shows up every tick, compare with the previous tick: only a change of core is a move.</p>
+<h3 class="round">Step 3 · Interrupts arriving</h3>
+<p>Two kinds of marker: "raised" for each interrupt packet on the bus this tick, and "taken" for each core that started a handler this tick (it wasn't in one a tick ago).</p>
+<pre><code>Use this approach: a raised marker for each irq packet this tick, and a taken marker for each core
+in a handler now that wasn't in one in the previous frame.
+
+In board/student/cores.tsx only, fill in TODO(week 7, board-interrupt-markers) in interruptMarkers.
+Don't change anything outside that region, or any test. Tell me what you'll change before you change
+it, and explain each line you write. Then run:
+npx vitest run tests/week-07/board-cores.test.ts -t "interruptMarkers"</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-07/board-cores.test.ts -t "interruptMarkers"</code> · Commit: <code>week 7: board-interrupt-markers</code><br>Ask: why can "taken" come a few ticks after "raised"?<br><b>Stuck?</b> If "taken" shows every tick a core is in a handler, check it wasn't already in one a tick ago.</p>
+<h3 class="round">Step 4 · Draw every core</h3>
+<p>Put it together: a lane for each core with your <code>CoreView</code> in it, the scheduler's moves, and the interrupt markers. Open the <b>Board</b> tab and press <b>play</b> (scroll down if you don't see the controls), on 2 cores and then on 8.</p>
+<pre><code>Use this approach: laneRects for the lanes, your CoreView in each lane, and the moves and markers
+from schedulerMoves and interruptMarkers.
+
+In board/student/cores.tsx only, fill in TODO(week 7, board-draw-cores) in CoresView. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it, and
+explain each line you write. No test checks this one: I'll check it on the board.</code></pre>
+<p class="check">Test: none yet: check it on the board, on 2 cores and on 8 · Commit: <code>week 7: board-draw-cores</code><br>Ask: what's one thing you told the agent to change on the board, and why?<br><b>Stuck?</b> If the board sits at tick 0, press play (scroll down to the controls).</p>
+
+</section>
+<section id="s4">
+<h2>When the steps are done</h2>
+<p>Go back to the Build tab's list: anything not green yet, from any week, in order. When everything is green, run the demo on 2 cores and then on 8. Be ready to say what changed on the board, what didn't, and why the final memory is the same: it's part of your demo.</p>
+
+</section>
+<section id="s5">
+<h2>Get ready to demo</h2>
+<p>Before the demo on 23 Nov, do the steps on Week 8's page, "Get ready to demo" (your board on the web, your portfolio README, and one rehearsal).</p>
+<p><b>Explain it back</b> before the demo, no notes or AI: a 5-minute slot with me, or a 3-minute video answering two of the Ask questions above, which I post in the class chat.</p>
+<p class="note">If the Build tab won't start: press <b>Copy the prompt</b> on the step, run <code>codex</code> in a terminal in your course folder, and paste it.</p>
+</section>
+</main>
+<script>addEventListener('beforeprint',()=>document.querySelectorAll('details').forEach(d=>d.open=true));</script>
+</body>
+</html>

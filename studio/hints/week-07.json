@@ -1,0 +1,299 @@
+{
+  "board-lane-rects": {
+    "code": "const gap = count > 4 ? 0.8 : 1.6;\nconst h = (area.h - gap * (count - 1)) / count;\nreturn Array.from({ length: count }, (_, i) => ({ x: area.x, y: area.y + i * (h + gap), w: area.w, h }));",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Leave a small gap between lanes, smaller when there are many cores so the lanes don't get too thin."
+      },
+      {
+        "line": 1,
+        "explain": "Take the gaps out of the area's height, then share what's left equally: that's each lane's height."
+      },
+      {
+        "line": 2,
+        "explain": "One rectangle per core, stacked top to bottom: lane `i` starts `i` lanes (and gaps) below the top. Every lane is as wide as the area."
+      }
+    ]
+  },
+  "board-scheduler-moves": {
+    "code": "const moves: Move[] = [];\nfor (const p of frame.processes) {\n  const before = previous.processes.find((q) => q.pid === p.pid)?.core ?? null;\n  if (before !== p.core) moves.push({ program: p.name, from: before, to: p.core });\n}\nreturn moves;",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Start with no moves."
+      },
+      {
+        "line": 1,
+        "explain": "For each program, find which core it was on last tick (`null` if none) and compare with the core it's on now. A different core means the scheduler moved it: onto a core, off one, or across."
+      },
+      {
+        "line": 5,
+        "explain": "Programs that stayed where they were don't show up at all."
+      }
+    ]
+  },
+  "board-interrupt-markers": {
+    "code": "const raised: InterruptMarker[] = frame.packets\n  .filter((p) => p.type === \"irq\" && p.address !== null)\n  .map((p) => ({ kind: \"raised\", from: p.from, vector: p.address ?? 0 }));\nconst wasInHandler = (id: number) => previous?.cores.find((c) => c.id === id)?.inHandler ?? false;\nconst taken: InterruptMarker[] = frame.cores\n  .filter((c) => c.inHandler && !wasInHandler(c.id))\n  .map((c) => ({ kind: \"taken\", core: c.id, vector: handlerOf(c.pc) }));\nreturn [...raised, ...taken];",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Raised: every `irq` message on the bus this tick is a device asking for attention. Its address is the handler (the vector) it wants."
+      },
+      {
+        "line": 3,
+        "explain": "Was this core already running a handler last tick? (No previous tick: no.)"
+      },
+      {
+        "line": 4,
+        "explain": "Taken: a core that's in a handler now but wasn't last tick has just started one. Its PC tells us which handler."
+      },
+      {
+        "line": 7,
+        "explain": "The board shows both: raised first, then taken."
+      }
+    ]
+  },
+  "board-draw-cores": {
+    "code": "const lanes = laneRects(frame.cores.length, { x: rect.x, y: rect.y + 6, w: rect.w, h: rect.h - 14 });\nconst moves = previous ? schedulerMoves(previous, frame) : [];\nconst markers = interruptMarkers(previous, frame);\nconst notes = [\n  ...moves.map((m) => (m.to === null ? `${m.program} leaves core ${m.from}` : m.from === null ? `${m.program} -> core ${m.to}` : `${m.program}: core ${m.from} -> ${m.to}`)),\n  ...markers.map((m) =>\n    m.kind === \"raised\" ? `⚡ ${frame.parts[m.from]?.label ?? m.from} interrupts (handler ${hex(m.vector)})` : `⚡ core ${m.core} runs the handler at ${hex(m.vector)}`,\n  ),\n  ...(frame.pendingIrqs > 0 ? [`${frame.pendingIrqs} ${frame.pendingIrqs === 1 ? \"interrupt waits\" : \"interrupts wait\"} for a core`] : []),\n];\nreturn (\n  <g>\n    <Label x={rect.x} y={rect.y + 2} anchor=\"start\" size={12} weight={700}>\n      {`CPU · ${frame.cores.length} cores`}\n    </Label>\n    {frame.cores.map((core, i) => (\n      <CoreView key={core.id} frame={frame} core={core} rect={lanes[i]} colour={coreColour(core.id)} />\n    ))}\n    <Label x={rect.x} y={rect.y + rect.h - 3} anchor=\"start\" size={11} weight={600} fill={notes.length ? INK.red : INK.darkGrey}>\n      {notes.length ? notes.join(\"  ·  \") : \"scheduler: no changes this tick\"}\n    </Label>\n  </g>\n);",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "One lane per core, leaving room for the title above and the notes line below."
+      },
+      {
+        "line": 1,
+        "explain": "What changed since last tick: the scheduler's moves (none on the very first tick) and the interrupt markers."
+      },
+      {
+        "line": 3,
+        "explain": "Turn the moves, the markers and the interrupts still waiting into short sentences for the notes line."
+      },
+      {
+        "line": 10,
+        "explain": "Draw the title, each core in its own lane in its own colour, and the notes line (red when something happened this tick)."
+      }
+    ]
+  },
+  "timer-input": {
+    "code": "if (input.action === \"start\") return { ...state, fsm: timerFsm.go(state.fsm, \"COUNTING\") };\nreturn { ...state, fsm: timerFsm.go(state.fsm, \"STOPPED\"), elapsed: 0 };",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Start: move the timer's state machine to `COUNTING`. It keeps the ticks counted so far."
+      },
+      {
+        "line": 1,
+        "explain": "Anything else is stop: go to `STOPPED` and forget the ticks counted, so the next start waits a full interval."
+      }
+    ]
+  },
+  "timer-tick": {
+    "code": "if (state.fsm !== \"COUNTING\") return { state, effects: [] };\nconst elapsed = state.elapsed + 1;\nif (elapsed < state.interval) return { state: { ...state, elapsed }, effects: [] };\nreturn { state: { ...state, elapsed: 0, count: state.count + 1 }, effects: [{ kind: \"irq\" }] };",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "A stopped timer does nothing on a tick."
+      },
+      {
+        "line": 1,
+        "explain": "Count this tick. Not a full interval yet: just remember the count."
+      },
+      {
+        "line": 3,
+        "explain": "A full interval: start counting again from 0, note one more firing, and raise one `irq`."
+      }
+    ]
+  },
+  "can-take-interrupt": {
+    "code": "return (core.phase === \"IDLE\" || core.phase === \"FETCH\") && !inHandler(core);",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Only between instructions: `IDLE` (nothing to run) or `FETCH` (the last instruction finished, the next hasn't started). Mid-`LOAD` the core is waiting for memory and can't be interrupted. And never while it's already running a handler: one interrupt at a time."
+      }
+    ]
+  },
+  "enter-interrupt": {
+    "code": "if (!canTakeInterrupt(core)) throw new Error(`core ${core.id} can't take an interrupt in ${core.phase}`);\nconst resume = core.phase === \"IDLE\" ? \"IDLE\" : \"FETCH\";\nconst frame = { registers: core.registers, pc: core.pc, flags: core.flags, retired: core.retired, resume } as const;\nreturn { ...core, stack: [frame], pc: vector, phase: coreFsm.go(core.phase, \"FETCH\") };",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Taking an interrupt at the wrong moment is a bug in the caller, so stop loudly."
+      },
+      {
+        "line": 1,
+        "explain": "Remember where to come back to: idle again, or the next instruction."
+      },
+      {
+        "line": 2,
+        "explain": "The frame: everything `IRET` needs to put the program back exactly as it was. The flags matter: without them a `JNZ` after the handler could jump the wrong way."
+      },
+      {
+        "line": 3,
+        "explain": "Push the frame, jump to the handler (the vector), and fetch its first instruction."
+      }
+    ]
+  },
+  "iret": {
+    "code": "const [frame] = core.stack;\nif (!frame) return faultWith(core, \"IRET outside an interrupt handler\");\nreturn {\n  core: {\n    ...moveTo(core, frame.resume),\n    registers: frame.registers,\n    pc: frame.pc,\n    flags: frame.flags,\n    stack: [],\n    retired: frame.retired,\n  },\n  effects: [],\n};",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "The frame saved when the interrupt was taken. None means `IRET` ran outside a handler: that's a fault."
+      },
+      {
+        "line": 2,
+        "explain": "Put everything back: the phase it was in, its registers, PC, flags and instruction count, and empty the stack. The program carries on as if nothing happened."
+      }
+    ]
+  },
+  "$tests": {
+    "tests/week-07/board-cores.test.ts > laneRects: one lane per core gives N lanes for N cores, inside the area, never overlapping": [
+      "board-lane-rects"
+    ],
+    "tests/week-07/board-cores.test.ts > schedulerMoves: the scheduler's choices lists a move for every program whose core changed, and nothing else": [
+      "board-scheduler-moves"
+    ],
+    "tests/week-07/board-cores.test.ts > schedulerMoves: the scheduler's choices sees the first program land on a core": [
+      "board-scheduler-moves"
+    ],
+    "tests/week-07/board-cores.test.ts > interruptMarkers: interrupts arriving 2-cores: an irq on the bus is \"raised\", naming who raised it and its handler": [
+      "board-interrupt-markers"
+    ],
+    "tests/week-07/board-cores.test.ts > interruptMarkers: interrupts arriving 2-cores: one \"raised\" per irq packet, and no other": [
+      "board-interrupt-markers"
+    ],
+    "tests/week-07/board-cores.test.ts > interruptMarkers: interrupts arriving 2-cores: every raised interrupt is \"taken\" by a core a few ticks later, with the same handler": [
+      "board-interrupt-markers"
+    ],
+    "tests/week-07/board-cores.test.ts > interruptMarkers: interrupts arriving 2-cores: \"taken\" names a core that is in its handler now and wasn't a tick ago": [
+      "board-interrupt-markers"
+    ],
+    "tests/week-07/board-cores.test.ts > interruptMarkers: interrupts arriving 2-cores: a quiet tick (no irq, no core starting a handler) gives none": [
+      "board-interrupt-markers"
+    ],
+    "tests/week-07/board-cores.test.ts > interruptMarkers: interrupts arriving 8-cores: an irq on the bus is \"raised\", naming who raised it and its handler": [
+      "board-interrupt-markers"
+    ],
+    "tests/week-07/board-cores.test.ts > interruptMarkers: interrupts arriving 8-cores: one \"raised\" per irq packet, and no other": [
+      "board-interrupt-markers"
+    ],
+    "tests/week-07/board-cores.test.ts > interruptMarkers: interrupts arriving 8-cores: every raised interrupt is \"taken\" by a core a few ticks later, with the same handler": [
+      "board-interrupt-markers"
+    ],
+    "tests/week-07/board-cores.test.ts > interruptMarkers: interrupts arriving 8-cores: \"taken\" names a core that is in its handler now and wasn't a tick ago": [
+      "board-interrupt-markers"
+    ],
+    "tests/week-07/board-cores.test.ts > interruptMarkers: interrupts arriving 8-cores: a quiet tick (no irq, no core starting a handler) gives none": [
+      "board-interrupt-markers"
+    ],
+    "tests/week-07/button-irq.test.ts > a press becomes an interrupt, and its handler counts it": [
+      "can-take-interrupt",
+      "enter-interrupt",
+      "iret"
+    ],
+    "tests/week-07/cores-irq.test.ts > interrupts on N cores go to a free core, not the one running the program": [
+      "can-take-interrupt",
+      "enter-interrupt",
+      "iret"
+    ],
+    "tests/week-07/cores-irq.test.ts > interrupts on N cores go to a core running a program when every core is busy": [
+      "can-take-interrupt",
+      "enter-interrupt",
+      "iret"
+    ],
+    "tests/week-07/cores-irq.test.ts > interrupts on N cores start on different cores in the same tick, at most one per core": [
+      "can-take-interrupt",
+      "enter-interrupt",
+      "iret"
+    ],
+    "tests/week-07/cores-irq.test.ts > interrupts on N cores with one core, wait their turn and are all handled": [
+      "can-take-interrupt",
+      "enter-interrupt",
+      "iret"
+    ],
+    "tests/week-07/cores.test.ts > round robin across N cores shares 1 core(s) fairly between one more program than there are cores": [],
+    "tests/week-07/cores.test.ts > round robin across N cores shares 2 core(s) fairly between one more program than there are cores": [],
+    "tests/week-07/cores.test.ts > round robin across N cores shares 4 core(s) fairly between one more program than there are cores": [],
+    "tests/week-07/cores.test.ts > round robin across N cores shares 8 core(s) fairly between one more program than there are cores": [],
+    "tests/week-07/cores.test.ts > round robin across N cores with as many cores as programs, nobody waits": [],
+    "tests/week-07/cores.test.ts > how many cores is 2 by default and 1 to 8 otherwise": [],
+    "tests/week-07/cores.test.ts > how many cores can grow, and shrink only by idle cores": [],
+    "tests/week-07/cores.test.ts > how many cores can be changed live over the bus, and a reset keeps the new count": [],
+    "tests/week-07/cores.test.ts > the same programs on 1, 2 and 8 cores end with the same memory, and every program done": [],
+    "tests/week-07/cpu-core-irq.test.ts > taking an interrupt only happens between instructions and outside a handler": [
+      "can-take-interrupt",
+      "enter-interrupt"
+    ],
+    "tests/week-07/cpu-core-irq.test.ts > taking an interrupt saves the registers, PC and flags, and jumps to the vector": [
+      "can-take-interrupt",
+      "enter-interrupt"
+    ],
+    "tests/week-07/cpu-core-irq.test.ts > taking an interrupt IRET puts everything back exactly": [
+      "enter-interrupt",
+      "iret"
+    ],
+    "tests/week-07/cpu-core-irq.test.ts > taking an interrupt doesn't charge the handler's instructions to the interrupted program": [
+      "can-take-interrupt",
+      "enter-interrupt",
+      "iret"
+    ],
+    "tests/week-07/cpu-core-irq.test.ts > taking an interrupt IRET outside a handler is a fault": [
+      "iret"
+    ],
+    "tests/week-07/cpu-core-irq.test.ts > interrupts on the whole CPU counts every interrupt, handled on an idle core without disturbing the program": [
+      "can-take-interrupt",
+      "enter-interrupt",
+      "iret"
+    ],
+    "tests/week-07/cpu-core-irq.test.ts > interrupts on the whole CPU handles the more urgent of two waiting interrupts first": [
+      "can-take-interrupt",
+      "enter-interrupt",
+      "iret"
+    ],
+    "tests/week-07/order.test.ts > message order every reply arrives after its request and before the next tick": [],
+    "tests/week-07/order.test.ts > message order every clocked component finishes each tick exactly once, before the next tick starts": [],
+    "tests/week-07/reset.test.ts > reset in the middle of a tick stops the clock at once, without stalling anyone": [],
+    "tests/week-07/reset.test.ts > a write from a tick abandoned by reset never reaches the freshly reset memory": [],
+    "tests/week-07/reset.test.ts > components that acknowledge the reset carry on as normal": [],
+    "tests/week-07/same-tick.test.ts > a read and a write of the same address in one tick give the same answer in any arrival order": [],
+    "tests/week-07/same-tick.test.ts > arbitration orders by sender id and keeps each sender's own order": [],
+    "tests/week-07/scheduler.test.ts > scheduler pieces picks the first READY process in the queue": [],
+    "tests/week-07/scheduler.test.ts > scheduler pieces gives each idle core the next program": [],
+    "tests/week-07/scheduler.test.ts > scheduler pieces doesn't preempt a core that's in an interrupt handler": [
+      "can-take-interrupt",
+      "enter-interrupt"
+    ],
+    "tests/week-07/scheduler.test.ts > scheduler pieces never switches a program out in the middle of an interrupt handler": [
+      "can-take-interrupt",
+      "enter-interrupt",
+      "iret"
+    ],
+    "tests/week-07/scheduler.test.ts > scheduler pieces switching out saves the context and sends the process to the back": [],
+    "tests/week-07/scheduler.test.ts > round robin on two cores marks programs DONE when they halt and FAILED when they fault": [],
+    "tests/week-07/scheduler.test.ts > round robin on two cores runs the count-down and blink demos side by side": [],
+    "tests/week-07/timer.test.ts > timer raises an irq every `interval` ticks": [
+      "timer-tick"
+    ],
+    "tests/week-07/timer.test.ts > timer fires every tick with interval 1": [
+      "timer-tick"
+    ],
+    "tests/week-07/timer.test.ts > timer does nothing while STOPPED": [],
+    "tests/week-07/timer.test.ts > timer starts and stops from the dashboard, and stopping resets the count-down": [
+      "timer-input",
+      "timer-tick"
+    ],
+    "tests/week-07/timer.test.ts > timer counts the interrupts it raised": [
+      "timer-tick"
+    ],
+    "tests/week-07/timer.test.ts > timer describes itself for the dashboard": [],
+    "tests/week-07/timer.test.ts > timer is less urgent than the button": [],
+    "tests/week-07/timer.test.ts > timer sends irq messages to the CPU with its slot's vector and priority": [
+      "timer-tick"
+    ],
+    "tests/week-07/timer.test.ts > timer starts over from its config when the bus resets": [
+      "timer-tick"
+    ]
+  }
+}
