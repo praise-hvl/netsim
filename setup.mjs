@@ -83,7 +83,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 14;
+export const STUDIO_VERSION = 15;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -5286,6 +5286,8 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .tab { font: 600 13.5px/1 "Inter", sans-serif; padding: 9px 14px; border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0; background: none; cursor: pointer; color: var(--muted); }
 .tab.on { color: var(--ink); background: var(--panel); border-color: var(--line); margin-bottom: -1px; }
 .tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.framebar { display: flex; }
+.ctab.fulllesson { margin-left: auto; text-decoration: none; }
 .agenttab { display: grid; gap: 12px; padding-bottom: 24px; min-width: 0; }
 .chatui { display: grid; gap: 10px; }
 /* The Build view takes the whole width: the course list hides while it's open. */
@@ -6826,14 +6828,19 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     const nn = String(g.week).padStart(2, "0");
     // From week 4 the class is building: the Build tab (the agent, step by step) comes first.
     const building = g.kind !== "setup" && g.week >= 4;
-    const tabs = [...(building ? [["agent", "Build"]] : []), ["page", g.page ? "Lesson page" : "Guide"], ...(g.kind !== "setup" ? [["code", "Code"], ...(building ? [] : [["agent", "Agent"]])] : []), ...(g.note ? [["note", g.kind === "setup" ? "Your notes" : "Design note"]] : []), ["board", "Board"], ["checks", "Checks"]];
+    // Build weeks have no Lesson page tab: the Build view holds the concept, notes and steps, and the
+    // full page opens in its own browser tab from the panel ("Full lesson").
+    const tabs = [...(building ? [["agent", "Build"]] : []), ...(building ? [] : [["page", g.page ? "Lesson page" : "Guide"]]), ...(g.kind !== "setup" ? [["code", "Code"], ...(building ? [] : [["agent", "Agent"]])] : []), ...(g.note ? [["note", g.kind === "setup" ? "Your notes" : "Design note"]] : []), ["board", "Board"], ["checks", "Checks"]];
     const tab = tabs.some(([id]) => id === weekTab) ? weekTab : tabs[0][0];
     const bar = `<div class="tabs" role="tablist">${tabs.map(([id, label]) => `<button role="tab" class="tab ${id === tab ? "on" : ""}" data-do="tab" data-tab="${id}" aria-selected="${id === tab}">${esc(label)}</button>`).join("")}</div>`;
     /** @type {string} */
     let body;
-    if (tab === "page") body = `<iframe class="doc" title="Week ${g.week} lesson page" src="/week/${g.week}"></iframe>`;
+    // A page in a frame: links inside it move the frame, so "Back to the lesson" (outside it) brings it home.
+    const framed = (/** @type {string} */ src, /** @type {string} */ title, /** @type {string} */ label) =>
+      `<div class="framebar"><button class="btn ghost" data-do="frame-back">← Back to ${esc(label)}</button></div><iframe class="doc" title="${esc(title)}" src="${esc(src)}" data-home="${esc(src)}"></iframe>`;
+    if (tab === "page") body = framed(`/week/${g.week}`, `Week ${g.week} lesson page`, g.page ? "the lesson" : "the guide");
     else if (tab === "note")
-      body = `<p class="sub">Your ${g.kind === "setup" ? "notes" : "design note"}, <code>${esc(g.note ?? "")}</code>. Write it in VS Code (<code>code ${esc(g.note ?? "")}</code>); open this tab again to see what you saved.</p><iframe class="doc" title="Week ${g.week} note" src="/${esc(g.note ?? "")}"></iframe>`;
+      body = `<p class="sub">Your ${g.kind === "setup" ? "notes" : "design note"}, <code>${esc(g.note ?? "")}</code>. Write it in VS Code (<code>code ${esc(g.note ?? "")}</code>); open this tab again to see what you saved.</p>${framed(`/${g.note ?? ""}`, `Week ${g.week} note`, g.kind === "setup" ? "your notes" : "your note")}`;
     else if (tab === "board") body = boardPanel();
     // The tasks are drawn by codeTab (their editors outlive the page's re-renders).
     else if (tab === "code") body = `<div class="codetab" data-codetab="${esc(g.week)}"><p class="why">Loading this week's tasks…</p></div>`;
@@ -6849,7 +6856,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           <div class="ccol"><div class="agenttab" data-agenttab="${esc(g.week)}"></div></div>
           <div class="cdiv" data-cdiv title="Drag to resize"></div>
           <aside class="cpanel" data-cpanel>
-            <div class="ctabs">${[["viz", "Visualizer"], ["notes", "Design notes"], ["steps", "Steps"], ["files", "Files"]].map(([id, label]) => `<button class="ctab" data-cpane-tab="${id}">${label}<span data-ccount="${id}"></span></button>`).join("")}</div>
+            <div class="ctabs">${[["viz", "Visualizer"], ["notes", "Design notes"], ["steps", "Steps"], ["files", "Files"]].map(([id, label]) => `<button class="ctab" data-cpane-tab="${id}">${label}<span data-ccount="${id}"></span></button>`).join("")}${g.page ? `<a class="ctab fulllesson" href="/week/${esc(g.week)}" target="_blank" rel="noopener noreferrer">Full lesson ↗</a>` : ""}</div>
             <div class="cpane" data-pane="viz">${boardPanel()}</div>
             <div class="cpane md" data-pane="notes"><div data-bnotes><p class="muted">The notes for the part you're building show here.</p></div></div>
             <div class="cpane" data-pane="steps"><div data-bsteplist></div></div>
@@ -7023,6 +7030,11 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       if (viewingWeek === null && snap) viewingWeek = snap.week;
       remember();
       return render();
+    }
+    if (what === "frame-back") {
+      const frame = /** @type {HTMLIFrameElement | null} */ (el?.closest(".tabbody")?.querySelector("iframe[data-home]") ?? null);
+      if (frame?.dataset.home) frame.src = frame.dataset.home;
+      return;
     }
     if (what === "board-start" || what === "board-stop") return act({ type: what });
     if (what === "checks") return act({ type: "checks", week: Number(el?.dataset.w) });
