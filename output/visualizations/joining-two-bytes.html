@@ -1,0 +1,85 @@
+<div id="byte-join-demo">
+  <style>
+    #byte-join-demo { display: grid; gap: calc(var(--font-size-base) * 1); color: var(--foreground); }
+    #byte-join-demo .bits { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 2px; margin-top: calc(var(--font-size-base) * .5); }
+    #byte-join-demo .bit { text-align: center; padding-block: calc(var(--font-size-base) * .5); background: var(--muted); color: var(--foreground); font-family: monospace; }
+    #byte-join-demo .high { background: color-mix(in srgb, var(--viz-series-1) 22%, transparent); }
+    #byte-join-demo .low { background: color-mix(in srgb, var(--viz-series-2) 22%, transparent); }
+    #byte-join-demo .byte-labels { display: grid; grid-template-columns: 1fr 1fr; text-align: center; }
+    #byte-join-demo .row-label { display: flex; flex-wrap: wrap; justify-content: space-between; gap: calc(var(--font-size-base) * .5); }
+  </style>
+  <h3>Two bytes become one address</h3>
+  <div class="viz-controls">
+    <label class="form-label">Example
+      <select class="form-select" id="byte-example">
+        <option value="3,241">b = 3, c = 241</option>
+        <option value="1,5">b = 1, c = 5</option>
+        <option value="0,255">b = 0, c = 255</option>
+      </select>
+    </label>
+  </div>
+  <div class="byte-labels text-small"><span>High 8 bits</span><span>Low 8 bits</span></div>
+  <div id="byte-rows" role="img" aria-label="Binary rows showing a byte shifted left eight places, then combined with the low byte"></div>
+  <output id="byte-result" class="tabular-nums" aria-live="polite"></output>
+</div>
+<script>
+(() => {
+  const root = document.getElementById('byte-join-demo');
+  const select = root.querySelector('#byte-example');
+  const rows = root.querySelector('#byte-rows');
+  const result = root.querySelector('#byte-result');
+  const choices = ['3,241', '1,5', '0,255'];
+  const hex = n => '0x' + n.toString(16).toUpperCase().padStart(4, '0');
+  function draw() {
+    const [b, c] = select.value.split(',').map(Number);
+    rows.replaceChildren();
+    const values = [
+      { label: 'b · before shifting', n: b, side: 'before' },
+      { label: 'b << 8 · shifted left 8 places', n: b << 8, side: 'high' },
+      { label: 'c · low byte', n: c, side: 'low' },
+      { label: '(b << 8) | c · combined', n: (b << 8) | c, side: 'both' }
+    ];
+    values.forEach((item, index) => {
+      const row = document.createElement('div');
+      if (index) row.style.marginTop = 'calc(var(--font-size-base) * 1)';
+      const label = document.createElement('div');
+      label.className = 'row-label';
+      const name = document.createElement('span');
+      name.textContent = item.label;
+      const value = document.createElement('span');
+      value.className = 'tabular-nums';
+      value.textContent = hex(item.n) + ' · ' + item.n;
+      label.append(name, value);
+      const bits = document.createElement('div');
+      bits.className = 'bits';
+      bits.setAttribute('aria-hidden', 'true');
+      item.n.toString(2).padStart(16, '0').split('').forEach((bit, position) => {
+        const cell = document.createElement('span');
+        const high = (item.side === 'high' || item.side === 'both') && position < 8;
+        const low = (item.side === 'low' || item.side === 'both') && position >= 8;
+        const before = item.side === 'before' && position >= 8;
+        cell.className = 'bit' + (high || before ? ' high' : low ? ' low' : '');
+        cell.textContent = bit;
+        bits.append(cell);
+      });
+      row.append(label, bits);
+      rows.append(row);
+    });
+    result.textContent = 'Address: ' + hex((b << 8) | c) + ' = ' + ((b << 8) | c) + ' decimal';
+    rows.setAttribute('aria-label', `b is ${b}. Shifting left eight bits gives ${b << 8}. Combining with c, ${c}, gives ${(b << 8) | c}.`);
+  }
+  function restore(state) {
+    const example = state?.modelContent?.example;
+    select.value = choices.includes(example) ? example : choices[0];
+    draw();
+  }
+  select.addEventListener('change', () => {
+    draw();
+    if (window.openai?.setWidgetState) window.openai.setWidgetState({ modelContent: { example: select.value } }).catch(() => {});
+  });
+  window.addEventListener('openai:set_globals', event => {
+    if (event.detail?.globals?.widgetState !== undefined) restore(event.detail.globals.widgetState);
+  });
+  restore(window.openai?.widgetState);
+})();
+</script>
