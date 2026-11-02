@@ -102,7 +102,24 @@ export function encode(instruction: Instruction): Bytes4 {
   // @student week=4 part=home id=encode "Turn an Instruction into its 4 bytes (the opposite of decode)"
   // TODO(week 4, encode): Turn an Instruction into its 4 bytes (the opposite of decode)
   // Tests: tests/week-04/   Guide: docs/weeks/week-04.md
-  return todo("week 4: encode", instruction);
+  switch (instruction.op) {
+    case "NOP":
+    case "IRET":
+    case "HALT":
+      return [OPCODES[instruction.op], 0, 0, 0];
+    case "LOAD":
+    case "STORE":
+      return [OPCODES[instruction.op], instruction.reg, instruction.address >> 8, instruction.address & 0xff];
+    case "ADD":
+    case "SUB":
+      return [OPCODES[instruction.op], instruction.reg, instruction.src, 0];
+    case "JMP":
+    case "JZ":
+    case "JNZ":
+      return [OPCODES[instruction.op], 0, instruction.address >> 8, instruction.address & 0xff];
+    case "LOADI":
+      return [OPCODES[instruction.op], instruction.reg, 0, instruction.value];
+  }
   // @end
 }
 
