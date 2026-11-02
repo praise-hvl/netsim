@@ -83,7 +83,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 15;
+export const STUDIO_VERSION = 16;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -5287,6 +5287,18 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .tab.on { color: var(--ink); background: var(--panel); border-color: var(--line); margin-bottom: -1px; }
 .tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .framebar { display: flex; }
+.wswitch { margin-bottom: 8px; }
+.wpills { display: flex; flex-wrap: wrap; gap: 6px; }
+.wpill { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 11px; font: 600 12.5px/1.2 "Inter", sans-serif; color: var(--ink); cursor: pointer; }
+.wpill.today { border-color: var(--mint); }
+.wpill.on { background: var(--green); color: #fff; border-color: var(--green); }
+.wpill:disabled { opacity: .4; cursor: default; }
+.wselect { display: none; font: inherit; padding: 4px 6px; max-width: 100%; }
+@media (max-width: 700px) { .wpills { display: none; } .wselect { display: block; } }
+.cpane[data-pane="lesson"] { display: flex; flex-direction: column; gap: 6px; }
+.chatui:not([data-panel="lesson"]) .cpane[data-pane="lesson"] { display: none; }
+.chatui[data-panel="lesson"] .cpane[data-pane="viz"] { display: none; }
+.chatui[data-panel="lesson"] .ctab[data-cpane-tab="lesson"] { color: var(--ink); border-bottom-color: var(--green); }
 .ctab.fulllesson { margin-left: auto; text-decoration: none; }
 .agenttab { display: grid; gap: 12px; padding-bottom: 24px; min-width: 0; }
 .chatui { display: grid; gap: 10px; }
@@ -6724,6 +6736,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     });
     document.addEventListener("change", (e) => {
       const el = /** @type {HTMLSelectElement} */ (e.target);
+      if (el.matches?.("[data-week-select]")) {
+        const w = document.createElement("button");
+        w.dataset.w = el.value;
+        doAction("week", w);
+        return;
+      }
       if (el.name === "agenttask") selected = el.value;
     });
     document.addEventListener("keydown", (e) => {
@@ -6824,6 +6842,27 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     };
   })();
 
+  /**
+   * Every week, one click away, above a week's view (the Build view hides the course list): weeks
+   * that are in open their page or Build view; the rest are greyed out. The agent's conversation is
+   * the studio's, so switching weeks doesn't lose it. @param {number} shown
+   */
+  function weekSwitcher(shown) {
+    const weeks = [...(snap?.groups ?? [])].filter((x) => x.week >= 1).sort((a, b) => a.week - b.week).filter((x, i, all) => all.findIndex((y) => y.week === x.week) === i);
+    const pills = weeks
+      .map((x) => {
+        const open = weekIsIn(x);
+        const label = `Week ${x.week}`;
+        const tip = `${label} · ${x.title}${x.week === snap?.home ? " (today)" : ""}`;
+        return open
+          ? `<button class="wpill ${x.week === shown ? "on" : ""} ${x.week === snap?.home ? "today" : ""}" data-do="week" data-w="${esc(x.week)}" title="${esc(tip)}" ${x.week === shown ? 'aria-current="page"' : ""}>${esc(label)}</button>`
+          : `<button class="wpill" disabled title="${esc(`${label}: not in your work yet`)}">${esc(label)}</button>`;
+      })
+      .join("");
+    const options = weeks.map((x) => `<option value="${esc(x.week)}" ${x.week === shown ? "selected" : ""} ${weekIsIn(x) ? "" : "disabled"}>Week ${esc(x.week)} · ${esc(x.title)}</option>`).join("");
+    return `<nav class="wswitch" aria-label="Weeks"><div class="wpills">${pills}</div><select class="wselect" data-week-select aria-label="Go to a week">${options}</select></nav>`;
+  }
+
   function weekView(g) {
     const nn = String(g.week).padStart(2, "0");
     // From week 4 the class is building: the Build tab (the agent, step by step) comes first.
@@ -6856,16 +6895,17 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           <div class="ccol"><div class="agenttab" data-agenttab="${esc(g.week)}"></div></div>
           <div class="cdiv" data-cdiv title="Drag to resize"></div>
           <aside class="cpanel" data-cpanel>
-            <div class="ctabs">${[["viz", "Visualizer"], ["notes", "Design notes"], ["steps", "Steps"], ["files", "Files"]].map(([id, label]) => `<button class="ctab" data-cpane-tab="${id}">${label}<span data-ccount="${id}"></span></button>`).join("")}${g.page ? `<a class="ctab fulllesson" href="/week/${esc(g.week)}" target="_blank" rel="noopener noreferrer">Full lesson ↗</a>` : ""}</div>
+            <div class="ctabs">${[["viz", "Visualizer"], ...(g.page ? [["lesson", "Lesson"]] : []), ["notes", "Design notes"], ["steps", "Steps"], ["files", "Files"]].map(([id, label]) => `<button class="ctab" data-cpane-tab="${id}">${label}<span data-ccount="${id}"></span></button>`).join("")}${g.page ? `<a class="ctab fulllesson" href="/week/${esc(g.week)}" target="_blank" rel="noopener noreferrer">Full lesson ↗</a>` : ""}</div>
             <div class="cpane" data-pane="viz">${boardPanel()}</div>
             <div class="cpane md" data-pane="notes"><div data-bnotes><p class="muted">The notes for the part you're building show here.</p></div></div>
             <div class="cpane" data-pane="steps"><div data-bsteplist></div></div>
+            ${g.page ? `<div class="cpane" data-pane="lesson">${framed(`/week/${g.week}`, `Week ${g.week} lesson page`, "the lesson")}</div>` : ""}
             <div class="cpane" data-pane="files"><div data-bfiles><p class="muted">Files Codex changes show here.</p></div></div>
           </aside>
         </div></div>`;
     else if (tab === "agent") body = `<div class="agenttab" data-agenttab="${esc(g.week)}"></div>`;
     else body = checksPanel(g.week, g.kind === "setup" ? "npm run doctor" : `npx vitest run tests/week-${nn}`);
-    return `<div class="weekhead"><p class="eyebrow">Week ${esc(g.week)}${g.kind ? ` · ${esc(g.kind)}` : ""}</p><h1 class="q">${esc(g.title)}</h1></div>${bar}<div class="tabbody">${body}</div>`;
+    return `${weekSwitcher(g.week)}<div class="weekhead"><p class="eyebrow">Week ${esc(g.week)}${g.kind ? ` · ${esc(g.kind)}` : ""}</p><h1 class="q">${esc(g.title)}</h1></div>${bar}<div class="tabbody">${body}</div>`;
   }
 
   /** The board, run by the studio: start it, watch it here, stop it (it stops with the studio too). */
@@ -7032,7 +7072,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       return render();
     }
     if (what === "frame-back") {
-      const frame = /** @type {HTMLIFrameElement | null} */ (el?.closest(".tabbody")?.querySelector("iframe[data-home]") ?? null);
+      const frame = /** @type {HTMLIFrameElement | null} */ ((el?.closest(".cpane") ?? el?.closest(".tabbody"))?.querySelector("iframe[data-home]") ?? null);
       if (frame?.dataset.home) frame.src = frame.dataset.home;
       return;
     }
