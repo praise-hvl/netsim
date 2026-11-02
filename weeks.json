@@ -39,11 +39,11 @@
     },
     {
       "week": 5,
-      "title": "Build: a CPU that runs programs",
+      "title": "Design + build: a CPU that runs programs",
       "kind": "build",
       "guide": "docs/weeks/week-05.md",
       "page": "docs/weeks/week-05.html",
-      "note": null,
+      "note": "docs/notes/week-04.md",
       "board": true
     },
     {

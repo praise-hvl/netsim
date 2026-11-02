@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="glossary" content="fault, replyTo, latched, flip-flop, mem.ack, hex, sandbox, diff">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetSim Week 5 · Design + build: a CPU that runs programs</title>
+<style>
+:root{--bg:#fff;--ink:#16201b;--muted:#56615b;--line:#dfe5e1;--soft:#f3f7f4;--green:#173627;--mint:#5fc79a;--mint-ink:#1f7a55;--red:#d8142a;--yellow:#ffcb12;--code-bg:#f3f5f4;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1512;--ink:#e8efeb;--muted:#9aa8a0;--line:#26312b;--soft:#151d18;--mint-ink:#6fd3a7;--red:#ff5a67;--code-bg:#151d18;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:18px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,"Helvetica Neue",Arial,sans-serif}
+.wrap{max-width:940px;margin:0 auto;padding-inline:20px}
+h1,h2,h3{line-height:1.15;margin:0;text-wrap:balance}
+h2{font-size:clamp(26px,4vw,34px);font-weight:800}
+h3{font-size:21px;font-weight:700;margin-top:6px}
+p{margin:0}
+a{color:var(--mint-ink);text-underline-offset:3px}
+code,pre,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+code{background:var(--code-bg);padding:1px 6px;border-radius:4px;font-size:.88em}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:0;font-size:.86em;line-height:1.55}
+pre code{background:none;padding:0}
+pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere}
+.hero{background:var(--green);color:#fff;padding-block:52px 44px}
+.hero .wrap{display:grid;gap:12px}
+.tag{font:700 13px/1 ui-monospace,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:#a8e3c8}
+.hero h1{font-size:clamp(36px,6.5vw,60px);font-weight:800;letter-spacing:-.02em}
+.hero p{font-size:19px;color:#d7e6de;max-width:66ch}
+main{display:grid;gap:52px;padding-block:40px 72px}
+section{display:grid;gap:16px}
+.lede{font-size:19px;color:var(--muted);max-width:66ch}
+ul,ol{margin:0;padding-left:24px;display:grid;gap:6px}
+li,section,main>*{min-width:0}
+.steps>li{padding-left:4px}
+.steps>li+li{border-top:1px solid color-mix(in srgb,var(--muted) 45%,transparent);padding-top:18px;margin-top:8px}
+.steps>li>ul{margin-top:6px}
+.check{background:var(--soft);border-left:4px solid var(--mint);padding:10px 14px;border-radius:0 6px 6px 0}
+.note{background:var(--soft);border-left:4px solid var(--yellow);padding:10px 14px;border-radius:0 6px 6px 0}
+.warn{background:var(--soft);border-left:4px solid var(--red);padding:10px 14px;border-radius:0 6px 6px 0}
+.diagram{margin:0;max-width:100%;min-width:0;overflow-x:auto;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fff}
+.diagram svg{display:block;width:100%;height:auto}
+.diagram text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Arial,sans-serif}
+.diagram text.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.caption{font-size:15px;color:var(--muted)}
+.table-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:16px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.cards>div{border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;gap:8px;align-content:start}
+.minutes{font:700 13px/1 ui-monospace,Menlo,monospace;color:var(--mint-ink)}
+details{border:1px solid var(--line);border-radius:8px;padding:10px 14px}
+details+details{margin-top:8px}
+summary{cursor:pointer;font-weight:700}
+details[open] summary{margin-bottom:8px}
+.box{display:inline-block;width:18px;height:18px;border:2px solid var(--mint);border-radius:4px;vertical-align:-3px;margin-right:8px}
+ul.checklist{list-style:none;padding-left:0}
+.toc{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:15px}
+@media (max-width:640px){body{font-size:17px}.hero{padding-block:36px 30px}main{gap:40px}}
+@media print{
+  :root{--bg:#fff;--ink:#000;--muted:#333;--line:#bbb;--soft:#f4f4f4}
+  .hero{background:#fff;color:#000;border-bottom:3px solid #000;padding-block:10px}
+  .hero p,.tag{color:#000}
+  .diagram{overflow:visible;break-inside:avoid}
+  .diagram svg{min-width:0!important}
+  section{break-inside:auto}
+  h2,h3{break-after:avoid}
+  a{color:#000}
+}
+</style>
+<style data-glossary>
+.term{border-bottom:1.5px dotted currentColor;cursor:help;position:relative;outline-offset:2px}
+.term:focus-visible{outline:2px solid #1f7a55;border-radius:2px}
+.term>.tip{position:absolute;left:0;top:calc(100% + 6px);z-index:30;width:max-content;max-width:min(300px,calc(100vw - 32px));padding:8px 11px;border-radius:8px;background:#16201b;color:#f3f7f4;font:400 15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif;letter-spacing:0;text-transform:none;white-space:normal;text-align:left;box-shadow:0 4px 14px rgba(0,0,0,.22);display:none;pointer-events:none}
+.term:hover>.tip,.term:focus>.tip,.term.open>.tip{display:block}
+@media (prefers-color-scheme:dark){.term>.tip{background:#e8efeb;color:#0f1512}.term:focus-visible{outline-color:#6fd3a7}}
+</style>
+</head>
+<body>
+<header class="hero"><div class="wrap">
+<div class="tag">Week 5 · Design + build</div>
+<h1>A CPU that runs programs</h1>
+<p>Today is one class made of two weeks: week 4's design, then the build. You design the CPU core quickly, then you start talking to the agent in the app and build it. You guide the design, Codex may write the code, and you have to be able to explain every line it keeps. By the end of the take-home, the count-down and blink programs run on your board, with each core's fetch, decode and execute lighting up as it happens.</p>
+</div></header>
+<main class="wrap">
+<section>
+<p class="lede">Week 4's page stays in the app as reference, but you don't need to have done it: everything from week 4 that matters is on this page.</p>
+<figure class="diagram"><svg viewBox="0 0 900 305" role="img" aria-label="Today&#x27;s build: the pure core, the CPU shell and memory over the bus, and the class tasks" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16201b"/></marker><marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f4061e"/></marker></defs><text x="20" y="30" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">Today: design it, then the core asks, the shell carries, the board shows it</text><rect x="35" y="64" width="220" height="92" rx="10" fill="#5fc79a"/><rect x="30" y="60" width="220" height="92" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="140.0" y="104.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">The core (pure)</text><text x="140.0" y="122.0" font-size="13" font-weight="400" text-anchor="middle" fill="#16201b">core/cpu-core.ts</text><rect x="345" y="64" width="220" height="92" rx="10" fill="#5fc79a"/><rect x="340" y="60" width="220" height="92" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="450.0" y="104.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">The CPU shell</text><text x="450.0" y="122.0" font-size="13" font-weight="400" text-anchor="middle" fill="#16201b">components/cpu.ts</text><rect x="655" y="64" width="220" height="92" rx="10" fill="#d3dbdc"/><rect x="650" y="60" width="220" height="92" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="760.0" y="104.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">Bus → Memory</text><text x="760.0" y="122.0" font-size="13" font-weight="400" text-anchor="middle" fill="#16201b">built in week 3</text><line x1="258" y1="92" x2="334" y2="92" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="296" y="84" font-size="12" font-weight="600" text-anchor="middle" fill="#16201b">effects</text><line x1="334" y1="124" x2="258" y2="124" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="296" y="144" font-size="12" font-weight="600" text-anchor="middle" fill="#16201b">reply</text><line x1="568" y1="92" x2="644" y2="92" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="606" y="84" font-size="12" font-weight="600" text-anchor="middle" fill="#16201b" class="mono">mem.read</text><line x1="644" y1="124" x2="568" y2="124" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="606" y="144" font-size="12" font-weight="600" text-anchor="middle" fill="#16201b" class="mono">mem.data</text><rect x="30" y="196" width="260" height="62" rx="8" fill="#fff" stroke="#16201b" stroke-width="2"/><text x="160.0" y="225.0" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">1 · decode → decodeStep</text><text x="160.0" y="245.0" font-size="12" font-weight="400" text-anchor="middle" fill="#585654">class, with the agent</text><rect x="320" y="196" width="260" height="62" rx="8" fill="#fff" stroke="#16201b" stroke-width="2"/><text x="450.0" y="225.0" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">2 · the CPU shell</text><text x="450.0" y="245.0" font-size="12" font-weight="400" text-anchor="middle" fill="#585654">class, with the agent</text><rect x="610" y="196" width="260" height="62" rx="8" fill="#fff" stroke="#16201b" stroke-width="2"/><text x="740.0" y="225.0" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">3 · your board: the core</text><text x="740.0" y="245.0" font-size="12" font-weight="400" text-anchor="middle" fill="#585654">class, with the agent</text><text x="20" y="290" font-size="13" font-weight="400" text-anchor="start" fill="#585654">Take-home: encode, your note, execute, awaitData, pickNext/switchOut, the rest of the board.</text></svg></figure>
+<p class="caption">The class tasks, in order. You design first, then the agent writes while you guide it.</p>
+</section>
+<section id="goals">
+<h2>Goals</h2>
+<ul><li><b>Hardware idea:</b> the <b>fetch–decode–execute</b> cycle. A <b>program counter</b> (PC) says where the next instruction is; <b>registers</b> hold the values being worked on; <b>flags</b> remember facts about the last result (was it zero? did it overflow?). Instructions are 4 bytes with an agreed <b>encoding</b>. Memory is slow: a <code>LOAD</code> takes a tick more than an <code>ADD</code>.</li>
+<li><b>Design idea:</b> a state machine is easiest to design as a <b>table</b> (from, event, to, what it does).</li>
+<li><b>Software idea:</b> a <b>finite state machine</b> written as a <b>pure function</b>: <code>stepCore(core, reply)</code> returns the new core and the <i>effects</i> it wants (a memory read or write); a thin <b>shell</b> turns effects into bus messages and <b>latches</b> replies until the next tick.</li>
+<li><b>Working with an agent:</b> you say your approach first, you read every change, and the tests decide when a task is done.</li></ul>
+
+</section>
+<section id="class">
+<h2>In class (1 hour, on Zoom)</h2>
+<p>Class is on Zoom, camera on, and you work <b>on your own</b> in your own repo. Stuck? Raise your Zoom hand or send me a private message with the first line of the failing test.</p>
+<div class="table-wrap"><table><thead><tr><th>Time</th><th>What</th></tr></thead><tbody><tr><td>3 min</td><td>Open the app</td></tr><tr><td>15 min</td><td>Design: tick table, state table, agent brief</td></tr><tr><td>5 min</td><td>Watch me work with the agent</td></tr><tr><td>35 min</td><td>Build with the agent, on your own, as far as you get</td></tr><tr><td>2 min</td><td>Push</td></tr></tbody></table></div>
+<h3 id="design">Design (15 min)</h3>
+<ol class="steps"><li><p><b>Open the app (3 min).</b> In your course folder, run <code>npm start</code>. The app gets week 5 ready (saves your work, brings the week in, installs, checks), then shows this page. If the app won't start, the same by hand:</p>
+<pre><code>git fetch upstream &amp;&amp; git merge upstream/week-5
+npm install</code></pre>
+<p>Then open your design note, <code>docs/notes/week-04.md</code>: it's on Week 5's <b>Design note</b> tab. You'll write in it today, and you can write the tick table on paper.</p></li>
+<li><p><b>The tick table (5 min, together).</b> I share this program and its bytes, and we fill in one row per tick (columns: tick, state, PC, IR, R0, what travels the bus):</p>
+<pre><code>LOAD  R0, 0x020    ; memory 0x020 holds 21
+ADD   R0, R0
+HALT</code></pre>
+<p>The rules: the core only acts on a tick; to get bytes it sends the bus a request and waits; the bytes it gets during a tick are used on the <b>next</b> tick. In the chat: why does <code>LOAD</code> take one tick more than <code>ADD</code>?</p></li>
+<li><p><b>The core's state table (8 min).</b> Fill in section 4 of your note as a table (from, event, condition, to, what it does), starting from your tick table. It must cover three cases: the bytes <b>haven't arrived yet</b>, the instruction is <b>invalid</b>, and memory answers with a <b><span class="term" tabindex="0" aria-describedby="tip-1">fault<span class="tip" role="tooltip" id="tip-1">A reply that says a request failed and why, for example OUT_OF_RANGE for an address memory doesn't have. It replaces the normal reply, so the asker always hears back.</span></span></b>. Short on time? Start from this and change anything you like:</p>
+<details><summary>Starting design for the core</summary><div class="table-wrap"><table><thead><tr><th>From</th><th>Event (on a tick)</th><th>Condition</th><th>To</th><th>What it does</th></tr></thead><tbody><tr><td>IDLE</td><td>tick</td><td>a program is assigned</td><td>FETCH</td><td>loads the program's PC</td></tr><tr><td>FETCH</td><td>tick</td><td></td><td>WAIT_FETCH</td><td>sends <code>mem.read</code> for the 4 bytes at PC</td></tr><tr><td>WAIT_FETCH</td><td>tick</td><td>no bytes yet</td><td>WAIT_FETCH</td><td>stalls</td></tr><tr><td>WAIT_FETCH</td><td>tick</td><td>the bytes arrived</td><td>DECODE</td><td>puts them in the instruction register</td></tr><tr><td>WAIT_FETCH or WAIT_DATA</td><td>tick</td><td>a <code>fault</code> arrived</td><td>FAULT</td><td>stops, shows why</td></tr><tr><td>DECODE</td><td>tick</td><td>a valid instruction</td><td>EXECUTE</td><td></td></tr><tr><td>DECODE</td><td>tick</td><td>an unknown opcode or register</td><td>FAULT</td><td>stops, shows the bytes</td></tr><tr><td>EXECUTE</td><td>tick</td><td>ALU op or jump</td><td>FETCH</td><td>changes registers, flags or PC</td></tr><tr><td>EXECUTE</td><td>tick</td><td>LOAD or STORE</td><td>WAIT_DATA</td><td>sends <code>mem.read</code> or <code>mem.write</code></td></tr><tr><td>EXECUTE</td><td>tick</td><td>HALT</td><td>HALTED</td><td>stops</td></tr><tr><td>WAIT_DATA</td><td>tick</td><td>the reply arrived</td><td>FETCH</td><td>LOAD: the byte goes in the register</td></tr></tbody></table></div></details></li>
+<li><b>The agent brief, in two lines (2 min).</b> At the top of section 9: what each core should look like on your board, and what a waiting core looks like. That's what you'll tell the agent when you reach the board.</li></ol>
+<h3 id="agent">Working with the agent (5 min: watch me first)</h3>
+<p>In the app, open Week 5's <b>Agent</b> tab. I show this once on my screen, then you do it for yourself:</p>
+<ol><li>Pick the task in the <b>Working on</b> list. This week's tasks come first, then earlier weeks' (<code>decode</code> is listed as <code>week 4 · decode</code>).</li>
+<li><b>Say your approach first,</b> in a sentence or two, in your own words, then add the task's prompt and press <b>Send</b>. The prompt is on this page, and on the task's card in the Code tab: <b>Send to the agent</b> puts it in the box for you.</li>
+<li><b>Read the <span class="term" tabindex="0" aria-describedby="tip-2">diff<span class="tip" role="tooltip" id="tip-2">The list of lines a change adds and removes. Reading it is how you see exactly what the agent did to your code.</span></span>.</b> Edits in your course folder don't ask, so the diff is where you review them. Keep only what you can explain. Want something different? Tell it what, and why.</li>
+<li><b>Press Commit it.</b> When the turn ends, the tab runs the task's tests itself and says, for example, <code>decode: 15 tests pass. encode still to do</code>, with <b>Commit it</b> right there. Read the diff first, then press it: one commit per task.</li></ol>
+<p>Codex works in a <b><span class="term" tabindex="0" aria-describedby="tip-3">sandbox<span class="tip" role="tooltip" id="tip-3">The locked room Codex works in on your computer: the network is off and .git is read-only, so a test that opens a local socket, or a git commit, has to ask you first.</span></span></b>, with the network off and <code>.git</code> read-only. Cards only appear for things outside the sandbox: read the card, then <b>Approve</b> or <b>Decline</b>.</p>
+<ul><li>If a test needs a local socket, press <b>Run its tests</b> when it appears. <code>listen EPERM</code> means the same thing: that's the sandbox, not your code.</li>
+<li>Other ways to commit: <b>Save and run its tests</b> on the task's card in the Code tab, then <b>Commit it</b>, or a commit in a terminal. If Codex runs <code>git commit</code> itself, that asks you too.</li></ul>
+<p class="note"><b>Agent tab missing, or it won't start?</b> On the task's card in the Code tab, press <b>Copy the prompt</b> (or copy it from this page), run <code>codex</code> in a terminal in your course folder, and paste it. Commit from the Code tab or a terminal. Everything else is the same.</p>
+<h3 id="build">Build with the agent (35 min, on your own)</h3>
+<p>Go in this order and get as far as you can. What you don't finish goes home. Codex is quick, about a minute a task in our rehearsal, so most of your time goes on reading the diff and being sure you can explain it. Each commit below is what <b>Commit it</b> writes for you. At each ✅ I ask two or three of you to share your screen and show <b>one thing you told the agent to change, and why</b>.</p>
+<ol class="steps" start="5"><li><p><b><code>decode</code> (about 10 min).</b> In <code>core/isa.ts</code>, turn 4 bytes into an instruction. Every way the input can be wrong is an answer, not a crash: that's the FAULT row of your section 4. Its card is in Week 4's <b>Code</b> tab; in the Agent tab, pick <code>week 4 · decode</code>.</p>
+<pre class="prompt"><code>My approach: (your words: how you split the 4 bytes, and what counts as wrong)
+
+In core/isa.ts only, fill in TODO(week 4, decode) in decode(bytes). Don't change anything
+outside that region, or any test. Tell me what you'll change before you change it, and explain
+each line you write. Then run: npx vitest run tests/week-04/isa.test.ts -t "^decode "</code></pre>
+<figure class="diagram"><svg viewBox="0 0 900 330" role="img" aria-label="decode() splits 4 bytes into opcode, register and a two-byte address, and returns an instruction or an error" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah4b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16201b"/></marker></defs><text x="20" y="30" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">decode(): 4 bytes in, an instruction (or an error) out</text><rect x="45" y="60" width="170" height="74" rx="10" fill="#5fc79a"/><rect x="40" y="56" width="170" height="74" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="125" y="92" font-size="26" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">01</text><text x="125" y="116" font-size="13" text-anchor="middle" fill="#16201b">opcode · LOAD</text><rect x="235" y="60" width="170" height="74" rx="10" fill="#ffcb12"/><rect x="230" y="56" width="170" height="74" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="315" y="92" font-size="26" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">00</text><text x="315" y="116" font-size="13" text-anchor="middle" fill="#16201b">a · register R0</text><rect x="425" y="60" width="170" height="74" rx="10" fill="#d3dbdc"/><rect x="420" y="56" width="170" height="74" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="505" y="92" font-size="26" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">00</text><text x="505" y="116" font-size="13" text-anchor="middle" fill="#16201b">b · address, high byte</text><rect x="615" y="60" width="170" height="74" rx="10" fill="#d3dbdc"/><rect x="610" y="56" width="170" height="74" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="695" y="92" font-size="26" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">20</text><text x="695" y="116" font-size="13" text-anchor="middle" fill="#16201b">c · address, low byte</text><polyline points="425,146 425,154 775,154 775,146" fill="none" stroke="#16201b" stroke-width="2"/><text x="600" y="176" font-size="14" font-weight="700" text-anchor="middle" fill="#16201b" class="mono">(b &lt;&lt; 8) | c = 0x020</text><line x1="300" y1="150" x2="300" y2="196" stroke="#16201b" stroke-width="2.2" marker-end="url(#ah4b)"/><rect x="40" y="200" width="590" height="50" rx="10" fill="#fff" stroke="#16201b" stroke-width="2.4"/><text x="335" y="230" font-size="14" font-weight="700" text-anchor="middle" fill="#16201b" class="mono">{ ok: true, instruction: { op: "LOAD", reg: 0, address: 0x020 } }</text><rect x="650" y="200" width="230" height="50" rx="10" fill="#fff" stroke="#d8142a" stroke-width="2.4" stroke-dasharray="6 4"/><text x="765" y="221" font-size="12" font-weight="700" text-anchor="middle" fill="#d8142a">bad opcode, register, address</text><text x="765" y="239" font-size="12" font-weight="700" text-anchor="middle" fill="#d8142a" class="mono">{ ok: false, error }</text><text x="20" y="284" font-size="13" text-anchor="start" fill="#585654">Every instruction uses the same 4 slots: ADD and SUB put the second register in b; LOADI puts its value in c;</text><text x="20" y="304" font-size="13" text-anchor="start" fill="#585654">JMP, JZ and JNZ only use the address. NOP, HALT and IRET are just the opcode.</text></svg></figure>
+<p class="check">✅ The <code>decode</code> tests pass. Commit: <code>week 4: decode</code>. <b>Be able to explain:</b> which byte is the opcode, how two bytes become one address, and why a bad register returns an error instead of throwing.</p></li>
+<li><p><b><code>fetch</code> (about 4 min).</b> <code>TODO(week 5, fetch)</code> in <code>core/cpu-core.ts</code>. Go to <code>WAIT_FETCH</code> and return the effect <code>{ kind: "read", address: core.pc, length: 4 }</code>. You don't read memory: you <i>ask</i>. (If the PC is so close to the end that 4 bytes don't fit, go to <code>FAULT</code> instead.)</p>
+<pre class="prompt"><code>My approach: (your words: what the core asks for, and when it can't ask)
+
+In core/cpu-core.ts only, fill in TODO(week 5, fetch) in fetch. Don't change anything outside
+that region, or any test. Tell me what you'll change before you change it, and explain each line
+you write. Then run: npx vitest run tests/week-05/cpu-core.test.ts -t "FETCH asks memory"</code></pre>
+<p class="check">✅ That test passes. Commit: <code>week 5: fetch</code>.</p></li>
+<li><p><b><code>awaitInstruction</code> (about 4 min).</b> <code>TODO(week 5, await-instruction)</code>. <code>reply</code> is whatever memory answered since the last tick. <code>memData</code>: keep the bytes in <code>ir</code> and go to <code>DECODE</code>. <code>memFault</code>: go to <code>FAULT</code>. Nothing yet (<code>null</code>): stay and count a stall.</p>
+<pre class="prompt"><code>My approach: (your words: what happens for bytes, for a fault, and for nothing yet)
+
+In core/cpu-core.ts only, fill in TODO(week 5, await-instruction) in awaitInstruction. Don't
+change anything outside that region, or any test. Tell me what you'll change before you change
+it, and explain each line you write. Then run:
+npx vitest run tests/week-05/cpu-core.test.ts -t "WAIT_FETCH waits"</code></pre>
+<p class="check">✅ That test passes. Commit: <code>week 5: await-instruction</code>.</p></li>
+<li><p><b><code>decodeStep</code> (about 3 min).</b> <code>TODO(week 5, decode-step)</code>. Call your <code>decode</code> on <code>ir</code>. Valid: keep the instruction and go to <code>EXECUTE</code>. Invalid: <code>FAULT</code>.</p>
+<pre class="prompt"><code>My approach: (your words: what decodeStep does with a good answer and with a bad one)
+
+In core/cpu-core.ts only, fill in TODO(week 5, decode-step) in decodeStep. Don't change anything
+outside that region, or any test. Tell me what you'll change before you change it, and explain
+each line you write. Then run: npx vitest run tests/week-05/cpu-core.test.ts -t "DECODE turns IR"</code></pre>
+<figure class="diagram"><svg viewBox="0 0 900 425" role="img" aria-label="The CPU core&#x27;s phases: FETCH to WAIT_FETCH (stall while nothing arrives) to DECODE to EXECUTE, then WAIT_DATA, HALTED or FETCH; faults go to FAULT" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16201b"/></marker><marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f4061e"/></marker></defs><text x="20" y="30" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">The core&#x27;s phases: you write FETCH, WAIT_FETCH and DECODE in class</text><g transform="translate(0,26)"><rect x="35" y="74" width="150" height="56" rx="10" fill="#5fc79a"/><rect x="30" y="70" width="150" height="56" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="105.0" y="104.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">FETCH</text><rect x="255" y="74" width="170" height="56" rx="10" fill="#5fc79a"/><rect x="250" y="70" width="170" height="56" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="335.0" y="104.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">WAIT_FETCH</text><rect x="495" y="74" width="150" height="56" rx="10" fill="#5fc79a"/><rect x="490" y="70" width="150" height="56" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="565.0" y="104.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">DECODE</text><rect x="715" y="74" width="150" height="56" rx="10" fill="#d3dbdc"/><rect x="710" y="70" width="150" height="56" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="785.0" y="104.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">EXECUTE</text><line x1="184" y1="98" x2="246" y2="98" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="215" y="90" font-size="11" font-weight="600" text-anchor="middle" fill="#16201b" class="mono">read 4</text><line x1="424" y1="98" x2="486" y2="98" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="455" y="90" font-size="11" font-weight="600" text-anchor="middle" fill="#16201b">bytes</text><line x1="644" y1="98" x2="706" y2="98" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="675" y="90" font-size="11" font-weight="600" text-anchor="middle" fill="#16201b">valid</text><path d="M300,68 C300,30 370,30 370,66" fill="none" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="376" y="50" font-size="12" font-weight="700" text-anchor="start" fill="#16201b">nothing yet: stall</text><rect x="565" y="214" width="170" height="56" rx="10" fill="#d3dbdc"/><rect x="560" y="210" width="170" height="56" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="645.0" y="244.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">WAIT_DATA</text><rect x="765" y="214" width="120" height="56" rx="10" fill="#d3dbdc"/><rect x="760" y="210" width="120" height="56" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="820.0" y="244.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">HALTED</text><line x1="760" y1="130" x2="690" y2="206" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="705" y="160" font-size="11" font-weight="600" text-anchor="end" fill="#16201b">LOAD / STORE</text><line x1="815" y1="130" x2="820" y2="206" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="830" y="175" font-size="11" font-weight="600" text-anchor="start" fill="#16201b">HALT</text><path d="M560,238 C300,238 120,238 105,130" fill="none" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="645" y="292" font-size="12" font-weight="600" text-anchor="middle" fill="#16201b">reply arrives → next instruction</text><path d="M760,70 C700,20 200,20 110,66" fill="none" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)" stroke-dasharray="6 5"/><text x="600" y="26" font-size="12" font-weight="600" text-anchor="middle" fill="#585654">ADD, jumps…: finish → FETCH</text><rect x="255" y="304" width="170" height="52" rx="10" fill="#ffb3bb"/><rect x="250" y="300" width="170" height="52" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="335.0" y="332.0" font-size="16" font-weight="800" text-anchor="middle" fill="#16201b">FAULT</text><line x1="110" y1="128" x2="262" y2="298" stroke="#f4061e" stroke-width="2.4" marker-end="url(#ahr)"/><line x1="335" y1="128" x2="335" y2="296" stroke="#f4061e" stroke-width="2.4" marker-end="url(#ahr)"/><line x1="560" y1="128" x2="410" y2="298" stroke="#f4061e" stroke-width="2.4" marker-end="url(#ahr)"/><text x="450" y="330" font-size="12" font-weight="700" text-anchor="start" fill="#f4061e">too close to the end · a fault reply · bad bytes</text></g><text x="20" y="412" font-size="13" font-weight="400" text-anchor="start" fill="#585654">Green: class today. Grey: take-home. moveTo throws if a move isn&#x27;t in the table.</text></svg></figure>
+<p class="check">✅ That test passes. Commit: <code>week 5: decode-step</code>. <b>Be able to explain:</b> why the core returns a read effect instead of calling memory, why <code>WAIT_FETCH</code> exists, and how your code matches your state table. Where does your table differ from <code>coreFsm</code> at the top of the file?</p></li>
+<li><p><b>The CPU shell (about 7 min).</b> In <code>components/cpu.ts</code>, the plumbing between your pure core and the bus. No test can check the shell yet: <code>integration.test.ts</code> needs your take-home tasks. So your check today is reading the diff with your state table beside you.</p>
+<ul><li><p><code>sendEffects</code> (<code>TODO(week 5, cpu-send-effects)</code>): for each <code>read</code> effect, <code>client.send</code> a <code>mem.read</code> to <code>memory</code>; for <code>write</code>, a <code>mem.write</code>. Keep <code>id → core</code> in the <code>waiting</code> map.</p>
+<pre class="prompt"><code>My approach: (your words: what gets sent, and how you'll know later which core asked)
+
+In components/cpu.ts only, fill in TODO(week 5, cpu-send-effects) in sendEffects. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it,
+and explain each line you write. Its test, tests/week-05/integration.test.ts, can't pass until
+my take-home tasks are done, so don't try to fix that test's failures now.</code></pre></li>
+<li><p><code>latchReply</code> (<code>TODO(week 5, cpu-latch-reply)</code>): when <code>mem.data</code>, <span class="term" tabindex="0" aria-describedby="tip-4"><code>mem.ack</code><span class="tip" role="tooltip" id="tip-4">Memory's reply to a write that worked. A bad write gets a fault instead.</span></span>, <code>fault</code> or <code>error</code> comes back, find the core from <span class="term" tabindex="0" aria-describedby="tip-5"><code>replyTo</code><span class="tip" role="tooltip" id="tip-5">On a reply, the id of the request it answers. It's how a requester matches each reply to its request, like a ticket number.</span></span>, turn it into a <code>MemReply</code>, and hand it over with <code>receiveReply(cpu, core, reply)</code>. Don't step the core here: it gets the reply <b>on the next tick</b>.</p>
+<pre class="prompt"><code>My approach: (your words: how you find the core, and why the reply waits for the next tick)
+
+In components/cpu.ts only, fill in TODO(week 5, cpu-latch-reply) in latchReply. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it,
+and explain each line you write. Its test, tests/week-05/integration.test.ts, can't pass until
+my take-home tasks are done, so don't try to fix that test's failures now.</code></pre></li></ul>
+<figure class="diagram"><svg viewBox="0 0 900 325" role="img" aria-label="The core returns a read effect, the shell sends mem.read and remembers the id, the reply is latched during tick N and used by stepCore in tick N+1" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16201b"/></marker><marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f4061e"/></marker></defs><text x="20" y="30" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">A reply arrives during tick N; the core uses it on tick N+1</text><rect x="30" y="56" width="380" height="250" rx="10" fill="#f3f7f4" stroke="#16201b" stroke-width="2"/><rect x="490" y="56" width="380" height="250" rx="10" fill="#f3f7f4" stroke="#16201b" stroke-width="2"/><text x="50" y="84" font-size="16" font-weight="800" text-anchor="start" fill="#16201b">tick N</text><text x="510" y="84" font-size="16" font-weight="800" text-anchor="start" fill="#16201b">tick N+1</text><rect x="50" y="100" width="340" height="46" rx="8" fill="#fff" stroke="#16201b" stroke-width="2"/><text x="220.0" y="121.0" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">stepCore: FETCH → WAIT_FETCH</text><text x="220.0" y="141.0" font-size="12" font-weight="400" text-anchor="middle" fill="#585654">returns { kind: &quot;read&quot;, address: pc, length: 4 }</text><line x1="220" y1="148" x2="220" y2="170" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><rect x="50" y="172" width="340" height="46" rx="8" fill="#fff" stroke="#16201b" stroke-width="2"/><text x="220.0" y="193.0" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">sendEffects: client.send mem.read</text><text x="220.0" y="213.0" font-size="12" font-weight="400" text-anchor="middle" fill="#585654">waiting.set(id, core)</text><line x1="220" y1="220" x2="220" y2="242" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><rect x="50" y="244" width="340" height="46" rx="8" fill="#fff8d6" stroke="#16201b" stroke-width="2"/><text x="220.0" y="265.0" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">latchReply: mem.data replyTo id</text><text x="220.0" y="285.0" font-size="12" font-weight="400" text-anchor="middle" fill="#585654">receiveReply(cpu, core, reply): kept, not used</text><rect x="510" y="130" width="340" height="60" rx="8" fill="#fff" stroke="#16201b" stroke-width="2"/><text x="680.0" y="158.0" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">stepCore(core, reply)</text><text x="680.0" y="178.0" font-size="12" font-weight="400" text-anchor="middle" fill="#585654">WAIT_FETCH: the bytes go into ir → DECODE</text><path d="M392,267 C450,267 440,160 506,160" fill="none" stroke="#16201b" stroke-width="2.4" marker-end="url(#ah)"/><text x="450" y="128" font-size="12" font-weight="700" text-anchor="middle" fill="#16201b">latched</text><text x="510" y="232" font-size="13" font-weight="400" text-anchor="start" fill="#585654">Same input, same run: what a core sees</text><text x="510" y="252" font-size="13" font-weight="400" text-anchor="start" fill="#585654">in tick N+1 was all decided by the</text><text x="510" y="272" font-size="13" font-weight="400" text-anchor="start" fill="#585654">end of tick N, like a flip-flop.</text></svg></figure>
+<p class="check">✅ You've read both diffs and can explain them. Commit each: <code>week 5: cpu-send-effects</code>, <code>week 5: cpu-latch-reply</code>. <b>Be able to explain:</b> why the reply waits for the next tick, and what the <code>waiting</code> map is for.</p></li>
+<li><p><b>Your board: the core lights up (about 7 min).</b> In the app, open Week 5's <b>Board</b> tab and press <b>Start the board</b> (without the app: <code>npm run dev:all</code>, then <a href="http://localhost:3005/board">localhost:3005/board</a>). Then press <b>play</b> (scroll down if you don't see the controls): the board sits at tick 0 until you do. It plays a recording of the finished computer, so it runs even before your <code>execute</code> exists. The core panel stays empty (<code>You build this in week 5</code>) until you write <code>CoreView</code>. Tell the agent what your two lines in section 9 say.</p>
+<ul><li><p><code>TODO(week 5, board-cycle-step)</code> in <code>cycleStep(phase)</code>: map each core phase (<code>FETCH</code>, <code>WAIT_FETCH</code>, <code>DECODE</code>, …) to the step the board lights up (fetch, decode, execute, or idle).</p>
+<pre class="prompt"><code>My approach: (your words: which phase lights which step, and why)
+
+In board/student/core.tsx only, fill in TODO(week 5, board-cycle-step) in cycleStep. Don't
+change anything outside that region, or any test. Tell me what you'll change before you change
+it, and explain each line you write. Then run:
+npx vitest run tests/week-05/board-core.test.ts -t "cycleStep"</code></pre></li>
+<li><p><code>TODO(week 5, board-draw-core)</code> in <code>CoreView</code>: draw one core with its current step lit, its program and its PC.</p>
+<pre class="prompt"><code>My approach: (your words: the two lines from section 9 of your design note)
+
+In board/student/core.tsx only, fill in TODO(week 5, board-draw-core) in CoreView. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it, and
+explain each line you write. No test checks this one: I'll check it on the board.</code></pre></li></ul>
+<figure class="diagram"><svg viewBox="0 0 900 300" role="img" aria-label="The board&#x27;s core panel: fetch, decode and execute steps with decode lit, the program with the current line at PC 0x008, and cycleStep&#x27;s phase-to-step mapping" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16201b"/></marker><marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f4061e"/></marker></defs><text x="20" y="30" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">Your board: one core, its current step lit</text><rect x="30" y="56" width="420" height="230" rx="12" fill="#fff" stroke="#16201b" stroke-width="2.6"/><text x="50" y="86" font-size="16" font-weight="800" text-anchor="start" fill="#16201b">Core 0</text><text x="430" y="86" font-size="14" font-weight="700" text-anchor="end" fill="#16201b" class="mono">PC 0x008</text><rect x="50" y="104" width="118" height="46" rx="8" fill="#d3dbdc" stroke="#16201b" stroke-width="2"/><text x="109" y="133" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">fetch</text><rect x="180" y="104" width="118" height="46" rx="8" fill="#ffcb12" stroke="#16201b" stroke-width="2"/><text x="239" y="133" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">decode</text><rect x="310" y="104" width="118" height="46" rx="8" fill="#d3dbdc" stroke="#16201b" stroke-width="2"/><text x="369" y="133" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">execute</text><text x="50" y="182" font-size="13" font-weight="700" text-anchor="start" fill="#585654" class="mono">countdown.asm</text><text x="52" y="206" font-size="13" font-weight="400" text-anchor="start" fill="#585654" class="mono">0x004  LOADI R1, 1</text><rect x="46" y="214" width="300" height="22" rx="4" fill="#fff8d6"/><text x="52" y="230" font-size="13" font-weight="700" text-anchor="start" fill="#16201b" class="mono">0x008  STORE R0, DISPLAY</text><text x="52" y="254" font-size="13" font-weight="400" text-anchor="start" fill="#585654" class="mono">0x00C  SUB R0, R1</text><text x="490" y="86" font-size="15" font-weight="800" text-anchor="start" fill="#16201b" class="mono">cycleStep(phase)</text><text x="490" y="118" font-size="13" font-weight="600" text-anchor="start" fill="#16201b" class="mono">FETCH, WAIT_FETCH</text><text x="850" y="118" font-size="13" font-weight="700" text-anchor="end" fill="#16201b">fetch</text><line x1="490" y1="128" x2="850" y2="128" stroke="#d3dbdc" stroke-width="1"/><text x="490" y="152" font-size="13" font-weight="600" text-anchor="start" fill="#16201b" class="mono">DECODE</text><text x="850" y="152" font-size="13" font-weight="700" text-anchor="end" fill="#16201b">decode</text><line x1="490" y1="162" x2="850" y2="162" stroke="#d3dbdc" stroke-width="1"/><text x="490" y="186" font-size="13" font-weight="600" text-anchor="start" fill="#16201b" class="mono">EXECUTE, WAIT_DATA</text><text x="850" y="186" font-size="13" font-weight="700" text-anchor="end" fill="#16201b">execute ?</text><line x1="490" y1="196" x2="850" y2="196" stroke="#d3dbdc" stroke-width="1"/><text x="490" y="220" font-size="13" font-weight="600" text-anchor="start" fill="#16201b" class="mono">IDLE, HALTED</text><text x="850" y="220" font-size="13" font-weight="700" text-anchor="end" fill="#16201b">idle</text><line x1="490" y1="230" x2="850" y2="230" stroke="#d3dbdc" stroke-width="1"/><text x="490" y="272" font-size="13" font-weight="400" text-anchor="start" fill="#585654">Your storyboard decides the ? rows.</text></svg></figure>
+<p class="check">✅ The <code>cycleStep</code> tests pass. Commit: <code>week 5: board-cycle-step</code>. Once <code>CoreView</code> exists, the panel fills and each core's step lights up as the recording plays. Commit: <code>week 5: board-draw-core</code>. <b>Be able to explain:</b> which phase lights which step, and one thing on the board you told the agent to change.</p></li>
+<li><b>Push (2 min).</b> Stop wherever you are, even halfway through a task: <code>git push</code>.</li></ol>
+<h3>What "pure" buys you</h3>
+<pre><code>const { core, effects } = stepCore(ready(0x010), null);
+expect(core.phase).toBe("WAIT_FETCH");
+expect(effects).toEqual([{ kind: "read", address: 0x010, length: 4 }]);</code></pre>
+<p>No socket, no timers, no waiting. Every row of the transition table is a three-line test. The CPU shell is what turns that <code>read</code> effect into a real <code>mem.read</code> on your bus.</p>
+
+</section>
+<section id="home">
+<h2>Take-home</h2>
+<p>Due before next session. It's a lot, so do it in this order: each step is what the next one needs. The agent can do the writing, the same way as in class: your approach first, one task at a time, read the diff, press <b>Commit it</b>, one commit per task. Your design note stays in your own words, and explain-it-back has no AI at all.</p>
+<ol><li><b>Finish what class didn't reach,</b> in the same order as in class.</li>
+<li><b><code>encode()</code>,</b> the opposite of <code>decode()</code>: <code>TODO(week 4, encode)</code> in <code>core/isa.ts</code> (its card is in Week 4's Code tab). The assembler and the programs need it. First do by hand, in section 3 of your note, 4 bytes each: <code>LOADI R0, 9</code>, <code>STORE R0, 0x3F2</code> and <code>JNZ 0x008</code>. The address goes in bytes 3 and 4, high byte first. ✅ The <code>encode</code> tests in <code>tests/week-04/isa.test.ts</code> pass. Commit: <code>week 4: encode</code>.</li>
+<li><p><b>Finish your design note,</b> <code>docs/notes/week-04.md</code>, all nine sections, and your storyboard:</p>
+<ul><li><b>Section 5, the count-down traced:</b> the first 10 ticks of <code>programs/countdown.asm</code>: for each tick, the core's state, the PC, <code>R0</code>, and what the board shows. Check your bytes with <code>npm run asm -- programs/countdown.asm</code>.</li>
+<li><b>Section 7, decisions:</b> at least two, with the option you didn't pick.</li>
+<li><b>Section 9, agent brief:</b> what your agent builds in <code>board/student/core.tsx</code>.</li>
+<li><b>Storyboard:</b> one instruction (<code>LOAD R0, 0x020</code>), tick by tick, as your board shows it. Commit it as <code>docs/notes/week-04-board.jpg</code> (or <code>.png</code>) and link it in section 6.</li></ul></li>
+<li><b><code>execute</code> for <code>LOAD</code>, <code>ADD</code>, <code>HALT</code></b> (<code>TODO(week 5, execute-core)</code>) and <b><code>awaitData</code></b> (<code>TODO(week 5, await-data)</code>). <code>ADD</code> updates the register, the <code>zero</code> and <code>carry</code> flags, and moves the PC on by 4 (the <code>finish</code> helper does that and goes back to <code>FETCH</code>). <code>LOAD</code> returns a 1-byte <code>read</code> effect and goes to <code>WAIT_DATA</code>; there, the <code>memData</code> reply sets the register and the <code>zero</code> flag. <code>HALT</code> goes to <code>HALTED</code>.</li>
+<li><p><b>Read a trace.</b> Run a 3-instruction program through your core with <code>runProgram</code> from <code>tests/helpers.ts</code>, which gives the core memory that answers on the next tick, like the bus will:</p>
+<pre><code>const program = [0x01, 0, 0x00, 0x20,  0x03, 0, 0, 0,  0xff, 0, 0, 0]; // LOAD R0,0x020; ADD R0,R0; HALT
+const { core, trace, ticks } = runProgram(program, { memory: { 0x020: 21 } });
+console.log(ticks, trace, core.registers);</code></pre>
+<p><code>trace</code> is the phase after every tick. Compare it with your tick table from class. Where did they differ, and who was right?</p></li>
+<li><b><code>execute</code> for <code>STORE</code>, <code>SUB</code>, <code>LOADI</code>, <code>JMP</code>, <code>JZ</code>, <code>JNZ</code></b> (<code>TODO(week 5, execute-rest)</code>). <code>SUB</code> wraps below 0 and sets <code>carry</code> on a borrow; <code>ADD</code>, <code>SUB</code> and <code>LOADI</code> set <code>zero</code>; jumps set <code>PC = addr</code> when taken and move on by 4 when not; <code>STORE</code> returns a <code>write</code> effect and waits in <code>WAIT_DATA</code> for the <code>memAck</code>.</li>
+<li><p><b>Programs onto cores</b> (<code>core/scheduler.ts</code>, the first half of the scheduler):</p>
+<ul><li><code>pickNext</code> (<code>TODO(week 5, pick-next)</code>): the first <code>READY</code> process in queue order.</li>
+<li><code>switchOut</code> (<code>TODO(week 5, switch-out)</code>): when a core halts or faults, save its context into its process, mark it <code>DONE</code> or <code>FAILED</code>, and clear the core.</li></ul>
+<p>Programs go to free cores and leave when they halt. Nobody is switched out early yet: taking turns (preemption) is week 6. Now <code>tests/week-05/integration.test.ts</code> can run your shell for real. It opens local sockets, so in the agent it's the <code>listen EPERM</code> card from class.</p></li>
+<li><b>The board</b> (<code>board/student/core.tsx</code>): finish <code>board-draw-core</code> if you didn't in class, and <code>board-fetch-address</code> (<code>TODO(week 5, board-fetch-address)</code>: find this core's instruction fetch, a 4-byte read, among the tick's packets). The LED, the Button and the run controls come finished in the kit. Hand the agent section 9 of your note and your storyboard. It works only in the <code>board-…</code> regions of that file, and you check the scenario in section 5 of your note on the board.</li></ol>
+<h3>Acceptance criteria</h3>
+<ul class="checklist"><li><span class="box"></span><code>npx vitest run tests/week-04 tests/week-05</code> passes, and so does every earlier week (<code>npx vitest run</code>).</li>
+<li><span class="box"></span>Every section of your note is filled in, with the storyboard there. Section 4 covers bytes not arrived yet, an invalid instruction, and a fault reply. Section 3 has your three hand-encoded instructions.</li>
+<li><span class="box"></span>Every row of the CPU core's transition table has a test that passes.</li>
+<li><span class="box"></span>The count-down program ends <code>HALTED</code> with <code>R0 = 0</code>, the <code>zero</code> flag set, and memory <span class="term" tabindex="0" aria-describedby="tip-6"><code>0x3F2</code><span class="tip" role="tooltip" id="tip-6">0x means the number is written in hexadecimal (base 16). 0x010 is 16 and 0x3FF is 1023, so 0x000–0x3FF are the 1,024 bytes of 1 KB.</span></span> holding <code>0</code>.</li>
+<li><span class="box"></span><code>core/</code> still imports nothing from <code>components/</code>, <code>bus/</code> or <code>app/</code>.</li>
+<li><span class="box"></span>With <code>npm run dev:all</code>, <b>Load demo</b> and <b>Start</b>, count-down and blink run on two cores, animated on <code>/board</code>: each core's step lights up, its fetches travel the bus, the LED blinks.</li>
+<li><span class="box"></span>One commit per task (<code>week 5: …</code>, and <code>week 4: decode</code>, <code>week 4: encode</code>), and <code>work</code> is pushed.</li></ul>
+
+</section>
+<section id="commands">
+<h2>Tests and commands this week</h2>
+<div class="table-wrap"><table><thead><tr><th>Command</th><th>What it does</th><th>Works this week?</th></tr></thead><tbody><tr><td><code>npm start</code></td><td>the app: this week, its page, the agent, the board and the checks</td><td>✅</td></tr><tr><td><code>npx vitest tests/week-05</code></td><td>this week's tests in watch mode</td><td>✅</td></tr><tr><td><code>npx vitest run</code></td><td>every week so far, once</td><td>✅</td></tr><tr><td><code>npm run asm -- &lt;file.asm&gt;</code></td><td>assemble a program and print its bytes</td><td>✅ after <code>encode</code></td></tr><tr><td><code>npm run component -- cpu</code></td><td>the CPU on the bus (<code>CPU_CORES=4</code> for 4 cores, 1–8)</td><td>✅ after the shell</td></tr><tr><td><code>npm run dev:all</code></td><td>bus, memory, CPU, devices, and the board at <a href="http://localhost:3005/board">localhost:3005/board</a></td><td>✅</td></tr><tr><td><code>npm run demo</code></td><td>load the demo programs and start the clock (<code>-- --cores 4</code> for 4 cores)</td><td>✅ after the take-home</td></tr></tbody></table></div>
+<p>Tests that gate this week:</p>
+<ul><li><code>tests/week-04/isa.test.ts</code>: <code>decode</code> and <code>encode</code>.</li>
+<li><code>tests/week-04/design-note.test.ts</code>: your note is filled in, with the storyboard there.</li>
+<li><code>tests/week-05/asm.test.ts</code>: the assembler turns text into the right bytes (needs <code>encode</code>).</li>
+<li><code>tests/week-05/fsm.test.ts</code>: the <code>defineFsm</code> helper your core uses (already passes: read it).</li>
+<li><code>tests/week-05/programs.test.ts</code>: every program in <code>programs/</code> assembles.</li>
+<li><code>tests/week-05/cpu-core.test.ts</code>: each transition in the table; an illegal transition throws; the count-down program ends with the right registers, flags and memory.</li>
+<li><code>tests/week-05/integration.test.ts</code>: the CPU and Memory over the bus run two programs on two cores to the right answer, with the same message trace every run.</li>
+<li><code>tests/week-05/board-core.test.ts</code>: the board's behaviour checks (each phase maps to the right step; the core's fetch is found among the tick's packets).</li></ul>
+
+</section>
+<section id="explain">
+<h2>Explain it back</h2>
+<p>Before next session, explain your work to me without notes or AI: book a 5-minute slot with me, or record a 3-minute video (your face and your screen, no notes) answering the two questions I post after class. Be ready to:</p>
+<ol><li><b>Walk through your state table:</b> why does a waiting state exist at all? What happens if the bytes haven't arrived yet?</li>
+<li><b>Walk one instruction tick by tick,</b> <code>JNZ 0x010</code> (<code>08 00 00 10</code>), from <code>FETCH</code> to the next <code>FETCH</code>, pointing at your code <i>and</i> at what the board shows on each tick.</li>
+<li><b>Why does <code>LOAD</code> take one more tick than <code>ADD</code>?</b></li>
+<li><b>Why is a reply <span class="term" tabindex="0" aria-describedby="tip-7">latched<span class="tip" role="tooltip" id="tip-7">Captured and held until the next tick: the reply arrives during tick 41, but the CPU only uses it in tick 42.</span></span> to the next tick</b> instead of used the moment it arrives? (Think of a <span class="term" tabindex="0" aria-describedby="tip-8">flip-flop<span class="tip" role="tooltip" id="tip-8">A one-bit storage circuit that takes in a new value only at the clock edge. It's why hardware changes on ticks, not in between.</span></span>.)</li>
+<li><b>Show one thing you told the agent to change,</b> and why.</li></ol>
+
+</section>
+<section id="codex">
+<h2>Using Codex this week</h2>
+<p>Codex may write the code; you guide the design. Say your approach first in a sentence or two, name the one task it may change, and don't keep a line you can't explain. Your design note is yours: Codex can argue with it, but it shouldn't write it.</p>
+<div class="table-wrap"><table><thead><tr><th>Fine to ask Codex</th><th>You must be able to explain yourself</th></tr></thead><tbody><tr><td>"Here's my state table. Which case did I miss?"</td><td>Every row of your state table</td></tr><tr><td>"My <code>awaitInstruction</code>: bytes → DECODE, fault → FAULT, nothing → stay and count a stall. Write it that way and explain it."</td><td>What the PC, IR and flags hold at any tick of a trace</td></tr><tr><td>"<code>encode</code> is decode backwards: here's my plan. Write it and explain it."</td><td>The 4 bytes of each instruction you encoded</td></tr><tr><td>"Explain two's complement wrap-around at 8 bits."</td><td>Why <code>carry</code> is set after <code>SUB 3, 5</code></td></tr><tr><td>"Here's my storyboard: <code>FETCH</code> and <code>WAIT_FETCH</code> light <i>fetch</i>. Write <code>board-cycle-step</code> that way."</td><td>Which phase lights which step on your board, and why</td></tr><tr><td>"This test fails with this error. What's it telling me?"</td><td>Every transition your phase functions make</td></tr></tbody></table></div>
+
+</section>
+<section id="stretch">
+<h2>Stretch</h2>
+<p>Stretch is for your portfolio, not extra credit.</p>
+<ul><li>A trace view on the board: for each tick, the phase and <code>disassemble(core.instruction)</code> (from <code>core/isa.ts</code>), so each line shows the instruction as text.</li>
+<li>Diagrams from your code: <code>fsm-mermaid</code> and <code>npm run fsm:export</code> (see <a href="../stretch/diagrams.md">docs/stretch/diagrams.md</a>).</li>
+<li>Write a program that multiplies R0 by R1 with a loop, and a test for it.</li>
+<li>Design a <code>CALL</code>/<code>RET</code> pair. What would the core need that it doesn't have yet?</li></ul>
+</section>
+
+</main>
+<script data-glossary>
+(function () {
+  var terms = document.querySelectorAll(".term");
+  // Keep the explanation inside the viewport (16px gutter), near the right edge too.
+  function place(t) {
+    var tip = t.querySelector(".tip");
+    // Hidden tips are display:none (so they never widen the page): show it to measure it.
+    tip.style.left = "0px";
+    tip.style.display = "block";
+    var r = tip.getBoundingClientRect(), dx = 0, max = document.documentElement.clientWidth - 16;
+    tip.style.display = "";
+    if (r.right > max) dx = max - r.right;
+    if (r.left + dx < 16) dx = 16 - r.left;
+    tip.style.left = dx + "px";
+  }
+  function closeAll(except) {
+    terms.forEach(function (t) { if (t !== except) t.classList.remove("open"); });
+  }
+  terms.forEach(function (t) {
+    t.addEventListener("mouseenter", function () { place(t); });
+    t.addEventListener("focus", function () { place(t); });
+    // Tap (touch) toggles; hover and keyboard focus are pure CSS.
+    t.addEventListener("click", function (e) {
+      e.stopPropagation();
+      closeAll(t);
+      place(t);
+      t.classList.toggle("open");
+    });
+  });
+  document.addEventListener("click", function () { closeAll(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    closeAll();
+    var a = document.activeElement;
+    if (a && a.classList.contains("term")) a.blur();
+  });
+})();
+</script>
+</body>
+</html>

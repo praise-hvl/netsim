@@ -83,7 +83,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 8;
+export const STUDIO_VERSION = 13;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -96,7 +96,7 @@ export const COURSE_WEEKS = [
   { week: 2, title: "Design: the machine and its bus", kind: "design", guide: "docs/weeks/week-02.md", page: "docs/weeks/week-02.html", note: "docs/notes/week-02.md", board: false },
   { week: 3, title: "Build: bus + memory on screen", kind: "build", guide: "docs/weeks/week-03.md", page: "docs/weeks/week-03.html", note: null, board: true },
   { week: 4, title: "Design: the CPU", kind: "design", guide: "docs/weeks/week-04.md", page: "docs/weeks/week-04.html", note: "docs/notes/week-04.md", board: false },
-  { week: 5, title: "Build: a CPU that runs programs", kind: "build", guide: "docs/weeks/week-05.md", page: "docs/weeks/week-05.html", note: null, board: true },
+  { week: 5, title: "Design + build: a CPU that runs programs", kind: "build", guide: "docs/weeks/week-05.md", page: "docs/weeks/week-05.html", note: "docs/notes/week-04.md", board: true },
   { week: 6, title: "Design: scheduling + interrupts", kind: "design", guide: "docs/weeks/week-06.md", page: "docs/weeks/week-06.html", note: "docs/notes/week-06.md", board: false },
   { week: 7, title: "Build: cores, scheduler, interrupts", kind: "build", guide: "docs/weeks/week-07.md", page: "docs/weeks/week-07.html", note: null, board: true },
   { week: 8, title: "Demo: ship it", kind: "demo", guide: "docs/weeks/week-08.md", page: null, note: null, board: true },
@@ -219,7 +219,7 @@ const CODEX_FLAGS = ["-c", "check_for_update_on_startup=false"];
  *   mtime?: (path: string) => number | null,
  *   readText: (path: string) => string | null,
  *   save?: () => void,
- *   state: { madeFolder?: string, movedOld?: string, login?: string, seenLogin?: string, parent?: string, repoDir?: string, chatgpt?: string, doctorOk?: boolean, refused?: { dir: string, why: string }, codexVersion?: string, dryDone?: Record<string, boolean>, dryFound?: Record<string, string> },
+ *   state: { madeFolder?: string, movedOld?: string, login?: string, seenLogin?: string, parent?: string, repoDir?: string, chatgpt?: string, doctorOk?: boolean, refused?: { dir: string, why: string }, codexVersion?: string, agentThreads?: Record<string, string>, dryDone?: Record<string, boolean>, dryFound?: Record<string, string> },
  * }} Context
  */
 
@@ -1284,8 +1284,33 @@ export function findWeek(ctx, dir) {
   const sorted = [...tips.keys()].sort((a, b) => a - b);
   // In work already: that commit is here and work contains it.
   const merged = (/** @type {number} */ n) => ctx.capture(["git", "merge-base", "--is-ancestor", /** @type {string} */ (tips.get(n)), "work"], dir)?.code === 0;
-  for (const n of sorted) if (!merged(n)) return { week: n, published: true };
+  const waiting = sorted.filter((n) => !merged(n));
+  if (waiting.length) return { week: /** @type {number} */ (newestHolding(ctx, dir, waiting, tips)), published: true };
   return { week: (sorted.at(-1) ?? 1) + 1, published: false };
+}
+
+/**
+ * Which of the weeks waiting to get to offer: the newest one that already holds all the ones before
+ * it (each release is built on the last), so one "Get this week's work" brings them all. A student
+ * who's weeks behind doesn't get them one at a time. Weeks that don't line up are got in order.
+ * @param {Context} ctx
+ * @param {string} dir
+ * @param {number[]} waiting  the released weeks not in work, in order
+ * @param {Map<number, string>} tips  each week's latest commit
+ * @returns {number | null}
+ */
+function newestHolding(ctx, dir, waiting, tips) {
+  // Comparing the weeks needs their commits: fetch the week tags if one isn't here yet (it only
+  // moves upstream/week-N, never the student's work).
+  const missing = (/** @type {number} */ n) => ctx.capture(["git", "cat-file", "-e", `${tips.get(n)}^{commit}`], dir)?.code !== 0;
+  if (waiting.length > 1 && !ctx.dryRun && waiting.some(missing)) ctx.capture(gitArgv(ctx, ["fetch", "-q", "upstream"]), dir);
+  let toGet = waiting[0] ?? null;
+  for (const n of waiting.slice(1)) {
+    const holds = waiting.filter((m) => m < n).every((m) => ctx.capture(["git", "merge-base", "--is-ancestor", /** @type {string} */ (tips.get(m)), /** @type {string} */ (tips.get(n))], dir)?.code === 0);
+    if (!holds) break;
+    toGet = n;
+  }
+  return toGet;
 }
 
 /**
@@ -1903,8 +1928,9 @@ const ACCOUNT_STEPS = new Set(["gh-login", "git-helper", "fork", "clone", "push"
  * @param {Step[]} steps
  * @param {{ mode?: "setup" | "week", week?: number, published?: boolean, setupSteps?: number, autoSteps?: number, inWork?: boolean, next?: number, groups?: WeekGroup[], update?: boolean, focus?: number }} [meta]  what the page is for:
  *   setup (week 1), or getting week N (published: false when week N isn't out yet)
+ * @param {{ agentTransport?: (cwd: string) => AgentTransport }} [options]  (tests: a scripted Codex)
  */
-export function createStudio(ctx, steps, meta = {}) {
+export function createStudio(ctx, steps, meta = {}, options = {}) {
   const setupSteps = meta.mode === "week" ? (meta.setupSteps ?? 0) : 0;
   // How many leading steps tick themselves off when done: the setup, or everything when the week is already in.
   const autoSteps = meta.mode === "week" ? (meta.autoSteps ?? setupSteps) : 0;
@@ -2355,7 +2381,7 @@ export function createStudio(ctx, steps, meta = {}) {
   }
 
   // ── Tasks written in the studio (the week's Code tab) ──
-  /** @type {Record<string, { phase: "running" | "passed" | "failed" | "error", passed?: number, failed?: number, failures?: { test: string, message: string, own?: boolean }[], waiting?: string[], error?: string, committed?: string }>} */
+  /** @type {Record<string, { phase: "running" | "passed" | "failed" | "error", passed?: number, failed?: number, failures?: { test: string, message: string, own?: boolean }[], waiting?: string[], blocked?: number, error?: string, committed?: string, done?: boolean, rev?: string }>} */
   let code = {};
   /** @type {Running | null} */
   let codeRun = null;
@@ -2374,45 +2400,120 @@ export function createStudio(ctx, steps, meta = {}) {
     if (codeRun) return reject(409, "The tests are still running for the last save.");
     const task = weekCode(ctx, dir, week).find((t) => t.id === a.id && t.file === a.file);
     if (!task) return reject(404, "That isn't one of this week's tasks.");
-    const id = task.id;
-    const saved = writeRegion(dir, { file: a.file, id, week, rev: a.rev, body: a.body });
+    const saved = writeRegion(dir, { file: a.file, id: task.id, week, rev: a.rev, body: a.body });
     if ("error" in saved) return { ...reject(409, saved.error) };
+    runTaskTests(dir, week, { ...task, rev: saved.rev });
+    return { ...ok, rev: saved.rev };
+  }
+
+  /** "Run its tests": the file as it is, nothing written (the student pressed it). @param {Record<string, unknown>} a */
+  function testCode(a) {
+    const dir = ctx.state.repoDir;
+    const week = Number(a.week);
+    if (!dir || !Number.isInteger(week) || !weekIn(week)) return reject(409, "That week isn't in your work yet.");
+    if (codeRun) return reject(409, "The tests are still running.");
+    const task = weekCode(ctx, dir, week).find((t) => t.id === a.id);
+    if (!task) return reject(404, "That isn't one of this week's tasks.");
+    runTaskTests(dir, week, task, a.fromAgent === true ? "agent" : "");
+    return ok;
+  }
+
+  /**
+   * @param {string} dir @param {number} week @param {ReturnType<typeof weekCode>[number]} task
+   * @param {"" | "agent" | "sandbox"} [from]  "agent": the student pressed it in the Agent tab, say the result there.
+   *   "sandbox": the end of a turn, nobody pressed anything: in Codex's sandbox, and said there too.
+   */
+  function runTaskTests(dir, week, task, from = "") {
+    const id = task.id;
+    if (from) agent.testOfferDone(id);
     code = { ...code, [id]: { phase: "running" } };
     publish();
     const report = join(tmpdir(), `netsim-studio-${process.pid}-${id}.json`);
-    const argv = [process.execPath, join(dir, "node_modules", "vitest", "vitest.mjs"), "run", ...task.tests, "--reporter=json", `--outputFile=${report}`];
+    const vitest = [process.execPath, join(dir, "node_modules", "vitest", "vitest.mjs"), "run", ...task.tests, "--reporter=json", `--outputFile=${report}`];
+    const argv = from === "sandbox" ? ["codex", ...CODEX_FLAGS, "-c", `sandbox_mode="${AGENT_SANDBOX_MODE}"`, "-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=false", "sandbox", "--", ...vitest] : vitest;
     let text = "";
     codeRun = /** @type {NonNullable<Context["stream"]>} */ (ctx.stream)(argv, dir, (t) => (text = (text + t).slice(-20_000)));
     void codeRun.done.then(() => {
       codeRun = null;
-      const stubs = weekCode(ctx, dir, week).filter((t) => t.stubbed);
-      const results = taskResults(ctx.readText(report) ?? "", task, stubs, task.needs);
+      const stubs = agentTaskList(dir, week).filter((t) => t.stubbed);
+      const results = taskResults(ctx.readText(report) ?? "", task, stubs, task.needs, from === "sandbox");
       try {
         rmSync(report, { force: true });
       } catch {
         // a leftover report in the temp folder is harmless
       }
-      if (!results) code = { ...code, [id]: { phase: "error", error: `The tests couldn't run:\n${cleanOutput(text).slice(-1500)}` } };
-      else code = { ...code, [id]: { phase: results.failed ? "failed" : "passed", ...results } };
+      if (!results) {
+        // The sandbox couldn't run them: leave it to the student's press, with no verdict.
+        if (from === "sandbox") {
+          code = { ...code };
+          delete code[id];
+          agent.testOffer(week, id);
+          return publish();
+        }
+        code = { ...code, [id]: { phase: "error", error: `The tests couldn't run:\n${cleanOutput(text).slice(-1500)}` } };
+      } else code = { ...code, [id]: { phase: results.failed ? "failed" : "passed", rev: task.rev, ...results } };
+      if (from && results) {
+        const todo = results.waiting.length ? ` ${results.waiting.join(", ")} still to do.` : "";
+        const socket = results.blocked ? ` ${results.blocked} more open a local socket, so they need Run its tests.` : "";
+        if (results.failed) agent.say("bad", `\`${id}\`: ${results.failed} of its tests fail. First: ${results.failures[0]?.test ?? ""}: ${String(results.failures[0]?.message ?? "").split("\n")[0].slice(0, 300)}`);
+        else if (results.blocked && !results.passed) agent.testOffer(week, id, `\`${id}\`: its tests open a local socket, so they can't run in the sandbox.${todo}`);
+        else agent.commitOffer(week, id, `\`${id}\`: ${results.passed} test${results.passed === 1 ? "" : "s"} pass.${todo}${socket}`);
+      } else if (from) agent.say("bad", `The tests for \`${id}\` couldn't run.`);
       publish();
     });
-    return { ...ok, rev: saved.rev };
   }
 
-  /** The commit for one task, once its tests pass: only that task's file. @param {Record<string, unknown>} a */
+  /** The commit for one task, once its tests pass as the file is now: only that task's file. @param {Record<string, unknown>} a */
   function commitCode(a) {
     const dir = ctx.state.repoDir;
     const week = Number(a.week);
     if (!dir || !Number.isInteger(week) || !weekIn(week)) return reject(409, "That week isn't in your work yet.");
     const task = weekCode(ctx, dir, week).find((t) => t.id === a.id);
     if (!task || code[task.id]?.phase !== "passed") return reject(409, "Commit a task once its tests pass.");
+    if (code[task.id]?.rev !== task.rev) return reject(409, "This task changed after its tests ran: run them again first.");
+    // Once is enough: a second press would commit whatever else is in the file by then, under this task's name.
+    if (code[task.id]?.done) return reject(409, "This task is already committed.");
     const message = `week ${week}: ${task.id}`;
     const r = ctx.capture(["git", "commit", "-q", "-m", message, "--", task.file], dir);
     const said = `${r?.stdout ?? ""}${r?.stderr ?? ""}`;
-    code = { ...code, [task.id]: { ...code[task.id], committed: r?.code === 0 ? `Committed: ${message}` : /nothing (added )?to commit|no changes added/i.test(said) ? "Nothing new to commit: it's already in a commit." : `The commit didn't work: ${said.trim().split("\n")[0]}` } };
+    const committed = r?.code === 0 ? `Committed: ${message}` : /nothing (added )?to commit|no changes added/i.test(said) ? "Nothing new to commit: it's already in a commit." : `The commit didn't work: ${said.trim().split("\n")[0]}`;
+    code = { ...code, [task.id]: { ...code[task.id], committed, done: r?.code === 0 || /already in a commit/.test(committed) } };
+    agent.commitDone(task.id);
     publish();
-    return ok;
+    return { ...ok, said: committed };
   }
+
+  /**
+   * A turn on a selected task ended: the studio decides green itself from the measured tests,
+   * whichever command Codex happened to run. It runs them inside Codex's sandbox, because nobody has
+   * pressed anything yet, so agent-written code doesn't run outside it by itself.
+   * @param {{ taskId: unknown, status: string }} done
+   * @param {number} week
+   */
+  function onAgentTurnDone({ taskId, status }, week = 0) {
+    const dir = ctx.state.repoDir;
+    if (!dir || status !== "completed" || !taskId || !week) return;
+    const task = agentTaskList(dir, week).find((t) => t.id === taskId);
+    if (!task || task.stubbed) return;
+    if (codeRun || !ctx.stream) return agent.testOffer(task.week, task.id);
+    runTaskTests(dir, task.week, task, "sandbox");
+  }
+
+  /** The tasks the Agent tab can work on: this week's first, then earlier weeks' (a class may reach back). @param {string} dir @param {number} week */
+  const agentTaskList = (dir, week) => {
+    const out = [];
+    for (let w = week; w >= 1; w--) out.push(...weekCode(ctx, dir, w).map((t) => ({ ...t, week: w })));
+    return out;
+  };
+  const agent = createAgent(ctx, {
+    ...(options.agentTransport ? { transport: options.agentTransport } : {}),
+    afterTurn: (done) => onAgentTurnDone(done, done.week),
+    emit: (e) => {
+      for (const l of listeners) l("agent", e);
+    },
+    weekTasks: (dir, week) => agentTaskList(dir, week),
+    weekTitle: (week) => (meta.groups ?? []).find((g) => g.week === week)?.title ?? `Week ${week}`,
+  });
 
   /** @param {number} week */
   async function runChecks(week) {
@@ -2447,7 +2548,13 @@ export function createStudio(ctx, steps, meta = {}) {
       return ok;
     }
     if (a.type === "checks") return runChecks(Number(a.week));
+    if (typeof a.type === "string" && a.type.startsWith("agent-")) {
+      // Only for a week in the student's work, the same as its page and checks.
+      if (a.type === "agent-send" && !weekIn(Number(a.week))) return reject(409, "That week isn't in your work yet.");
+      return agent.act(a);
+    }
     if (a.type === "code-save") return saveCode(a);
+    if (a.type === "code-test") return testCode(a);
     if (a.type === "code-commit") return commitCode(a);
     if (typeof a.type === "string" && a.type.startsWith("account-")) return accountAct(a);
     if (acct) return reject(409, "Finish changing the GitHub account first, or close it.");
@@ -2775,7 +2882,17 @@ export function createStudio(ctx, steps, meta = {}) {
     /** The course folder, once there is one. */
     repoDir: () => ctx.state.repoDir ?? null,
     /** Tests the studio started are running (a task's save, or the week's checks). */
-    busy: () => Boolean(codeRun || checksRun),
+    busy: () => Boolean(codeRun || checksRun || agent.busy()),
+    /** The picker's list in the Agent tab, once the week is in the student's work. @param {number} week */
+    agentTasks: (week) => {
+      const dir = ctx.state.repoDir;
+      if (!dir || !weekIn(week)) return null;
+      return agentTaskList(dir, week).map((t) => ({ id: t.id, week: t.week, description: t.description }));
+    },
+    /** The Agent tab's state: a snapshot; numbered "agent" events follow it. */
+    agentSnapshot: () => agent.snapshot(),
+    /** Ends what the studio started and waits, boundedly, for its Codex to go. */
+    shutdown: () => agent.shutdown(),
     /**
      * A week's tasks to write in the studio (its Code tab), once the week is in the student's work.
      * @param {number} week
@@ -2792,6 +2909,870 @@ export function createStudio(ctx, steps, meta = {}) {
       child = null;
       checksRun?.kill();
       stopBoard();
+    },
+  };
+}
+
+// ── The Agent tab: the student's own Codex, driven from the studio ──────────────────
+// Node owns one `codex app-server` child (newline-delimited JSON-RPC on stdio), one thread per
+// course folder and one turn at a time. The browser never sees raw RPC: it gets a snapshot plus
+// numbered events, and can only ask for the few actions below. Written against the public protocol
+// (generate its types with `codex app-server generate-ts`); checked on 0.166.0.
+
+/**
+ * The command for only this task's own tests: from the measured map, those that need just this task.
+ * Their shared start of a name if nothing else in those files has it, else their names; without
+ * measured data, the task's test files.
+ * @param {{ id: string, tests: string[], needs?: Record<string, string[]> | null }} task
+ */
+export function focusedTestCommand(task) {
+  const quote = (/** @type {string} */ t) => `"${t.replace(/[\\"$\`]/g, "\\$&")}"`;
+  const regex = (/** @type {string} */ t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const entries = Object.entries(task.needs ?? {});
+  const own = entries.filter(([, ids]) => ids.length === 1 && ids[0] === task.id).map(([key]) => key);
+  if (!own.length) return `npx vitest run ${task.tests.join(" ")}`;
+  const files = [...new Set(own.map((k) => k.split(" > ")[0]))];
+  const names = own.map((k) => k.slice(k.indexOf(" > ") + 3));
+  let prefix = names[0];
+  for (const n of names) while (!n.startsWith(prefix)) prefix = prefix.slice(0, -1);
+  prefix = /^(.*\s)/.exec(prefix)?.[1] ?? (names.length === 1 ? prefix : "");
+  const others = entries.map(([key]) => key).filter((k) => !own.includes(k) && files.includes(k.split(" > ")[0])).map((k) => k.slice(k.indexOf(" > ") + 3));
+  if (names.length === 1) prefix = names[0];
+  const pattern = prefix.length >= 4 && !others.some((n) => n.startsWith(prefix)) ? `^${regex(prefix)}` : names.map(regex).join("|");
+  return pattern.length > 600 ? `npx vitest run ${files.join(" ")}` : `npx vitest run ${files.join(" ")} -t ${quote(pattern)}`;
+}
+
+/** The oldest Codex the bridge has been run against. Older ones get the update command. */
+export const CODEX_MIN_VERSION = "0.166.0";
+const CODEX_UPDATE = "npm install -g @openai/codex@latest";
+const CODEX_INSTALL = "npm install -g @openai/codex";
+/** The permissions every thread and turn asks for explicitly, never inherited from the student's config. */
+export const AGENT_APPROVAL_POLICY = "on-request";
+export const AGENT_SANDBOX_MODE = "workspace-write";
+export const AGENT_SANDBOX_POLICY = { type: "workspaceWrite", writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
+export const AGENT_PERMISSIONS_LINE = "Without asking, Codex can read files on your laptop and change files and run commands in your course folder. It asks here before using the internet (the course's bus tests count), changing anything else outside that folder (temporary folders aside) or making a git commit.";
+/**
+ * Overrides for the student's config.toml on every thread, so the line above stays true whatever it
+ * says: no extra writable folders, no network, and no tools that act without a card (web search and
+ * sub-agents have no approval path here).
+ */
+export const AGENT_CONFIG = { sandbox_workspace_write: { writable_roots: [], network_access: false }, web_search: "disabled", features: { multi_agent: false } };
+/** Studio's teaching policy, as trusted instructions for the thread. The course's rules are in the repo's AGENTS.md. */
+export const AGENT_POLICY = `You are working with a student inside NetSim Studio, on their own copy of the NetSim course. The repo's AGENTS.md has the course's rules. Each message may start with a <studio-context> block from the studio: the week, the selected task and its focused test command.
+- The student leads. If they haven't said how they want to approach the task, ask for their approach before changing anything.
+- Before each change, say in a sentence or two what you'll change and why. Stay inside the selected task. You may write the code; they must be able to explain it, so explain it.
+- After a change, run the task's focused test command and read the result with them.
+- Ask before moving on to a different task. Never edit tests.
+- Don't open or copy from studio/hints/: those are the course's answers for the grey hints in the app.
+- A test failing with "listen EPERM" is the sandbox blocking its local socket, not their code: ask to run it again outside the sandbox and say why.`;
+
+const RPC_TIMEOUT_MS = { initialize: 5 * 60_000, default: 60_000 };
+const AGENT_MAX_ENTRIES = 400;
+const AGENT_MAX_TEXT = 200_000;
+const AGENT_MAX_OUTPUT = 20_000;
+const AGENT_MAX_MESSAGE = 20_000;
+const AGENT_MAX_LINE = 32 * 1024 * 1024;
+
+/** @param {string} a @param {string} b  is version a older than b? */
+export function versionOlder(a, b) {
+  const parts = (/** @type {string} */ v) => v.split(/[.-]/).slice(0, 3).map((p) => Number.parseInt(p, 10) || 0);
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0);
+  return false;
+}
+
+/**
+ * A running `codex app-server`: JSON messages in and out, and a bounded way to end it (only this
+ * child and what it started).
+ * @typedef {{ send: (message: object) => void, onMessage: (fn: (message: any) => void) => void, onBadLine: (fn: (line: string) => void) => void, onClose: (fn: (why: { code: number | null, signal: string | null, error?: string, stderr: string }) => void) => void, stop: (graceMs?: number) => Promise<void> }} AgentTransport
+ */
+
+/**
+ * @param {Context} ctx
+ * @param {string} cwd
+ * @returns {AgentTransport}
+ */
+export function codexTransport(ctx, cwd) {
+  const windows = ctx.platform === "windows";
+  // Fixed arguments only: nothing the student types ever goes on this command line, so the Windows
+  // shim's shell sees nothing of theirs. Their words go over stdio.
+  const child = spawn("codex", [...CODEX_FLAGS, "app-server"], { cwd, env: { ...process.env, NO_COLOR: "1" }, stdio: ["pipe", "pipe", "pipe"], shell: windows, detached: !windows, windowsHide: true });
+  /** @type {(message: any) => void} */
+  let message = () => {};
+  /** @type {(line: string) => void} */
+  let bad = () => {};
+  /** @type {(why: { code: number | null, signal: string | null, error?: string, stderr: string }) => void} */
+  let closed = () => {};
+  let buffer = "";
+  let stderr = "";
+  let done = false;
+  /** @type {(() => void)[]} */
+  const waiters = [];
+  const finish = (/** @type {number | null} */ code, /** @type {string | null} */ signal, /** @type {string | undefined} */ error) => {
+    if (done) return;
+    done = true;
+    closed({ code, signal, ...(error ? { error } : {}), stderr });
+    for (const w of waiters) w();
+  };
+  const signalTree = (/** @type {NodeJS.Signals} */ signal) => {
+    if (child.pid === undefined) return;
+    try {
+      if (windows) spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      else process.kill(-child.pid, signal);
+    } catch {
+      // already gone
+    }
+  };
+  child.stdout.setEncoding("utf8").on("data", (chunk) => {
+    buffer += chunk;
+    if (buffer.length > AGENT_MAX_LINE) {
+      buffer = "";
+      bad("(a message too long to read)");
+      return;
+    }
+    for (let at = buffer.indexOf("\n"); at >= 0; at = buffer.indexOf("\n")) {
+      const line = buffer.slice(0, at).trim();
+      buffer = buffer.slice(at + 1);
+      if (!line) continue;
+      /** @type {unknown} */
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        bad(line);
+        continue;
+      }
+      message(parsed);
+    }
+  });
+  child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr = (stderr + chunk).slice(-4000)));
+  child.stdin.on("error", () => {}); // a write after it died: the close below says so
+  child.on("error", (error) => finish(null, null, /** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT" ? "ENOENT" : error.message));
+  child.on("close", (code, signal) => finish(code, signal));
+  return {
+    send: (m) => {
+      if (!done) child.stdin.write(`${JSON.stringify(m)}\n`);
+    },
+    onMessage: (fn) => (message = fn),
+    onBadLine: (fn) => (bad = fn),
+    onClose: (fn) => (closed = fn),
+    // End of stdin asks it to leave, and it ends the commands it started (they're in their own
+    // sessions, out of reach of a signal to this group: measured on 0.166.0). Then a bounded wait,
+    // then this child's group in case it hung.
+    stop: (graceMs = 2500) =>
+      new Promise((resolve) => {
+        if (done) return resolve();
+        waiters.push(resolve);
+        child.stdin.end();
+        const term = setTimeout(() => signalTree("SIGTERM"), graceMs * 0.8);
+        const kill = setTimeout(() => {
+          signalTree("SIGKILL");
+          setTimeout(resolve, 200);
+        }, graceMs);
+        waiters.push(() => {
+          clearTimeout(term);
+          clearTimeout(kill);
+        });
+      }),
+  };
+}
+
+/** What an approval is about, in a form that changes when any of it changes. @param {string} method @param {any} params @param {unknown} changes */
+function approvalFingerprint(method, params, changes) {
+  const rest = { ...(params ?? {}) };
+  delete rest.startedAtMs;
+  return createHash("sha256").update(JSON.stringify([method, rest, changes ?? null])).digest("hex").slice(0, 24);
+}
+
+/**
+ * The bridge. Everything about the child, the thread, the turn and the pending approvals lives here,
+ * so a browser refresh only re-reads it.
+ * @param {Context} ctx
+ * @param {{ transport?: (cwd: string) => AgentTransport, emit?: (event: object) => void, weekTasks?: (dir: string, week: number) => { id: string, file: string, description: string, tests: string[] }[], weekTitle?: (week: number) => string, stopWaitMs?: number, afterTurn?: (done: { week: number, taskId: unknown, status: string, commands: { command: string, exitCode: unknown, status: string, output: string }[] }) => void }} [options]
+ */
+export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd), emit = () => {}, weekTasks = () => [], weekTitle = (week) => `Week ${week}`, stopWaitMs = 15_000, afterTurn = () => {} } = {}) {
+  /** @type {"off" | "starting" | "missing" | "too-old" | "signed-out" | "signing-in" | "ready" | "failed" | "unavailable"} */
+  let phase = "off";
+  let seq = 0;
+  let generation = 0;
+  let version = "";
+  /** @type {{ type: string, email?: string | null } | null} */
+  let account = null;
+  let problem = "";
+  let loginUrl = "";
+  /** @type {AgentTransport | null} */
+  let link = null;
+  let threadId = "";
+  /** @type {{ id: string, status: "starting" | "running" | "stopping" } | null} */
+  let turn = null;
+  /** @type {{ phase: "running" | "failed", out: string, display: string } | null} */
+  let fix = null;
+  /** @type {{ id: string, kind: string, [key: string]: unknown }[]} */
+  let entries = [];
+  /**
+   * The approvals waiting for the student. Each answer has to name all of this, so a card from
+   * another process, turn or item, or one whose content changed, can't authorize anything.
+   * @type {{ key: string, generation: number, threadId: string, turnId: string, itemId: string, approvalId: string, requestId: number | string, method: string, fingerprint: string, kind: "command" | "file", command: string, cwd: string, reason: string, grantRoot: string, changes: { path: string, kind: string, diff: string, movePath?: string }[] }[]}
+   */
+  let cards = [];
+  let nextRpc = 1;
+  /** @type {Map<number, { resolve: (value: any) => void, reject: (error: Error) => void, timer: NodeJS.Timeout, method: string }>} */
+  const rpcs = new Map();
+  let notedHints = false;
+  let lastClientId = "";
+  let noteId = 0;
+  /** @type {NodeJS.Timeout | null} */
+  let stopTimer = null;
+  let shuttingDown = false;
+  /** @type {Set<string>} commands the student's Stop ended: they read "stopped", whatever Codex reports after */
+  const stoppedRows = new Set();
+  let runsLater = ""; // what warnIfRunsLater last said
+  let lastWeek = 0; // the week and task of the message being answered
+  /** @type {unknown} */
+  let lastTask = "";
+  let closingOnPurpose = false; // the child is being ended because it's too old: keep saying that
+
+  const repo = () => {
+    const dir = ctx.state.repoDir;
+    if (!dir) return null;
+    try {
+      return realpathSync(dir);
+    } catch {
+      return null;
+    }
+  };
+  const fail = (/** @type {number} */ status, /** @type {string} */ error) => ({ ok: false, status, error });
+  const good = { ok: true, status: 200, error: "" };
+
+  /** The non-transcript part of the state. */
+  const stateNow = () => ({
+    phase,
+    generation,
+    version,
+    minVersion: CODEX_MIN_VERSION,
+    account: account && { type: account.type, ...(account.email ? { email: account.email } : {}) },
+    problem,
+    loginUrl,
+    threadId,
+    turn: turn && { id: turn.id, status: turn.status },
+    fix,
+    fixCommand: phase === "missing" ? CODEX_INSTALL : phase === "too-old" ? CODEX_UPDATE : "",
+    cards: cards.map((c) => ({ key: c.key, kind: c.kind, command: c.command, cwd: c.cwd, reason: c.reason, grantRoot: c.grantRoot, changes: c.changes })),
+    permissions: AGENT_PERMISSIONS_LINE,
+  });
+  const snapshot = () => ({ seq, ...stateNow(), entries });
+  const event = (/** @type {object} */ e) => emit({ seq: ++seq, ...e });
+  const publishState = () => event({ type: "state", state: stateNow() });
+
+  /** @param {{ id: string, kind: string, [key: string]: unknown }} entry */
+  function put(entry) {
+    const at = entries.findIndex((x) => x.id === entry.id);
+    if (at >= 0) entries[at] = { ...entries[at], ...entry };
+    else {
+      entries.push(entry);
+      if (entries.length > AGENT_MAX_ENTRIES) entries = entries.slice(-AGENT_MAX_ENTRIES);
+    }
+    event({ type: "entry", entry: at >= 0 ? entries[at] : entry });
+  }
+  const note = (/** @type {"info" | "bad"} */ tone, /** @type {string} */ text) => put({ id: `note-${++noteId}`, kind: "note", tone, text });
+
+  // ── RPC ──
+  /** @param {string} method @param {unknown} params @returns {Promise<any>} */
+  function rpc(method, params) {
+    const current = link;
+    if (!current) return Promise.reject(new Error("Codex isn't running."));
+    const id = nextRpc++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        rpcs.delete(id);
+        const err = /** @type {Error & { ambiguous?: boolean }} */ (new Error(`Codex didn't answer ${method} in time.`));
+        err.ambiguous = true;
+        reject(err);
+      }, method === "initialize" ? RPC_TIMEOUT_MS.initialize : RPC_TIMEOUT_MS.default);
+      rpcs.set(id, { resolve, reject, timer, method });
+      current.send({ id, method, params });
+    });
+  }
+
+  /** @param {any} m */
+  function onMessage(m) {
+    if (m === null || typeof m !== "object") return;
+    if (m.id !== undefined && m.method === undefined) {
+      const waiting = typeof m.id === "number" ? rpcs.get(m.id) : undefined;
+      if (!waiting) return;
+      rpcs.delete(m.id);
+      clearTimeout(waiting.timer);
+      if (m.error) waiting.reject(new Error(String(m.error.message ?? "Codex refused that.")));
+      else waiting.resolve(m.result);
+      return;
+    }
+    if (typeof m.method !== "string") return;
+    if (m.id !== undefined) return onServerRequest(m.id, m.method, m.params ?? {});
+    onNotification(m.method, m.params ?? {});
+  }
+
+  // ── Approvals ──
+  const cardKey = (/** @type {{ generation: number, threadId: string, turnId: string, itemId: string, approvalId: string, requestId: number | string, fingerprint: string }} */ c) =>
+    [c.generation, c.threadId, c.turnId, c.itemId, c.approvalId, c.requestId, c.fingerprint].join("|");
+  const fileChanges = (/** @type {unknown} */ changes) =>
+    (Array.isArray(changes) ? changes : []).map((c) => ({
+      path: String(c?.path ?? ""),
+      kind: String(typeof c?.kind === "object" ? (c.kind?.type ?? "update") : (c?.kind ?? "update")),
+      diff: String(c?.diff ?? "").slice(0, AGENT_MAX_OUTPUT),
+      ...(c?.kind?.move_path ? { movePath: String(c.kind.move_path) } : {}),
+    }));
+
+  /** @param {number | string} id @param {string} method @param {any} params */
+  function onServerRequest(id, method, params) {
+    const current = link;
+    if (!current) return;
+    if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
+      // Another thread's request (one this studio didn't start), or no turn of ours: no.
+      if (params.threadId !== threadId || !turn || (turn.id && params.turnId !== turn.id)) {
+        current.send({ id, result: { decision: "decline" } });
+        return note("info", "Codex asked for an approval outside this conversation's current turn, so it was declined.");
+      }
+      const kind = method === "item/commandExecution/requestApproval" ? "command" : "file";
+      const itemId = String(params.itemId ?? "");
+      const approvalId = String(params.approvalId ?? "");
+      const entry = entries.find((x) => x.id === itemId);
+      const changes = kind === "file" ? (/** @type {{ path: string, kind: string, diff: string, movePath?: string }[]} */ (entry?.changes) ?? []) : [];
+      // A card must show everything Approve would grant. Anything it can't: no, and say so.
+      const hidden =
+        kind === "command"
+          ? params.kind !== undefined && params.kind !== "command"
+            ? "typing into a running command"
+            : params.additionalPermissions
+              ? "extra permissions"
+              : params.networkApprovalContext
+                ? "network access to a host"
+                : ""
+          : changes.length === 0
+            ? "a file change it didn't list"
+            : "";
+      if (hidden) {
+        current.send({ id, result: { decision: "decline" } });
+        return note("info", `Codex asked to approve ${hidden}, which the studio can't show on a card, so it was declined.`);
+      }
+      const fingerprint = approvalFingerprint(method, params, changes);
+      // A new request for the same item replaces its card: the old one can't be answered any more.
+      for (const old of cards.filter((c) => c.itemId === itemId && c.approvalId === approvalId && c.requestId !== id)) current.send({ id: old.requestId, result: { decision: "decline" } });
+      cards = cards.filter((c) => !(c.itemId === itemId && c.approvalId === approvalId));
+      const base = { generation, threadId, turnId: String(params.turnId ?? ""), itemId, approvalId, requestId: id, fingerprint };
+      cards.push({
+        ...base,
+        key: cardKey(base),
+        method,
+        kind,
+        command: String(params.command ?? entry?.command ?? ""),
+        cwd: String(params.cwd ?? ""),
+        reason: String(params.reason ?? ""),
+        grantRoot: String(params.grantRoot ?? ""),
+        changes,
+      });
+      return publishState();
+    }
+    // Everything else the studio can't show (MCP forms, extra permissions, the older approval
+    // messages, questions): a clear no, so the turn doesn't hang, and the student hears about it.
+    if (method === "applyPatchApproval" || method === "execCommandApproval") current.send({ id, result: { decision: "denied" } });
+    else current.send({ id, error: { code: -32601, message: "NetSim Studio doesn't support this request." } });
+    note("info", `Codex asked for something the studio can't show here (${method.slice(0, 80)}), so it was declined.`);
+  }
+
+  /**
+   * The student's answer to one card. It must name the exact card; once answered, replaced, or from
+   * an earlier process, thread or turn, it's refused and nothing reaches Codex.
+   * @param {Record<string, unknown>} a
+   */
+  function answer(a) {
+    if (a.decision !== "accept" && a.decision !== "decline") return fail(400, "That isn't an answer the studio knows.");
+    const card = cards.find((c) => c.key === a.key);
+    if (!card || card.generation !== generation || card.threadId !== threadId || !turn) return fail(409, "That approval is out of date: Codex isn't waiting for it any more.");
+    if (turn.id && card.turnId !== turn.id) return fail(409, "That approval is from an earlier turn.");
+    if (!link) return fail(409, "Codex isn't running.");
+    cards = cards.filter((c) => c !== card);
+    link.send({ id: card.requestId, result: { decision: a.decision } });
+    publishState();
+    return good;
+  }
+
+  // ── The conversation, from Codex's items ──
+  /** @param {any} item @param {boolean} [finished] */
+  function putItem(item, finished = false) {
+    if (!item || typeof item.id !== "string") return;
+    const id = item.id;
+    if (item.type === "agentMessage") {
+      put({ id, kind: "agent", text: String(item.text ?? (entries.find((x) => x.id === id)?.text ?? "")).slice(-AGENT_MAX_TEXT), done: finished });
+    } else if (item.type === "commandExecution") {
+      const output = item.aggregatedOutput ?? entries.find((x) => x.id === id)?.output ?? "";
+      put({ id, kind: "command", command: String(item.command ?? ""), status: stoppedRows.has(id) ? "stopped" : String(item.status ?? ""), output: String(output).slice(-AGENT_MAX_OUTPUT), exitCode: item.exitCode ?? null });
+      if (/studio[\\/]hints/.test(String(item.command ?? "")) && !notedHints) {
+        notedHints = true;
+        note("info", "Codex opened the course's hints file (studio/hints). The course asks it not to copy answers from there: check you can explain what it writes.");
+      }
+    } else if (item.type === "fileChange") {
+      const changes = fileChanges(item.changes);
+      put({ id, kind: "file", changes, status: String(item.status ?? "") });
+    } else if (item.type === "webSearch") {
+      put({ id, kind: "note", tone: "info", text: "Codex searched the web." });
+    } else if (item.type === "mcpToolCall" || item.type === "dynamicToolCall") {
+      put({ id, kind: "note", tone: "info", text: `Codex used a tool: ${String(item.tool ?? "").slice(0, 80)}.` });
+    }
+  }
+
+  /** @param {string} method @param {any} params */
+  function onNotification(method, params) {
+    if (method === "account/login/completed") {
+      loginUrl = "";
+      if (!params.success) problem = String(params.error ?? "Signing in didn't finish.");
+      void readAccount();
+      return;
+    }
+    if (method === "account/updated") {
+      if (phase === "signed-out" || phase === "signing-in") void readAccount();
+      return;
+    }
+    if (params.threadId !== undefined && params.threadId !== threadId) return;
+    switch (method) {
+      case "turn/started":
+        if (turn && !turn.id && params.turn?.id) {
+          turn.id = String(params.turn.id);
+          if (turn.status === "starting") turn.status = "running";
+          publishState();
+        }
+        return;
+      case "item/started":
+      case "item/completed":
+        if (turn && params.turnId && turn.id && params.turnId !== turn.id) return;
+        return putItem(params.item, method === "item/completed");
+      case "item/agentMessage/delta": {
+        const id = String(params.itemId ?? "");
+        const entry = entries.find((x) => x.id === id);
+        if (!entry) put({ id, kind: "agent", text: "", done: false });
+        const target = /** @type {{ text: string }} */ (/** @type {unknown} */ (entries.find((x) => x.id === id)));
+        target.text = (target.text + String(params.delta ?? "")).slice(-AGENT_MAX_TEXT);
+        return event({ type: "delta", id, field: "text", text: String(params.delta ?? "") });
+      }
+      case "item/commandExecution/outputDelta": {
+        const id = String(params.itemId ?? "");
+        const entry = /** @type {{ output?: string } | undefined} */ (entries.find((x) => x.id === id));
+        if (!entry) return;
+        entry.output = `${entry.output ?? ""}${String(params.delta ?? "")}`.slice(-AGENT_MAX_OUTPUT);
+        return event({ type: "delta", id, field: "output", text: String(params.delta ?? "") });
+      }
+      case "item/fileChange/patchUpdated": {
+        const id = String(params.itemId ?? "");
+        const changes = fileChanges(params.changes);
+        put({ id, kind: "file", changes, status: String(entries.find((x) => x.id === id)?.status ?? "inProgress") });
+        // The patch changed under a pending card: it gets a new key, so the old answer is refused.
+        cards = cards.map((c) => {
+          if (c.itemId !== id || c.kind !== "file") return c;
+          const fingerprint = approvalFingerprint(c.method, { itemId: id, threadId: c.threadId, turnId: c.turnId, reason: c.reason, grantRoot: c.grantRoot }, changes);
+          return { ...c, fingerprint, changes, key: cardKey({ ...c, fingerprint }) };
+        });
+        return publishState();
+      }
+      case "serverRequest/resolved":
+        if (cards.some((c) => c.requestId === params.requestId)) {
+          cards = cards.filter((c) => c.requestId !== params.requestId);
+          publishState();
+        }
+        return;
+      case "error":
+        if (params.willRetry) return note("info", `Codex hit a problem and is trying again: ${String(params.error?.message ?? "").slice(0, 300)}`);
+        return note("bad", `Codex: ${String(params.error?.message ?? "something went wrong").slice(0, 500)}`);
+      case "turn/completed":
+        return onTurnDone(params.turn);
+      default:
+    }
+  }
+
+  /** @param {any} done */
+  function onTurnDone(done) {
+    if (!turn || (turn.id && done?.id && done.id !== turn.id)) return;
+    if (stopTimer) clearTimeout(stopTimer);
+    stopTimer = null;
+    cards = cards.filter((c) => c.turnId !== (done?.id ?? turn?.id));
+    if (done?.status === "failed") note("bad", `This turn failed: ${String(done?.error?.message ?? "Codex didn't say why.").slice(0, 500)}`);
+    else if (done?.status === "interrupted") {
+      note("info", "Stopped. Anything it had already changed is still in your folder.");
+      // Interrupting a turn leaves a command it started still running (measured on 0.166.0): end those too.
+      for (const e of entries.filter((x) => x.kind === "command" && x.status === "inProgress")) put({ ...e, status: "stopped" });
+      for (const e of entries) if (e.kind === "command" && e.status === "stopped") stoppedRows.add(e.id);
+      if (link && threadId) rpc("thread/backgroundTerminals/clean", { threadId }).catch(() => note("bad", "A command Codex started may still be running. It ends when the studio stops."));
+    }
+    // A row Codex never reported finished doesn't say "running" once the turn is over.
+    for (const e of entries.filter((x) => x.kind === "command" && x.status === "inProgress")) put({ ...e, status: "finished" });
+    turn = null;
+    warnIfRunsLater();
+    publishState();
+    // What ran in this turn: the entries since the student's last message.
+    const from = entries.findLastIndex((x) => x.kind === "user");
+    const commands = /** @type {any[]} */ (entries.slice(from + 1).filter((x) => x.kind === "command"));
+    afterTurn({ week: lastWeek, taskId: lastTask, status: String(done?.status ?? ""), commands });
+  }
+
+  /** Changes to files that later run outside the sandbox (the studio, npm scripts, tests): say so, once for each new state. */
+  function warnIfRunsLater() {
+    const dir = repo();
+    const changed = dir ? (ctx.capture(["git", "status", "--porcelain", "--", "setup.mjs", "package.json", "vitest.config.ts", "studio", "tests"], dir)?.stdout ?? "").trimEnd() : "";
+    if (changed && changed !== runsLater) note("info", `These changed, and they run outside the sandbox the next time you use the studio, npm or the tests. Check them first (git diff): ${changed.split("\n").map((l) => l.slice(3)).join(", ").slice(0, 300)}`);
+    runsLater = changed;
+  }
+
+  // ── Starting, signing in, the thread ──
+  async function readAccount() {
+    try {
+      const r = await rpc("account/read", { refreshToken: false });
+      account = r?.account ?? null;
+      if (account) {
+        problem = "";
+        loginUrl = "";
+        phase = "ready";
+        await resumeSaved();
+      } else if (r?.requiresOpenaiAuth === false) {
+        phase = "ready";
+        await resumeSaved();
+      } else if (phase !== "signing-in" || !loginUrl) phase = "signed-out";
+    } catch (error) {
+      phase = "failed";
+      problem = `Codex couldn't say who's signed in: ${/** @type {Error} */ (error).message}`;
+    }
+    publishState();
+  }
+
+  /** @param {{ code: number | null, signal: string | null, error?: string, stderr: string }} why */
+  function onClosed(why) {
+    const wasTurn = turn;
+    const before = phase;
+    link = null;
+    generation++;
+    for (const [, w] of rpcs) {
+      clearTimeout(w.timer);
+      const err = /** @type {Error & { ambiguous?: boolean }} */ (new Error("Codex stopped."));
+      err.ambiguous = true;
+      w.reject(err);
+    }
+    rpcs.clear();
+    cards = [];
+    turn = null;
+    threadId = ""; // a new child has to resume it (the saved id is kept)
+    if (stopTimer) clearTimeout(stopTimer);
+    stopTimer = null;
+    if (shuttingDown) return;
+    if (closingOnPurpose) {
+      closingOnPurpose = false;
+      return;
+    }
+    if (why.error === "ENOENT") {
+      phase = "missing";
+      problem = "Codex isn't installed, or this terminal can't find it.";
+    } else if (before === "starting" && /unrecognized subcommand|unexpected argument|invalid value/i.test(why.stderr)) {
+      phase = "too-old";
+      problem = "This Codex is too old for the studio: it has no app-server.";
+    } else {
+      phase = "failed";
+      problem = before === "starting" ? `Codex didn't start (${why.error ?? `exit ${why.code ?? why.signal}`}). ${why.stderr.split("\n").filter(Boolean).slice(-2).join(" ").slice(0, 400)}`.trim() : "Codex stopped. Start it again to carry on with this conversation.";
+    }
+    // Never sent again by itself: it may already have changed files.
+    if (wasTurn) note("bad", "Codex stopped during this turn, so it may have changed files before it stopped. Nothing was sent again: check your folder, then decide what to ask next.");
+    publishState();
+  }
+
+  /** Start the child (a browser opening the tab, or the student pressing Start again). */
+  async function open() {
+    if (ctx.dryRun) {
+      phase = "unavailable";
+      problem = "The agent doesn't run in a dry run.";
+      publishState();
+      return good;
+    }
+    if (phase === "starting" || (link && phase !== "failed")) return good;
+    if (link) {
+      // Failed with the child still up (it refused the permissions): start clean.
+      closingOnPurpose = true;
+      await link.stop();
+      link = null;
+    }
+    const dir = repo();
+    if (!dir) return fail(409, "The course folder isn't set up yet.");
+    if (!onPath(ctx, "codex")) {
+      phase = "missing";
+      problem = "Codex isn't installed, or this terminal can't find it.";
+      publishState();
+      return good;
+    }
+    phase = "starting";
+    problem = "";
+    publishState();
+    const t = transport(dir);
+    link = t;
+    t.onMessage(onMessage);
+    t.onBadLine((line) => note("bad", `Codex sent something the studio couldn't read: ${line.slice(0, 120)}`));
+    t.onClose(onClosed);
+    try {
+      const init = await rpc("initialize", { clientInfo: { name: "netsim_studio", title: "NetSim Studio", version: String(STUDIO_VERSION) }, capabilities: { experimentalApi: true, requestAttestation: false } }); // experimental: Stop needs thread/backgroundTerminals/clean
+      version = /\/(\d+\.\d+\.\d+[\w.-]*)/.exec(String(init?.userAgent ?? ""))?.[1] ?? "";
+      t.send({ method: "initialized" });
+      if (version && versionOlder(version, CODEX_MIN_VERSION)) {
+        phase = "too-old";
+        problem = `This Codex is ${version}; the studio needs ${CODEX_MIN_VERSION} or newer.`;
+        closingOnPurpose = true;
+        await t.stop();
+        link = null;
+        publishState();
+        return good;
+      }
+      await readAccount();
+    } catch (error) {
+      // onClosed has said what happened if the child died.
+      if (link === t) {
+        phase = "failed";
+        problem = /** @type {Error} */ (error).message;
+        publishState();
+      }
+    }
+    return good;
+  }
+
+  const threadParams = (/** @type {string} */ dir) => ({ cwd: dir, approvalPolicy: AGENT_APPROVAL_POLICY, approvalsReviewer: "user", sandbox: AGENT_SANDBOX_MODE, config: AGENT_CONFIG, developerInstructions: AGENT_POLICY });
+  /** Whether Codex really took the permissions asked for (a managed config can override them). @param {any} r */
+  const permissionsHeld = (r) => r?.approvalPolicy === AGENT_APPROVAL_POLICY && r?.sandbox?.type === AGENT_SANDBOX_POLICY.type && r?.approvalsReviewer === "user" && r?.sandbox?.networkAccess === false && Array.isArray(r?.sandbox?.writableRoots) && r.sandbox.writableRoots.length === 0;
+
+  const savedThreads = () => /** @type {Record<string, string>} */ (ctx.state.agentThreads ??= {});
+
+  /** Pick up this folder's saved conversation, if there is one. Nothing is sent. */
+  async function resumeSaved() {
+    const dir = repo();
+    if (!dir || threadId) return;
+    const saved = savedThreads()[dir];
+    if (!saved) return;
+    try {
+      const r = await rpc("thread/resume", { threadId: saved, ...threadParams(dir) });
+      if (realpathOr(String(r?.cwd ?? r?.thread?.cwd ?? "")) !== dir) throw new Error("That conversation belongs to another folder.");
+      if (!permissionsHeld(r)) throw new Error("permissions");
+      threadId = saved;
+      if (!entries.length) {
+        for (const past of r?.thread?.turns ?? []) {
+          for (const item of past?.items ?? []) {
+            if (item?.type === "userMessage") {
+              const text = (item.content ?? []).filter((c) => c?.type === "text" && !String(c.text).startsWith("<studio-context>")).map((c) => c.text).join("\n");
+              if (text) put({ id: String(item.id), kind: "user", text });
+            } else putItem(item, true);
+          }
+          if (past?.status === "inProgress") note("info", "The last turn didn't finish before Codex stopped. It may have changed files; nothing was sent again.");
+        }
+      }
+    } catch (error) {
+      delete savedThreads()[dir];
+      ctx.save?.();
+      if (/** @type {Error} */ (error).message === "permissions") {
+        phase = "failed";
+        problem = permissionRefusal;
+        return;
+      }
+      note("info", "Couldn't pick up your earlier conversation, so the next message starts a new one.");
+    }
+  }
+  const permissionRefusal = "Codex's settings on this laptop overrode the permissions the studio asks for (workspace-write, ask on request), so the studio won't drive it. Ask Praise.";
+  const realpathOr = (/** @type {string} */ p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+
+  /** @param {string} dir */
+  async function ensureThread(dir) {
+    if (threadId) return;
+    const r = await rpc("thread/start", threadParams(dir));
+    if (!permissionsHeld(r)) {
+      phase = "failed";
+      problem = permissionRefusal;
+      throw new Error(permissionRefusal);
+    }
+    threadId = String(r?.thread?.id ?? "");
+    if (!threadId) throw new Error("Codex didn't start a conversation.");
+    savedThreads()[dir] = threadId;
+    ctx.save?.();
+  }
+
+  /**
+   * What the studio tells the agent about where the student is: from its own list of the week's
+   * tasks, never from the browser's words.
+   * @param {string} dir @param {number} week @param {unknown} taskId
+   */
+  function turnContext(dir, week, taskId) {
+    const lines = [`${weekTitle(week)} (week ${week}).`, `Guide: docs/weeks/week-${pad2(week)}.md. Tests: tests/week-${pad2(week)}/.`];
+    const task = taskId ? weekTasks(dir, week).find((t) => t.id === taskId) : undefined;
+    if (task) lines.push(`Selected task: ${task.id} in ${task.file}: ${task.description}`, `Focused test command: ${focusedTestCommand(task)}`, "Tests in those files that belong to tasks not done yet don't count against this one; the studio checks that itself at the end of your turn.");
+    else lines.push("No task selected: ask which one they're on if it matters.");
+    return `<studio-context>\n${lines.join("\n")}\n</studio-context>`;
+  }
+
+  /** One message from the student. At most one turn at a time; a repeated clientId is not sent twice. @param {Record<string, unknown>} a */
+  async function send(a) {
+    const text = typeof a.text === "string" ? a.text.trim() : "";
+    const week = Number(a.week);
+    const clientId = typeof a.clientId === "string" ? a.clientId.slice(0, 80) : "";
+    if (!text) return fail(400, "Type a message first.");
+    if (text.length > AGENT_MAX_MESSAGE) return fail(400, "That message is too long.");
+    if (!Number.isInteger(week) || week < 1 || week > 20) return fail(400, "Which week is this for?");
+    if (clientId && clientId === lastClientId) return good;
+    if (phase !== "ready" || !link) return fail(409, "Codex isn't ready yet.");
+    if (turn) return fail(409, "Codex is still working: wait for it, or press Stop.");
+    const dir = repo();
+    if (!dir) return fail(409, "The course folder isn't set up yet.");
+    if (clientId) lastClientId = clientId;
+    lastWeek = week;
+    lastTask = a.task;
+    turn = { id: "", status: "starting" };
+    notedHints = false;
+    put({ id: `user-${++noteId}`, kind: "user", text });
+    publishState();
+    void startTurn(dir, week, a.task, text);
+    return good;
+  }
+
+  /** @param {string} dir @param {number} week @param {unknown} task @param {string} text */
+  async function startTurn(dir, week, task, text) {
+    const mine = generation;
+    try {
+      await ensureThread(dir);
+      const r = await rpc("turn/start", {
+        threadId,
+        input: [
+          { type: "text", text: turnContext(dir, week, task), text_elements: [] },
+          { type: "text", text, text_elements: [] },
+        ],
+        cwd: dir,
+        approvalPolicy: AGENT_APPROVAL_POLICY,
+        approvalsReviewer: "user",
+        sandboxPolicy: AGENT_SANDBOX_POLICY,
+      });
+      if (mine !== generation || !turn) return;
+      const wasStopping = turn.status === "stopping";
+      turn.id = String(r?.turn?.id ?? turn.id);
+      if (!wasStopping) turn.status = "running";
+      publishState();
+      if (wasStopping) interrupt();
+      if (r?.turn?.status && r.turn.status !== "inProgress") onTurnDone(r.turn);
+    } catch (error) {
+      if (mine !== generation || !turn) return; // the child died: onClosed has told the student
+      if (stopTimer) clearTimeout(stopTimer); // a Stop pressed meanwhile mustn't fire during the next turn
+      stopTimer = null;
+      const ambiguous = /** @type {Error & { ambiguous?: boolean }} */ (error).ambiguous;
+      turn = null;
+      note("bad", ambiguous ? `${/** @type {Error} */ (error).message} It may have started anyway, so nothing was sent again: check your folder before asking again.` : `Codex didn't take that message: ${/** @type {Error} */ (error).message}`);
+      publishState();
+    }
+  }
+
+  function interrupt() {
+    if (!turn?.id || !link) return;
+    rpc("turn/interrupt", { threadId, turnId: turn.id }).catch(() => {});
+  }
+
+  /** Stop: interrupt and wait for Codex to say so; if it never does, end the child rather than hang. */
+  function stopTurn() {
+    if (!turn) return good;
+    if (turn.status === "stopping") return good;
+    turn.status = "stopping";
+    publishState();
+    interrupt();
+    stopTimer = setTimeout(() => {
+      note("bad", "Codex didn't stop in time, so the studio ended it. It may have changed files first.");
+      void link?.stop();
+    }, stopWaitMs);
+    return good;
+  }
+
+  /** Sign in through Codex itself (its login is its own; the studio never sees a token). */
+  async function login() {
+    if (phase !== "signed-out" && phase !== "signing-in") return fail(409, "Codex doesn't need signing in right now.");
+    try {
+      const r = await rpc("account/login/start", { type: "chatgpt" });
+      const url = String(r?.authUrl ?? "");
+      if (!/^https:\/\//.test(url)) throw new Error("Codex didn't give a sign-in page.");
+      loginUrl = url;
+      phase = "signing-in";
+    } catch (error) {
+      problem = /** @type {Error} */ (error).message;
+    }
+    publishState();
+    return good;
+  }
+
+  /** The one fix this state offers (install or update), typed like any step's command. @param {Record<string, unknown>} a */
+  function runFix(a) {
+    const display = phase === "missing" ? CODEX_INSTALL : phase === "too-old" ? CODEX_UPDATE : "";
+    if (!display) return fail(409, "There's nothing to fix right now.");
+    if (fix?.phase === "running") return fail(409, "It's still running.");
+    if (typeof a.typed !== "string" || normalizeCommand(a.typed) !== normalizeCommand(display)) return fail(400, "What was typed doesn't match the command.");
+    if (!ctx.stream) return fail(409, "The studio can't run that here.");
+    fix = { phase: "running", out: "", display };
+    publishState();
+    const run = ctx.stream(display.split(" "), undefined, (t) => {
+      if (fix) fix.out = cleanOutput(fix.out + t).slice(-4000);
+      publishState();
+    });
+    void run.done.then((code) => {
+      if (code === 0) {
+        fix = null;
+        phase = "off";
+        problem = "";
+        void open();
+      } else if (fix) fix.phase = "failed";
+      publishState();
+    });
+    return good;
+  }
+
+  return {
+    snapshot,
+    /** @param {Record<string, unknown>} a */
+    act: async (a) => {
+      switch (a.type) {
+        case "agent-open":
+          return open();
+        case "agent-send":
+          return send(a);
+        case "agent-answer":
+          return answer(a);
+        case "agent-stop":
+          return stopTurn();
+        case "agent-login":
+          return login();
+        case "agent-fix":
+          return runFix(a);
+        default:
+          return fail(400, "Unknown action.");
+      }
+    },
+    /** Its tests pass: offer the commit right here. @param {number} week @param {string} id @param {string} [said] */
+    commitOffer: (week, id, said = `The tests for \`${id}\` pass.`) => put({ id: `note-${++noteId}`, kind: "note", tone: "info", text: `${said} Read what changed, then commit it (or on its card in the Code tab). It commits the whole file, with anything else you changed in it.`, commit: { week, id } }),
+    /** The studio's run outside the sandbox, for the student to press. @param {number} week @param {string} id @param {string} [said] */
+    testOffer: (week, id, said = `Check \`${id}\`.`) => put({ id: `note-${++noteId}`, kind: "note", tone: "info", text: `${said} This runs its tests outside the sandbox, leaving out tests for tasks you haven't done yet.`, runTests: { week, id } }),
+    /** @param {string} id */
+    testOfferDone: (id) => {
+      for (const e of entries.filter((x) => /** @type {any} */ (x.runTests)?.id === id)) put({ ...e, runTests: null });
+    },
+    /** @param {"info" | "bad"} tone @param {string} text */
+    say: (tone, text) => note(tone, text),
+    /** That task is committed: its button goes. @param {string} id */
+    commitDone: (id) => {
+      for (const e of entries.filter((x) => /** @type {any} */ (x.commit)?.id === id)) put({ ...e, commit: null });
+    },
+    /** A turn is running and nobody's being waited on (so a closed tab doesn't end it). */
+    busy: () => Boolean(turn && !cards.length),
+    /** Ends only the child this studio started: a bounded wait, then its whole tree. */
+    shutdown: async () => {
+      shuttingDown = true;
+      if (stopTimer) clearTimeout(stopTimer);
+      const t = link;
+      link = null;
+      if (t) await t.stop();
     },
   };
 }
@@ -3005,9 +3986,16 @@ export function courseFile(dir, urlPath) {
 }
 
 /**
- * The code box's script, studio/editor.js: the one that came with this studio (beside it: in its
- * course folder, or saved next to a newer studio), else the course folder's (it may be older),
- * else null (the page falls back to a plain text box).
+ * The code box's script runs in the studio's own page, and the agent can write a working-tree copy
+ * without asking, so only the exact bundle this studio was released with is ever served
+ * (scripts/studio/build-editor.sh keeps this hash right).
+ */
+export const EDITOR_SHA256 = "8a72994c389e65c2ce104ae96424e403469a701d4f050c6399cdbdcd5784e5c4";
+
+/**
+ * The code box's script, studio/editor.js: that exact bundle, from beside this studio (its course
+ * folder, or saved next to a newer studio) or the course folder; else null (the page falls back
+ * to a plain text box).
  * @param {string | null} dir
  * @returns {Buffer | null}
  */
@@ -3015,7 +4003,9 @@ export function editorBundle(dir) {
   const here = dirname(fileURLToPath(import.meta.url));
   for (const path of [join(here, "studio", "editor.js"), join(here, "editor.js"), dir && join(dir, "studio", "editor.js")]) {
     try {
-      if (path) return readFileSync(path);
+      if (!path) continue;
+      const body = readFileSync(path);
+      if (createHash("sha256").update(body).digest("hex") === EDITOR_SHA256) return body;
     } catch {
       // not there: try the next place
     }
@@ -3031,8 +4021,13 @@ export function editorBundle(dir) {
 export function serveStudio(studio, { token = randomBytes(24).toString("base64url"), port = 0, onIdle, idleMs = 45_000, log = () => {} } = {}) {
   let clients = 0;
   let seen = 0; // 0 until the page first connects
+  const viewToken = randomBytes(24).toString("base64url");
+  const sameSecret = (/** @type {string} */ a, /** @type {string} */ b) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    // A course page's own read-only address: its token opens that and nothing else.
+    const view = /^\/view\/([^/]+)(\/.*)$/.exec(url.pathname);
+    const viewOk = view !== null && req.method === "GET" && sameSecret(view[1], viewToken);
     // The token: in the address (the link from the terminal), the header (the page's own calls), or,
     // for pages opened inside the studio (a lesson page and its links), the studio's same-site cookie.
     const cookie = /(?:^|;\s*)netsim_studio=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
@@ -3041,7 +4036,7 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
         method: req.method ?? "GET",
         host: req.headers.host,
         origin: req.headers.origin,
-        token: url.searchParams.get("t") ?? /** @type {string | undefined} */ (req.headers["x-studio-token"]) ?? (req.method === "GET" ? cookie : undefined) ?? null,
+        token: viewOk ? token : view ? null : (url.searchParams.get("t") ?? /** @type {string | undefined} */ (req.headers["x-studio-token"]) ?? (req.method === "GET" ? cookie : undefined) ?? null),
       },
       { port: address().port, token },
     );
@@ -3051,12 +4046,17 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
       return;
     }
     const secure = { "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "no-store" };
+    // A course page: scripts run (its popovers), but in an opaque origin, so whatever's in the file
+    // can't reach the studio's page, its token or its Approve buttons. The sandbox comes from the
+    // server, so it holds wherever the page is opened. No cookie reaches a sandboxed page, which is
+    // why its links and images use the /view/ address.
+    const pageCsp = () => `sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src http://${req.headers.host} data:; frame-ancestors http://${req.headers.host}; base-uri 'none'; form-action 'none'`;
     if (req.method === "GET" && url.pathname === "/") {
       res.writeHead(200, {
         ...secure,
         "content-type": "text/html; charset=utf-8",
         "content-security-policy":
-          "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; frame-src 'self' http://localhost:3005 http://127.0.0.1:3005; base-uri 'none'; form-action 'none'",
+          "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; frame-src 'self' http://localhost:3005 http://127.0.0.1:3005; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
         // Same-site, this address only: lets the lesson pages and their links load inside the studio.
         "set-cookie": `netsim_studio=${token}; Path=/; HttpOnly; SameSite=Strict`,
       });
@@ -3076,7 +4076,7 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
           res.writeHead(200, {
             ...secure,
             "content-type": "text/html; charset=utf-8",
-            "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+            "content-security-policy": pageCsp(),
           });
           res.end(online.endsWith(".md") ? markdownPage(`Week ${week}`, text) : text);
           return;
@@ -3099,6 +4099,17 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
       res.writeHead(200, { ...secure, "content-type": "text/javascript; charset=utf-8" }).end(body);
       return;
     }
+    // The tasks the Agent tab can work on.
+    if (req.method === "GET" && url.pathname === "/api/agent/tasks") {
+      const tasks = studio.agentTasks(Number(url.searchParams.get("week")));
+      res.writeHead(tasks ? 200 : 409, { ...secure, "content-type": "application/json" }).end(JSON.stringify({ tasks: tasks ?? [] }));
+      return;
+    }
+    // The Agent tab's state, when the page missed a numbered event.
+    if (req.method === "GET" && url.pathname === "/api/agent") {
+      res.writeHead(200, { ...secure, "content-type": "application/json" }).end(JSON.stringify(studio.agentSnapshot()));
+      return;
+    }
     // A week's tasks, for its Code tab.
     if (req.method === "GET" && url.pathname === "/api/code") {
       const tasks = studio.weekCode(Number(url.searchParams.get("week")));
@@ -3106,15 +4117,22 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
       return;
     }
     // A file from the course folder (a lesson page, a linked document, an image), shown inside the studio.
+    // Those files can be written by the agent without asking, so they're only ever served sandboxed
+    // (pageCsp), at a read-only path of their own: the address with the cookie just goes there.
     const dir = studio.repoDir();
-    const file = req.method === "GET" && dir && !["/events", "/api/act", "/api/code", "/editor.js"].includes(url.pathname) ? courseFile(dir, url.pathname) : null;
+    const viewing = view !== null;
+    const file = req.method === "GET" && dir && (viewing || !["/events", "/api/act", "/api/code", "/api/agent", "/api/agent/tasks", "/editor.js"].includes(url.pathname)) ? courseFile(dir, viewing ? view[2] : url.pathname) : null;
+    if (file && !viewing) {
+      res.writeHead(302, { ...secure, location: `/view/${viewToken}${url.pathname}` }).end();
+      return;
+    }
     if (file) {
-      res.writeHead(200, {
-        ...secure,
-        "content-type": file.type,
-        "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
-      });
+      res.writeHead(200, { ...secure, "content-type": file.type, "content-security-policy": pageCsp() });
       res.end(file.body);
+      return;
+    }
+    if (viewing) {
+      res.writeHead(404, secure).end();
       return;
     }
     if (req.method === "GET" && url.pathname === "/events") {
@@ -3125,6 +4143,7 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
       seen = Date.now();
       send("state", studio.snapshot());
       send("output", { ...studio.output(), reset: true });
+      send("agent", { type: "snapshot", snapshot: studio.agentSnapshot() });
       const unsubscribe = studio.subscribe(send);
       const ping = setInterval(() => res.write(": ping\n\n"), 15_000);
       req.on("close", () => {
@@ -3317,8 +4336,9 @@ export function guideFor(guide, week, id, file) {
   while (to < lines.length && lines[to].trim() && !/^\s*([-*]|\d+\.)\s/.test(lines[to]) && !/^\s*```/.test(lines[to])) to++;
   const lesson = lines.slice(from, to).map((l) => l.trim()).join(" ").replace(/^([-*]|\d+\.)\s+/, "");
   let prompt = "";
-  if (/^board\//.test(file)) {
-    // The guide's ready prompt: the first ```text block after the task, if it names this file.
+  {
+    // The guide's ready prompt: the first ```text block after the task, if it names this file. The
+    // guide is the student's own copy, so this only ever shows a week they've been given.
     for (let i = at + 1; i < lines.length && i < at + 40; i++) {
       if (/^\s*```text\s*$/.test(lines[i])) {
         const close = lines.findIndex((l, j) => j > i && /^\s*```\s*$/.test(l));
@@ -3336,6 +4356,30 @@ export function guideFor(guide, week, id, file) {
     }
   }
   return { lesson, prompt, order: at };
+}
+
+/** A task's lines as the course released them, by week, file and task (they don't change while a studio runs). @type {Map<string, string | null>} */
+const releasedRegions = new Map();
+
+/**
+ * Is this task still the stub the course gave out? Only then does its card start empty, with the
+ * grey hint to type over. A TODO line isn't enough: Codex (or the student) often leaves it above
+ * real code. Compared with the released week when it's here; without it, only the standard stub
+ * (its TODO, comments and a todo() call) counts.
+ * @param {Context} ctx @param {string} dir @param {string} file @param {CodeRegion} r @param {number} week @param {string[]} body  the task's lines, without its indent
+ */
+function isUntouchedStub(ctx, dir, file, r, week, body) {
+  if (!/^(\/\/|;) TODO\(/.test(body[0] ?? "") || !(body[0] ?? "").includes(`, ${r.id})`)) return false;
+  const key = `${dir}|${week}|${file}|${r.id}`;
+  if (!releasedRegions.has(key)) {
+    const text = output(ctx, ["git", "show", `upstream/week-${week}:${file}`], dir);
+    const lines = text?.split("\n");
+    const was = lines && findCodeRegions(text ?? "").find((x) => x.id === r.id);
+    releasedRegions.set(key, lines && was ? lines.slice(was.start + 1, was.end).map((l) => l.replace(/\r$/, "").trim()).join("\n") : null);
+  }
+  const released = releasedRegions.get(key);
+  if (released !== null && released !== undefined) return released === body.map((l) => l.trim()).join("\n");
+  return body.every((l) => !l.trim() || /^\s*(\/\/|;)/.test(l) || /^return (todo|notBuilt)\(/.test(l.trim()));
 }
 
 /**
@@ -3382,7 +4426,7 @@ export function weekCode(ctx, dir, week) {
       const context = regionContext(lines, r);
       const signature = context.before.find((l) => !/^\s*(\/\*\*?|\*|\/\/)/.test(l)) ?? "";
       const fn = /function\s+([A-Za-z_$][\w$]*)|([A-Za-z_$][\w$]*)\s*(?:=\s*(?:async\s*)?)?\(/.exec(signature);
-      tasks.push({ id: r.id, file, part: r.part, hint, steps, fn: fn?.[1] ?? fn?.[2] ?? "", endLine: r.end, .../** @type {{ words: string[], members: string[] }} */ (names.get(file)), description: r.description, ...regionContext(lines, r), indent: r.indent, body: body.join("\n"), rev: regionRev(lines, r), lesson: said.lesson, prompt, tests: covering.length ? covering : [`tests/week-${pad2(week)}`], needs, order: said.order, line: r.start + 2, stubbed: /^(\/\/|;) TODO\(/.test(body[0] ?? "") && (body[0] ?? "").includes(`, ${r.id})`) });
+      tasks.push({ id: r.id, file, part: r.part, hint, steps, fn: fn?.[1] ?? fn?.[2] ?? "", endLine: r.end, .../** @type {{ words: string[], members: string[] }} */ (names.get(file)), description: r.description, ...regionContext(lines, r), indent: r.indent, body: body.join("\n"), rev: regionRev(lines, r), lesson: said.lesson, prompt, tests: covering.length ? covering : [`tests/week-${pad2(week)}`], needs, order: said.order, line: r.start + 2, stubbed: isUntouchedStub(ctx, dir, file, r, week, body) });
     }
   }
   return tasks.sort((a, b) => Number(a.part === "home") - Number(b.part === "home") || a.order - b.order);
@@ -3450,6 +4494,7 @@ export function writeRegion(dir, { file, id, week, rev, body }) {
   const path = codeFilePath(dir, /** @type {string} */ (file));
   if (!path) return { error: "That file isn't one of the course's code files." };
   if (typeof body !== "string" || body.length > MAX_BODY) return { error: "That's too long for one task." };
+  if (!body.trim()) return { error: "The box is empty, so nothing was saved: your file is as it was. Type or paste the code first." };
   if (body.split("\n").some((l) => REGION_MARKER.test(l))) return { error: "The code can't contain @student, @stub or @end lines: those mark where the task starts and ends." };
   const text = readFileSync(path, "utf8");
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
@@ -3457,7 +4502,7 @@ export function writeRegion(dir, { file, id, week, rev, body }) {
   const found = findCodeRegions(text).filter((r) => r.id === id);
   if (found.length !== 1 || found[0].week !== week) return { error: `Couldn't find the task ${String(id)} in ${String(file)} (its @student and @end lines must be there, once).` };
   const r = found[0];
-  if (regionRev(lines, r) !== rev) return { error: "This task changed in the file since the studio showed it (in VS Code?). Reload it, then save again." };
+  if (regionRev(lines, r) !== rev) return { error: "This task changed in the file since the card loaded it (Codex or VS Code), so nothing was saved. Reload it, then save again." };
   const cr = eol === "\r\n" ? "\r" : "";
   const written = body.replace(/\r/g, "").split("\n").map((l) => (l.trim() ? `${r.indent}${l}` : "") + cr);
   const next = [...lines.slice(0, r.start + 1), ...written, ...lines.slice(r.end)].join("\n");
@@ -3490,8 +4535,9 @@ export function readableFailure(message) {
  * @param {Record<string, string[]> | null} [needs]  which tasks each test needs, measured when the week
  *   was released (the hints file's "$tests"): a test that doesn't need this task isn't counted; one
  *   that also needs a task still a stub waits for it. Tests it doesn't list fall back to the guesses.
+ * @param {boolean} [sandboxed]  run in Codex's sandbox: a test stopped by "listen EPERM" says nothing about the code (counted as blocked)
  */
-export function taskResults(json, task, stubs = [], needs = null) {
+export function taskResults(json, task, stubs = [], needs = null, sandboxed = false) {
   const me = typeof task === "string" ? { id: task, file: "" } : task;
   const stubbed = new Set(stubs.map((s) => s.id));
   const id = me.id;
@@ -3514,6 +4560,7 @@ export function taskResults(json, task, stubs = [], needs = null) {
     return null;
   }
   let passed = 0;
+  let blocked = 0;
   /** @type {Set<string>} */
   const waiting = new Set();
   /** @type {{ test: string, message: string, own?: boolean }[]} */
@@ -3548,7 +4595,12 @@ export function taskResults(json, task, stubs = [], needs = null) {
       if (t.status === "passed") passed++;
       else if (t.status === "failed") {
         const message = readableFailure((t.failureMessages ?? []).join("\n"));
-        const waits = need ? null : other(message, t.fullName ?? t.title ?? "");
+        if (sandboxed && /listen EPERM/.test(message)) {
+          blocked++;
+          continue;
+        }
+        // The measured needs cover this week's tasks; an earlier week's stub still shows as its TODO.
+        const waits = need ? ([...message.matchAll(/TODO\(week \d+: ([a-z0-9-]+)\)/g)].map((x) => x[1]).find((x) => x !== id) ?? null) : other(message, t.fullName ?? t.title ?? "");
         if (waits) waiting.add(waits);
         else {
           const test = t.fullName ?? t.title ?? name;
@@ -3560,7 +4612,7 @@ export function taskResults(json, task, stubs = [], needs = null) {
   }
   // This task's own failures first: the test is named after its function, or the error came from its file.
   failures.sort((a, b) => Number(Boolean(b.own)) - Number(Boolean(a.own)));
-  return { passed, failed: failures.length, failures: failures.slice(0, 5), waiting: [...waiting] };
+  return { passed, failed: failures.length, failures: failures.slice(0, 5), waiting: [...waiting], ...(blocked ? { blocked } : {}) };
 }
 
 // ── The page (HTML, CSS and the browser code, all in this file) ────────────
@@ -3903,6 +4955,30 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .tab { font: 600 13.5px/1 "Inter", sans-serif; padding: 9px 14px; border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0; background: none; cursor: pointer; color: var(--muted); }
 .tab.on { color: var(--ink); background: var(--panel); border-color: var(--line); margin-bottom: -1px; }
 .tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.agenttab { display: grid; gap: 12px; padding-bottom: 24px; }
+.agbar { display: flex; justify-content: flex-end; font-size: 12.5px; min-height: 16px; }
+.agperms { margin: 0; padding: 8px 12px; background: var(--well); border-radius: 8px; font-size: 13px; line-height: 1.45; color: var(--muted); }
+.aglog { display: grid; gap: 10px; max-height: calc(100vh - 430px); min-height: 120px; overflow-y: auto; align-content: start; }
+.ag { min-width: 0; }
+.ag .who { font: 700 11px/1.2 "JetBrains Mono", monospace; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
+.ag .said { white-space: pre-wrap; line-height: 1.5; overflow-wrap: anywhere; }
+.ag.you .said { background: var(--well); border-radius: 8px; padding: 8px 12px; }
+.ag.note { font-size: 13.5px; color: var(--muted); }
+.ag.note.bad { color: var(--red); font-weight: 600; }
+.ag.ran { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13.5px; }
+.ag.ran summary { cursor: pointer; overflow-wrap: anywhere; }
+.ag.ran .what { font-weight: 600; }
+.ag.ran em, .agcard em { font-style: normal; color: var(--muted); font-size: 12.5px; }
+.ag pre.log, .agcard pre.log { max-height: none; overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agcard .row { margin-top: 10px; }
+.agworking { display: flex; gap: 8px; align-items: center; font-size: 13.5px; }
+.agenttab [hidden] { display: none !important; }
+.agcomposer { display: grid; gap: 8px; }
+.agcomposer select { max-width: 100%; font: inherit; padding: 3px 6px; }
+.agcomposer textarea { width: 100%; box-sizing: border-box; font: inherit; line-height: 1.45; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
+.agfix { display: grid; gap: 8px; margin-top: 8px; }
+.agfix input { font: 15px/1.4 "JetBrains Mono", ui-monospace, Menlo, monospace; padding: 8px 10px; border: 2px solid var(--ink); border-radius: 8px; }
+.agfix .btn { justify-self: start; }
 .codetab { display: grid; gap: 22px; padding-bottom: 40px; }
 .task { border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; display: grid; gap: 12px; background: var(--panel); }
 .taskhead { display: flex; gap: 12px; align-items: flex-start; }
@@ -4163,6 +5239,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     snap = JSON.parse(/** @type {MessageEvent} */ (e).data);
     render();
   });
+  events.addEventListener("agent", (e) => agentTab.onEvent(JSON.parse(/** @type {MessageEvent} */ (e).data)));
   events.addEventListener("output", (e) => {
     const o = JSON.parse(/** @type {MessageEvent} */ (e).data);
     if (o.reset || o.id !== out.id) out = { id: o.id, text: "" };
@@ -4535,6 +5612,13 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
    * the file and runs the task's tests. The editors are made once per week and kept while the page
    * redraws; what's typed and not saved yet survives switching tabs.
    */
+  /** From a Code card to the Agent tab, with its prompt in the box. @param {string} task @param {string} prompt */
+  function goToAgent(task, prompt) {
+    agentTab.prefill(task, prompt);
+    weekTab = "agent";
+    remember();
+    render();
+  }
   const codeTab = (() => {
     /** @typedef {{ id: string, file: string, part: string, description: string, before: string[], after: string[], indent: string, body: string, rev: string, lesson: string, prompt: string, tests: string[], line: number, stubbed: boolean, hint: string, steps: { line: number, explain: string }[], words: string[], members: string[] }} Task */
     /** The hint text shows unless the student hid it (remembered on this laptop). */
@@ -4546,6 +5630,16 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     }
     /** @type {Record<string, string>} what's typed and not saved, by task */
     const drafts = {};
+    /** @type {Record<string, string>} which version of the task in the file each draft was typed over */
+    const draftRevs = {};
+    const setDraft = (/** @type {{ id: string, rev: string }} */ t, /** @type {string} */ text) => {
+      drafts[t.id] = text;
+      draftRevs[t.id] = t.rev;
+    };
+    const dropDraft = (/** @type {string} */ id) => {
+      delete drafts[id];
+      delete draftRevs[id];
+    };
     /** @type {{ week: number, el: HTMLElement, tasks: Task[], editors: Record<string, { value: string, focus: () => void, showHint?: (show: boolean) => void }> } | null} */
     let mounted = null;
     /** @type {Promise<void> | null} */
@@ -4554,6 +5648,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       esc(text)
         .replace(/`([^`]+)`/g, "<code>$1</code>")
         .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+        .replace(/\*([^*\s][^*]*)\*/g, "<i>$1</i>")
         .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
     /** CodeMirror from /editor.js, loaded once; a plain text box when it isn't there. */
     function loadEditor() {
@@ -4580,7 +5675,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           words: t.words,
           members: t.members,
           onChange: (/** @type {string} */ text) => {
-            drafts[t.id] = text;
+            setDraft(t, text);
             markStep(t, text);
           },
           onSave: save,
@@ -4595,12 +5690,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       area.value = doc;
       if (t.hint && hintsShown) area.placeholder = t.hint;
       area.rows = Math.max(6, doc.split("\n").length + 2);
-      area.addEventListener("input", () => (drafts[t.id] = area.value));
+      area.addEventListener("input", () => setDraft(t, area.value));
       area.addEventListener("keydown", (e) => {
         if (e.key === "Tab") {
           e.preventDefault();
           area.setRangeText("  ", area.selectionStart, area.selectionEnd, "end");
-          drafts[t.id] = area.value;
+          setDraft(t, area.value);
         } else if ((e.metaKey || e.ctrlKey) && e.key === "s") {
           e.preventDefault();
           save();
@@ -4637,14 +5732,14 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         ? `<aside class="prompt walk"><h4>What this code does</h4><ol>${t.steps.map((st, i) => `<li data-step="${i}" data-line="${st.line}">${md(st.explain)}</li>`).join("")}</ol></aside>`
         : "";
       const prompt = t.prompt
-        ? `<aside class="prompt"><h4>Codex prompt</h4><p class="sub">Run <code>codex</code> in a terminal in your course folder and paste this; read what it writes before you keep it.</p><pre>${esc(t.prompt)}</pre><button class="btn ghost" data-code-copy="${esc(t.id)}">Copy the prompt</button></aside>`
+        ? `<aside class="prompt"><h4>Codex prompt</h4><p class="sub">Send it to the Agent tab (add your approach first), or run <code>codex</code> in a terminal in your course folder and paste it. Read what it writes before you keep it.</p><pre>${esc(t.prompt)}</pre><div class="row"><button class="btn" data-code-agent="${esc(t.id)}">Send to the agent</button><button class="btn ghost" data-code-copy="${esc(t.id)}">Copy the prompt</button></div></aside>`
         : "";
       return `<section class="task" data-task="${esc(t.id)}">
         <div class="taskhead"><span class="tnum">${n}</span><div><h3><code>${esc(t.id)}</code></h3><p class="tdesc">${esc(t.description)}</p></div><span class="tpart ${t.part}">${t.part === "class" ? "in class" : "take-home"}</span></div>
         ${t.lesson ? `<p class="lesson">${md(t.lesson)}</p>` : ""}
         <div class="taskgrid ${prompt || walk ? "withprompt" : ""}"><div class="codewrap"><div class="cfile">${esc(where)}</div>${ctx(t.before)}<div class="editor" style="margin-left:${t.indent.length}ch" data-ed="${esc(t.id)}"></div>${ctx(t.after)}</div>${walk || prompt ? `<div class="aside">${walk}${prompt}</div>` : ""}</div>
         ${t.hint ? `<div class="row hintrow"><span class="muted" data-hint-says>${hintsShown ? "Type over the grey code, or press <kbd>Tab</kbd> for its next word; any code that passes the tests is fine." : "The hint is hidden. <kbd>Tab</kbd> after a letter or a dot lists the names that fit."}</span><button class="btn ghost" data-code-paste="${esc(t.id)}">Paste it all</button><button class="btn ghost" data-code-hints>${hintsShown ? "Hide the hint" : "Show the hint"}</button></div>` : ""}
-        <div class="row"><button class="btn primary" data-code-save="${esc(t.id)}">Save and run its tests <kbd>⌘S</kbd></button><span class="muted">Writes only this task into <code>${esc(t.file)}</code>, then runs <code>${esc(t.tests.join(" "))}</code>.</span></div>
+        <div class="row"><button class="btn primary" data-code-save="${esc(t.id)}">Save and run its tests <kbd>⌘S</kbd></button><button class="btn" data-code-test="${esc(t.id)}">Run its tests</button>${t.prompt ? "" : `<button class="btn" data-code-agent="${esc(t.id)}">Ask the agent</button>`}<span class="muted">Save writes only this task into <code>${esc(t.file)}</code>, then runs <code>${esc(t.tests.join(" "))}</code>.</span></div>
         <div class="tresult" data-result="${esc(t.id)}"></div>
       </section>`;
     }
@@ -4659,6 +5754,8 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         return;
       }
       mine.tasks = res.tasks;
+      // A card always opens on what's in the file: typing over an older version doesn't survive it.
+      for (const t of mine.tasks) if (draftRevs[t.id] !== undefined && draftRevs[t.id] !== t.rev) dropDraft(t.id);
       if (!mine.tasks.length) {
         el.innerHTML = `<p class="why">There's no code to write this week: the work is in your design note.</p>`;
         return;
@@ -4684,17 +5781,43 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       }
       t.rev = r.rev ?? t.rev;
       t.body = body;
-      delete drafts[id];
+      t.stubbed = false;
+      dropDraft(id);
     }
     /** @param {string} id */
     function reload(id) {
-      delete drafts[id];
+      dropDraft(id);
       if (mounted) {
         const { week, el } = mounted;
         mounted = null;
         void mount(week, el);
       }
     }
+    /**
+     * The file may have changed (the agent's turn ended, or the student came back from VS Code):
+     * cards show it, unless there's unsaved typing, which then gets a Reload and is never overwritten.
+     */
+    async function refresh() {
+      const m = mounted;
+      if (!m?.tasks.length) return;
+      const res = await fetch(`/api/code?week=${m.week}`, { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null);
+      if (mounted !== m || !res?.tasks) return;
+      for (const fresh of res.tasks) {
+        const t = m.tasks.find((x) => x.id === fresh.id);
+        const ed = m.editors[fresh.id];
+        if (!t || !ed || t.rev === fresh.rev) continue;
+        if (drafts[t.id] !== undefined && drafts[t.id] !== t.body) {
+          const box = m.el.querySelector(`[data-result="${CSS.escape(t.id)}"]`);
+          if (box) box.innerHTML = `<div class="status bad"><span class="icon">!</span><div><b>This task changed in the file (Codex or VS Code). What you typed here isn't saved.</b><div class="row"><button class="btn ghost" data-code-reload="${esc(t.id)}">Reload it from the file</button></div></div></div>`;
+          continue;
+        }
+        Object.assign(t, fresh);
+        ed.value = fresh.hint && fresh.stubbed ? "" : fresh.body;
+        dropDraft(t.id);
+      }
+    }
+    window.addEventListener("focus", () => void refresh());
+
     /** Results and commits, from the studio's state. */
     function update() {
       if (!mounted || !snap) return;
@@ -4702,9 +5825,10 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         const box = mounted.el.querySelector(`[data-result="${CSS.escape(t.id)}"]`);
         const r = snap.code?.[t.id];
         if (!box || !r) continue;
-        const waiting = r.waiting?.length ? `<div class="sub">${esc(r.waiting.length === 1 ? "Some tests also need" : "Some tests also need these tasks")}: ${r.waiting.map((w) => `<code>${esc(w)}</code>`).join(", ")} (not done yet, so they don't count against this one).</div>` : "";
+        const socket = r.blocked ? `<div class="sub">${esc(r.blocked)} more open a local socket, so they only run with Run its tests.</div>` : "";
+        const waiting = r.blocked && !r.waiting?.length ? socket : r.waiting?.length ? `${socket}<div class="sub">${esc(r.waiting.length === 1 ? "Some tests also need" : "Some tests also need these tasks")}: ${r.waiting.map((w) => `<code>${esc(w)}</code>`).join(", ")} (not done yet, so they don't count against this one).</div>` : "";
         let html = "";
-        if (r.phase === "running") html = `<div class="status run"><i class="spin"></i><div><b>Saved. Running ${esc(t.tests.join(" "))}…</b></div></div>`;
+        if (r.phase === "running") html = `<div class="status run"><i class="spin"></i><div><b>Running ${esc(t.tests.join(" "))}…</b></div></div>`;
         else if (r.phase === "error") html = `<div class="status bad"><span class="icon">!</span><div><b>The tests couldn't run.</b><pre class="log">${esc(r.error)}</pre></div></div>`;
         else if (r.phase === "failed")
           html = `<div class="status bad"><span class="icon">!</span><div><b>${r.failed} test${r.failed === 1 ? "" : "s"} fail${r.failed === 1 ? "s" : ""} (${r.passed} pass).</b>${r.waiting?.length ? `<div class="sub">Tests that need unfinished tasks are left out, but one of these may still come from them.</div>` : ""}${(r.failures ?? []).map((f) => `<div class="failure"><div class="ftest">${esc(f.test)}${f.own ? ` <span class="muted">(this task)</span>` : ""}</div><pre class="log">${esc(f.message)}</pre></div>`).join("")}${waiting}</div></div>`;
@@ -4730,15 +5854,19 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       else update();
     }
     document.addEventListener("click", (e) => {
-      const el = /** @type {HTMLElement} */ (e.target).closest("[data-code-save],[data-code-commit],[data-code-copy],[data-code-reload],[data-code-paste],[data-code-hints]");
+      const el = /** @type {HTMLElement} */ (e.target).closest("[data-code-save],[data-code-test],[data-code-commit],[data-code-copy],[data-code-agent],[data-code-reload],[data-code-paste],[data-code-hints]");
       if (!(el instanceof HTMLElement) || !mounted) return;
-      if (el.dataset.codeSave) void save(el.dataset.codeSave);
+      if (el.dataset.codeAgent) {
+        const t = mounted.tasks.find((x) => x.id === el.dataset.codeAgent);
+        if (t) goToAgent(t.id, t.prompt);
+      } else if (el.dataset.codeTest) void ask({ type: "code-test", week: mounted.week, id: el.dataset.codeTest }).then((/** @type {any} */ r) => r.ok || toast(r.error ?? "That didn't run."));
+      else if (el.dataset.codeSave) void save(el.dataset.codeSave);
       else if (el.dataset.codePaste) {
         const t = mounted.tasks.find((x) => x.id === el.dataset.codePaste);
         const ed = t && mounted.editors[t.id];
         if (t && ed) {
           ed.value = t.hint;
-          drafts[t.id] = t.hint;
+          setDraft(t, t.hint);
           ed.focus();
         }
       } else if (el.dataset.codeHints !== undefined) {
@@ -4760,22 +5888,311 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         if (t) void navigator.clipboard?.writeText(t.prompt).then(() => toast("Copied: paste it into Codex."), () => toast("Select the prompt and copy it."));
       }
     });
-    return { sync };
+    return { sync, refresh };
+  })();
+
+  /**
+   * The Agent tab: talk to the student's own Codex. Node owns everything; this draws a snapshot and
+   * applies its numbered events, and if it misses one it asks for the snapshot again. Refreshing the
+   * page only redraws: nothing is ever sent again from here.
+   */
+  const agentTab = (() => {
+    /** @type {any} */
+    let state = null;
+    let draft = "";
+    let selected = "";
+    /** @type {{ week: number, el: HTMLElement, tasks: { id: string, week: number, description: string }[] } | null} */
+    let mounted = null;
+    let fixTyped = "";
+    let focusBox = false;
+    /** @type {Set<any>} entries with deltas waiting for the next frame */
+    const dirty = new Set();
+    let painting = false;
+    const clientId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const md = (/** @type {string} */ text) => esc(text).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+
+    /** @param {any} e */
+    function entryHtml(e) {
+      if (e.kind === "user") return `<div class="ag you" data-entry="${esc(e.id)}"><div class="who">You</div><div class="said">${md(e.text)}</div></div>`;
+      if (e.kind === "agent") return `<div class="ag bot" data-entry="${esc(e.id)}"><div class="who">Codex</div><div class="said" data-field="text">${md(e.text)}</div></div>`;
+      if (e.kind === "note") return `<div class="ag note ${esc(e.tone)}" data-entry="${esc(e.id)}">${md(e.text)}${e.commit ? `<div class="row"><button class="btn primary" data-agent-commit="${esc(e.commit.id)}" data-w="${esc(e.commit.week)}">Commit it</button></div>` : ""}${e.runTests ? `<div class="row"><button class="btn primary" data-agent-test="${esc(e.runTests.id)}" data-w="${esc(e.runTests.week)}">Run its tests</button></div>` : ""}</div>`;
+      if (e.kind === "command") {
+        const status = e.status === "completed" ? (e.exitCode ? `exit ${esc(e.exitCode)}` : "done") : e.status === "inProgress" ? "running…" : esc(e.status);
+        return `<details class="ag ran" data-entry="${esc(e.id)}"><summary><span class="what">Ran</span> <code>${esc(e.command)}</code> <em>${status}</em></summary><pre class="log" data-field="output">${esc(e.output)}</pre></details>`;
+      }
+      if (e.kind === "file") {
+        const list = (e.changes ?? []).map((/** @type {any} */ c) => `<div><code>${esc(c.path)}</code>${c.movePath ? ` moves to <code>${esc(c.movePath)}</code>` : ""} <em>${esc(c.kind)}</em></div>`).join("");
+        const diffs = (e.changes ?? []).map((/** @type {any} */ c) => c.diff).filter(Boolean).join("\n");
+        return `<details class="ag ran" data-entry="${esc(e.id)}"><summary><span class="what">${e.status === "declined" ? "Declined change" : e.status === "failed" ? "Failed change" : "Changed"}</span> ${list || "files"}</summary>${diffs ? `<pre class="log">${esc(diffs)}</pre>` : ""}</details>`;
+      }
+      return "";
+    }
+
+    /** @param {any} c */
+    function cardHtml(c) {
+      const what = c.kind === "command" ? `<b>Codex wants to run this:</b><pre class="log">${esc(c.command)}</pre>${c.cwd ? `<div class="sub">in <code>${esc(c.cwd)}</code></div>` : ""}` : `<b>Codex wants to change files${c.grantRoot ? ` under ${esc(c.grantRoot)}` : ""}:</b>${(c.changes ?? []).map((/** @type {any} */ f) => `<div><code>${esc(f.path)}</code>${f.movePath ? ` moves to <code>${esc(f.movePath)}</code>` : ""} <em>${esc(f.kind)}</em></div>`).join("")}${(c.changes ?? []).some((/** @type {any} */ f) => f.diff) ? `<pre class="log">${esc(c.changes.map((/** @type {any} */ f) => f.diff).join("\n"))}</pre>` : ""}`;
+      return `<div class="status wait agcard"><span class="icon">?</span><div>${what}${c.reason ? `<div class="sub">Why: ${esc(c.reason)}</div>` : ""}<div class="row"><button class="btn primary" data-agent-answer="accept" data-key="${esc(c.key)}">Approve</button><button class="btn" data-agent-answer="decline" data-key="${esc(c.key)}">Decline</button></div></div></div>`;
+    }
+
+    /** What's wrong, and the fix right here. */
+    function statusHtml() {
+      const s = state;
+      if (!s || s.phase === "off" || s.phase === "starting") return `<div class="status run"><i class="spin"></i><div><b>Starting Codex…</b><div class="sub">The first time on a Mac, macOS checks it first: this can take a few minutes.</div></div></div>`;
+      if (s.phase === "missing" || s.phase === "too-old") {
+        const running = s.fix?.phase === "running";
+        return `<div class="status bad"><span class="icon">!</span><div><b>${esc(s.problem)}</b><div class="sub">Type this to ${s.phase === "missing" ? "install it" : "update it"}, then the studio checks again.</div></div></div>
+          <form class="agfix" data-agent-fix><label class="sub">Type: <code>${esc(s.fixCommand)}</code></label><input name="agentfix" value="${esc(fixTyped)}" autocomplete="off" autocapitalize="off" spellcheck="false" ${running ? "disabled" : ""}><button class="btn primary" type="submit" ${running ? "disabled" : ""}>${running ? "Running…" : "Run it"}</button></form>
+          ${s.fix?.out ? `<pre class="log">${esc(s.fix.out)}</pre>` : ""}`;
+      }
+      if (s.phase === "signed-out") return `<div class="status bad"><span class="icon">!</span><div><b>Codex isn't signed in.</b>${s.problem ? `<div class="sub">${esc(s.problem)}</div>` : ""}<div class="sub">It signs in with your ChatGPT account, in your browser. The studio never sees your password or token.</div></div></div><div class="row"><button class="btn primary" data-agent-login>Sign in to Codex</button></div>`;
+      if (s.phase === "signing-in") return `<div class="status wait"><i class="spin"></i><div><b>Finish signing in in your browser.</b><div class="sub"><a href="${esc(s.loginUrl)}" target="_blank" rel="noopener noreferrer">Open the sign-in page</a>. This page carries on by itself once it's done.</div></div></div>`;
+      if (s.phase === "failed") return `<div class="status bad"><span class="icon">!</span><div><b>${esc(s.problem || "Codex stopped.")}</b></div></div><div class="row"><button class="btn primary" data-agent-open>Start Codex again</button></div>`;
+      if (s.phase === "unavailable") return `<div class="status bad"><span class="icon">!</span><div><b>${esc(s.problem)}</b></div></div>`;
+      return "";
+    }
+
+    /** The part that changes with the state (not the composer, so typing isn't disturbed). */
+    function paintState() {
+      if (!mounted) return;
+      const s = state;
+      const top = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-status]"));
+      const cards = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-cards]"));
+      const focusedFix = document.activeElement instanceof HTMLInputElement && document.activeElement.name === "agentfix";
+      const html = statusHtml();
+      if (top.dataset.html !== html) {
+        top.innerHTML = html;
+        top.dataset.html = html;
+        if (focusedFix) /** @type {HTMLElement | null} */ (top.querySelector("input"))?.focus();
+      }
+      const cardsHtml = (s?.cards ?? []).map(cardHtml).join("");
+      if (cards.dataset.html !== cardsHtml) {
+        cards.innerHTML = cardsHtml;
+        cards.dataset.html = cardsHtml;
+        if (cardsHtml) cards.scrollIntoView({ block: "nearest" });
+      }
+      const ready = s?.phase === "ready";
+      const busy = Boolean(s?.turn);
+      const composer = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-composer]"));
+      composer.hidden = !ready;
+      /** @type {HTMLButtonElement} */ (mounted.el.querySelector("[data-agent-send]")).disabled = busy;
+      const stop = /** @type {HTMLButtonElement} */ (mounted.el.querySelector("[data-agent-stop]"));
+      stop.hidden = !busy;
+      stop.disabled = s?.turn?.status === "stopping";
+      stop.textContent = s?.turn?.status === "stopping" ? "Stopping…" : "Stop";
+      const line = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-working]"));
+      line.hidden = !busy;
+      const who = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-who]"));
+      who.textContent = ready ? `Codex ${s.version}${s.account?.email ? ` · ${s.account.email}` : ""}` : "";
+      /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-perms]")).textContent = s?.permissions ?? "";
+    }
+
+    /** @param {any} entry */
+    function paintEntry(entry) {
+      const log = mounted?.el.querySelector("[data-agent-log]");
+      if (!log) return;
+      const html = entryHtml(entry);
+      const old = log.querySelector(`[data-entry="${CSS.escape(entry.id)}"]`);
+      if (!html) return;
+      const nearEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+      if (old) {
+        const open = old instanceof HTMLDetailsElement && old.open;
+        old.outerHTML = html;
+        if (open) log.querySelector(`[data-entry="${CSS.escape(entry.id)}"]`)?.setAttribute("open", "");
+      } else log.insertAdjacentHTML("beforeend", html);
+      if (nearEnd) log.scrollTop = log.scrollHeight;
+    }
+
+    function paintAll() {
+      if (!mounted || !state) return;
+      const log = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-log]"));
+      log.innerHTML = (state.entries ?? []).map(entryHtml).join("");
+      log.scrollTop = log.scrollHeight;
+      paintState();
+    }
+
+    async function refetch() {
+      try {
+        const res = await fetch("/api/agent", { headers: { "x-studio-token": TOKEN } });
+        if (res.ok) {
+          state = await res.json();
+          paintAll();
+        }
+      } catch {
+        // the next event tries again
+      }
+    }
+
+    /** One message from the studio's event stream. @param {any} e */
+    function onEvent(e) {
+      if (e.type === "snapshot") {
+        state = e.snapshot;
+        return paintAll();
+      }
+      if (!state) return;
+      if (e.seq <= state.seq) return;
+      if (e.seq !== state.seq + 1) return void refetch();
+      state.seq = e.seq;
+      if (e.type === "state") {
+        const entries = state.entries;
+        const wasWorking = Boolean(state.turn);
+        state = { ...e.state, entries, seq: e.seq };
+        paintState();
+        if (wasWorking && !state.turn) codeTab.refresh(); // the agent may have changed the file
+      } else if (e.type === "entry") {
+        const at = state.entries.findIndex((/** @type {any} */ x) => x.id === e.entry.id);
+        if (at >= 0) state.entries[at] = e.entry;
+        else state.entries.push(e.entry);
+        paintEntry(e.entry);
+      } else if (e.type === "delta") {
+        const entry = state.entries.find((/** @type {any} */ x) => x.id === e.id);
+        if (!entry) return;
+        // Bounded, and drawn at most once a frame: a noisy command can't freeze the page (or Stop).
+        entry[e.field] = `${entry[e.field] ?? ""}${e.text}`.slice(e.field === "output" ? -20000 : -200000);
+        dirty.add(entry);
+        if (!painting) {
+          painting = true;
+          requestAnimationFrame(() => {
+            painting = false;
+            for (const x of dirty) paintEntry(x);
+            dirty.clear();
+          });
+        }
+      }
+    }
+
+    /** @param {number} week @param {HTMLElement} el */
+    async function mount(week, el) {
+      mounted = { week, el, tasks: [] };
+      const mine = mounted;
+      el.innerHTML = `<div class="agbar"><span class="muted" data-agent-who></span></div>
+        <p class="agperms" data-agent-perms></p>
+        <div data-agent-status></div>
+        <div class="aglog" data-agent-log></div>
+        <div data-agent-cards></div>
+        <div class="agworking muted" data-agent-working hidden><i class="spin"></i> Codex is working…</div>
+        <form class="agcomposer" data-agent-composer hidden>
+          <label class="sub">Working on <select name="agenttask" data-agent-task><option value="">no particular task</option></select></label>
+          <textarea name="agentmessage" rows="4" placeholder="Say how you want to approach it, then what you'd like Codex to do." spellcheck="true">${esc(draft)}</textarea>
+          <div class="row"><button class="btn primary" type="submit" data-agent-send>Send <kbd>⌘↵</kbd></button><button class="btn" type="button" data-agent-stop hidden>Stop</button></div>
+        </form>`;
+      paintAll();
+      paintState();
+      void act({ type: "agent-open" });
+      const res = await fetch(`/api/agent/tasks?week=${week}`, { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null);
+      if (mounted !== mine) return;
+      mine.tasks = res?.tasks ?? [];
+      const select = /** @type {HTMLSelectElement} */ (el.querySelector("[data-agent-task]"));
+      select.innerHTML = `<option value="">no particular task</option>${mine.tasks.map((t) => `<option value="${esc(t.id)}">${t.week === week ? "" : `week ${esc(t.week)} · `}${esc(t.id)}: ${esc(t.description)}</option>`).join("")}`;
+      select.value = selected;
+      // From a Code card: the box in view, with "My approach: (your words…)" selected to type over.
+      if (focusBox) {
+        focusBox = false;
+        const box = /** @type {HTMLTextAreaElement | null} */ (el.querySelector("textarea[name=agentmessage]"));
+        if (box && !box.closest("[hidden]")) {
+          box.scrollIntoView({ block: "center" });
+          box.focus();
+          const end = box.value.indexOf("\n");
+          if (/^My approach:/.test(box.value)) box.setSelectionRange("My approach: ".length, end < 0 ? box.value.length : end);
+        }
+      }
+    }
+
+    async function submit() {
+      if (!mounted) return;
+      const box = /** @type {HTMLTextAreaElement} */ (mounted.el.querySelector("textarea[name=agentmessage]"));
+      const text = box.value.trim();
+      if (!text) return;
+      const r = await ask({ type: "agent-send", week: mounted.week, task: selected, text, clientId: clientId() });
+      if (!r.ok) return toast(r.error ?? "It didn't send.");
+      box.value = "";
+      draft = "";
+    }
+
+    document.addEventListener("submit", (e) => {
+      const form = /** @type {HTMLElement} */ (e.target);
+      if (form.matches?.("[data-agent-composer]")) {
+        e.preventDefault();
+        void submit();
+      } else if (form.matches?.("[data-agent-fix]")) {
+        e.preventDefault();
+        void act({ type: "agent-fix", typed: fixTyped });
+      }
+    });
+    document.addEventListener("input", (e) => {
+      const el = /** @type {HTMLInputElement} */ (e.target);
+      if (el.name === "agentmessage") draft = el.value;
+      else if (el.name === "agentfix") fixTyped = el.value;
+    });
+    document.addEventListener("change", (e) => {
+      const el = /** @type {HTMLSelectElement} */ (e.target);
+      if (el.name === "agenttask") selected = el.value;
+    });
+    document.addEventListener("keydown", (e) => {
+      const el = /** @type {HTMLElement} */ (e.target);
+      if (/** @type {HTMLTextAreaElement} */ (el).name === "agentmessage" && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        void submit();
+      }
+    });
+    document.addEventListener("click", (e) => {
+      const el = /** @type {HTMLElement} */ (e.target).closest("[data-agent-answer],[data-agent-stop],[data-agent-login],[data-agent-open],[data-agent-commit],[data-agent-test]");
+      if (!(el instanceof HTMLElement)) return;
+      if (el.dataset.agentAnswer) {
+        // Off at once: a second click can't answer twice, and the studio refuses a stale card anyway.
+        for (const b of el.parentElement?.querySelectorAll("button") ?? []) b.disabled = true;
+        void ask({ type: "agent-answer", key: el.dataset.key, decision: el.dataset.agentAnswer }).then((r) => {
+          if (!r.ok) {
+            toast(r.error ?? "That didn't go through.");
+            void refetch();
+          }
+        });
+      } else if (el.dataset.agentTest) {
+        void ask({ type: "code-test", week: Number(el.dataset.w), id: el.dataset.agentTest, fromAgent: true }).then((/** @type {any} */ r) => r.ok || toast(r.error ?? "That didn't run."));
+      } else if (el.dataset.agentCommit) {
+        /** @type {HTMLButtonElement} */ (el).disabled = true;
+        void ask({ type: "code-commit", week: Number(el.dataset.w), id: el.dataset.agentCommit }).then((/** @type {any} */ r) => toast(r.ok ? (r.said ?? "Committed.") : (r.error ?? "That didn't go through.")));
+      } else if (el.dataset.agentStop !== undefined) void act({ type: "agent-stop" });
+      else if (el.dataset.agentLogin !== undefined) void act({ type: "agent-login" });
+      else if (el.dataset.agentOpen !== undefined) void act({ type: "agent-open" });
+    });
+
+    return {
+      onEvent,
+      /** After each render: mount the tab when it's shown. */
+      sync() {
+        const el = /** @type {HTMLElement | null} */ (document.querySelector("[data-agenttab]"));
+        if (!el) {
+          mounted = null;
+          return;
+        }
+        const week = Number(el.dataset.agenttab);
+        if (!mounted || mounted.el !== el || mounted.week !== week) void mount(week, el);
+      },
+      /** The Code tab's "Send to the agent": the prompt in the box, the task selected; the student adds their approach and sends. @param {string} task @param {string} text */
+      prefill(task, text) {
+        selected = task;
+        draft = text;
+        focusBox = true;
+        mounted = null;
+      },
+    };
   })();
 
   function weekView(g) {
     const nn = String(g.week).padStart(2, "0");
-    const tabs = [["page", g.page ? "Lesson page" : "Guide"], ...(g.kind !== "setup" ? [["code", "Code"]] : []), ...(g.note ? [["note", g.kind === "setup" ? "Your notes" : "Design note"]] : []), ["board", "Board"], ["checks", "Checks"]];
+    const tabs = [["page", g.page ? "Lesson page" : "Guide"], ...(g.kind !== "setup" ? [["code", "Code"], ["agent", "Agent"]] : []), ...(g.note ? [["note", g.kind === "setup" ? "Your notes" : "Design note"]] : []), ["board", "Board"], ["checks", "Checks"]];
     const tab = tabs.some(([id]) => id === weekTab) ? weekTab : "page";
     const bar = `<div class="tabs" role="tablist">${tabs.map(([id, label]) => `<button role="tab" class="tab ${id === tab ? "on" : ""}" data-do="tab" data-tab="${id}" aria-selected="${id === tab}">${esc(label)}</button>`).join("")}</div>`;
     /** @type {string} */
     let body;
     if (tab === "page") body = `<iframe class="doc" title="Week ${g.week} lesson page" src="/week/${g.week}"></iframe>`;
     else if (tab === "note")
-      body = `<p class="sub">Your ${g.kind === "setup" ? "notes" : "design note"}, <code>${esc(g.note ?? "")}</code>. Write it in VS Code (<code>code ${esc(g.note ?? "")}</code>); it shows here as you save.</p><iframe class="doc" title="Week ${g.week} note" src="/${esc(g.note ?? "")}"></iframe>`;
+      body = `<p class="sub">Your ${g.kind === "setup" ? "notes" : "design note"}, <code>${esc(g.note ?? "")}</code>. Write it in VS Code (<code>code ${esc(g.note ?? "")}</code>); open this tab again to see what you saved.</p><iframe class="doc" title="Week ${g.week} note" src="/${esc(g.note ?? "")}"></iframe>`;
     else if (tab === "board") body = boardPanel();
     // The tasks are drawn by codeTab (their editors outlive the page's re-renders).
     else if (tab === "code") body = `<div class="codetab" data-codetab="${esc(g.week)}"><p class="why">Loading this week's tasks…</p></div>`;
+    // Drawn by agentTab, from the studio's state (its conversation outlives the page's re-renders).
+    else if (tab === "agent") body = `<div class="agenttab" data-agenttab="${esc(g.week)}"></div>`;
     else body = checksPanel(g.week, g.kind === "setup" ? "npm run doctor" : `npx vitest run tests/week-${nn}`);
     return `<div class="weekhead"><p class="eyebrow">Week ${esc(g.week)}${g.kind ? ` · ${esc(g.kind)}` : ""}</p><h1 class="q">${esc(g.title)}</h1></div>${bar}<div class="tabbody">${body}</div>`;
   }
@@ -4895,6 +6312,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     paintLine();
     paintOutput();
     codeTab.sync();
+    agentTab.sync();
     const input = focused ? /** @type {HTMLInputElement | null} */ (document.querySelector(`input[name="${focused}"]`)) : null;
     if (input) {
       // Put the cursor back at the end (email fields have no setSelectionRange, so reset the value instead).
@@ -5006,6 +6424,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
   });
   document.addEventListener("submit", (e) => {
     e.preventDefault();
+    if (/** @type {HTMLElement} */ (e.target).matches?.("[data-agent-composer],[data-agent-fix]")) return; // agentTab's
     const step = currentStep();
     if (!step) return;
     const values = Object.fromEntries(new FormData(/** @type {HTMLFormElement} */ (e.target)).entries());
@@ -5277,8 +6696,8 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
         mkdirSync(dirname(STATE_FILE), { recursive: true });
         // doctorOk too: the doctor passing can't be checked again without running it, so the next
         // run (and the next week) needs it.
-        const { login, parent, repoDir, chatgpt, codexVersion, doctorOk } = state;
-        writeFileSync(STATE_FILE, JSON.stringify({ login, parent, repoDir, chatgpt, codexVersion, doctorOk }, null, 2));
+        const { login, parent, repoDir, chatgpt, codexVersion, doctorOk, agentThreads } = state;
+        writeFileSync(STATE_FILE, JSON.stringify({ login, parent, repoDir, chatgpt, codexVersion, doctorOk, agentThreads }, null, 2));
       } catch {
         // Remembering is a convenience; the checks find everything again anyway.
       }
@@ -5370,19 +6789,7 @@ export function chooseFlow(ctx, { forceSetup = false, withSetup = false, weekLis
   // Week N had been in work before (an older version of it): getting it again is an update.
   const hadBefore = (/** @type {number} */ n) => n === 1 || n <= newest || ctx.capture(["git", "cat-file", "-e", `work:docs/weeks/week-${String(n).padStart(2, "0")}.md`], dir)?.code === 0;
   const waiting = published.filter((n) => !merged.includes(n));
-  let toGet = waiting[0] ?? null;
-  // Updates waiting before a newer week that already holds them (each release is built on the last)
-  // come along with it: the student gets the newest week straight away, not the update first.
-  // Comparing the weeks needs their commits: fetch the week tags if one isn't here yet (it only
-  // moves upstream/week-N, never the student's work).
-  const missing = (/** @type {number} */ n) => ctx.capture(["git", "cat-file", "-e", `${tips.get(n)}^{commit}`], dir)?.code !== 0;
-  if (waiting.length > 1 && !ctx.dryRun && waiting.some(missing)) ctx.capture(gitArgv(ctx, ["fetch", "-q", "upstream"]), dir);
-  for (const n of waiting.slice(1)) {
-    const before = waiting.filter((m) => m < n);
-    const holds = before.every((m) => hadBefore(m) && ctx.capture(["git", "merge-base", "--is-ancestor", /** @type {string} */ (tips.get(m)), /** @type {string} */ (tips.get(n))], dir)?.code === 0);
-    if (!holds) break;
-    toGet = n;
-  }
+  const toGet = newestHolding(ctx, dir, waiting, tips);
   const getting = toGet;
   const brought = getting === null ? [] : waiting.filter((m) => m < getting);
   /** @type {Step[]} */
@@ -5396,7 +6803,7 @@ export function chooseFlow(ctx, { forceSetup = false, withSetup = false, weekLis
   };
   add(1, "setup", courseSteps());
   for (const n of [...new Set([...merged, ...brought])].filter((m) => m > 1).sort((a, b) => a - b)) {
-    if (brought.includes(n)) add(n, "done", doneWeekSteps(n, `Week ${n}'s update comes with week ${toGet}.`));
+    if (brought.includes(n)) add(n, "done", doneWeekSteps(n, hadBefore(n) ? `Week ${n}'s update comes with week ${toGet}.` : `Week ${n} comes with week ${toGet}.`));
     else add(n, n === newest && toGet === null ? "inwork" : "done", n === newest && toGet === null ? inWorkSteps(n) : doneWeekSteps(n));
   }
   const autoSteps = steps.length;
@@ -5471,12 +6878,15 @@ async function runStudio(ctx, { open = true, port = 0, forceSetup = false, weekL
   /** @type {Awaited<ReturnType<typeof serveStudio>> | null} */
   let server = null;
   /** @param {string} why @param {number} code */
-  const stop = (why, code) => {
+  const stop = async (why, code) => {
     studio.stop();
     server?.close();
     console.log(`\n${why}\n${QUIT_MESSAGE}`);
+    // Its Codex goes with it: a bounded wait, then only that child's tree.
+    await Promise.race([studio.shutdown(), new Promise((resolve) => setTimeout(resolve, 3500))]);
     process.exit(code);
   };
+
   process.on("SIGINT", () => stop("Stopped.", 130));
   process.on("SIGTERM", () => stop("Stopped.", 143));
   server = await serveStudio(studio, { port, onIdle: () => stop("The studio tab was closed, so the studio stopped.", 0), log: (l) => process.env.NETSIM_STUDIO_DEBUG && console.log(l) });
@@ -5548,7 +6958,7 @@ export async function newerStudio(newest, dir = dirname(STATE_FILE)) {
   writeFileSync(path, text);
   // Its code box comes with it (a course folder from an earlier week doesn't have one yet).
   const editor = await fromCourse(newest, "studio/editor.js");
-  if (editor) writeFileSync(join(dir, "editor.js"), editor);
+  if (editor) writeFileSync(join(dir, "editor.js"), editor); // the new studio checks it against its own hash
   return path;
 }
 

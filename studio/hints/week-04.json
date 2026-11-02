@@ -1,0 +1,133 @@
+{
+  "decode": {
+    "code": "const [opcode, a, b, c] = bytes;\nconst addr = (b << 8) | c;\nconst badRegister = (n: number): DecodeResult => ({ ok: false, error: `R${n} is not a register (R0-R3)` });\nconst badAddress: DecodeResult = { ok: false, error: `address ${hex(addr)} is outside memory` };\n\nswitch (opcode) {\n  case OPCODES.NOP:\n    return { ok: true, instruction: { op: \"NOP\" } };\n  case OPCODES.IRET:\n    return { ok: true, instruction: { op: \"IRET\" } };\n  case OPCODES.HALT:\n    return { ok: true, instruction: { op: \"HALT\" } };\n  case OPCODES.LOAD:\n  case OPCODES.STORE:\n    if (!isRegister(a)) return badRegister(a);\n    if (addr >= MEMORY_SIZE) return badAddress;\n    return { ok: true, instruction: { op: opcode === OPCODES.LOAD ? \"LOAD\" : \"STORE\", reg: a, address: addr } };\n  case OPCODES.ADD:\n  case OPCODES.SUB:\n    if (!isRegister(a)) return badRegister(a);\n    if (!isRegister(b)) return badRegister(b);\n    return { ok: true, instruction: { op: opcode === OPCODES.ADD ? \"ADD\" : \"SUB\", reg: a, src: b } };\n  case OPCODES.JMP:\n  case OPCODES.JZ:\n  case OPCODES.JNZ: {\n    if (addr >= MEMORY_SIZE) return badAddress;\n    const op = opcode === OPCODES.JMP ? \"JMP\" : opcode === OPCODES.JZ ? \"JZ\" : \"JNZ\";\n    return { ok: true, instruction: { op, address: addr } };\n  }\n  case OPCODES.LOADI:\n    if (!isRegister(a)) return badRegister(a);\n    return { ok: true, instruction: { op: \"LOADI\", reg: a, value: c } };\n  default:\n    return { ok: false, error: `unknown opcode ${hex(opcode, 2)}` };\n}",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Split the 4 bytes: the opcode first, then three operand bytes. Bytes 3 and 4 together are a 16-bit address, big end first: `(b << 8) | c` (`0x01, 0x10` → `0x0110`)."
+      },
+      {
+        "line": 2,
+        "explain": "Two ready-made errors, so every bad case below returns `{ ok: false, error }` (the FAULT row of your state table)."
+      },
+      {
+        "line": 5,
+        "explain": "Then one case per opcode. `NOP`, `IRET` and `HALT` have no operands."
+      },
+      {
+        "line": 12,
+        "explain": "`LOAD` and `STORE` need a real register (R0–R3) in byte 2 and an address inside memory."
+      },
+      {
+        "line": 17,
+        "explain": "`ADD` and `SUB` use two registers: bytes 2 and 3."
+      },
+      {
+        "line": 22,
+        "explain": "The jumps only need an address inside memory."
+      },
+      {
+        "line": 29,
+        "explain": "`LOADI` takes a register and the number itself, in the last byte."
+      },
+      {
+        "line": 32,
+        "explain": "Any other opcode isn't an instruction: an error."
+      }
+    ]
+  },
+  "encode": {
+    "code": "const opcode = OPCODES[instruction.op];\nswitch (instruction.op) {\n  case \"NOP\":\n  case \"IRET\":\n  case \"HALT\":\n    return [opcode, 0, 0, 0];\n  case \"LOAD\":\n  case \"STORE\":\n    return [opcode, instruction.reg, instruction.address >> 8, instruction.address & 0xff];\n  case \"ADD\":\n  case \"SUB\":\n    return [opcode, instruction.reg, instruction.src, 0];\n  case \"JMP\":\n  case \"JZ\":\n  case \"JNZ\":\n    return [opcode, 0, instruction.address >> 8, instruction.address & 0xff];\n  case \"LOADI\":\n    return [opcode, instruction.reg, 0, instruction.value];\n}",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "`encode` is `decode` backwards: start from the opcode byte for the instruction."
+      },
+      {
+        "line": 2,
+        "explain": "No operands: the other three bytes are 0."
+      },
+      {
+        "line": 6,
+        "explain": "A register, then the address split into its high byte (`>> 8`) and low byte (`& 0xff`)."
+      },
+      {
+        "line": 9,
+        "explain": "Two registers, then a 0."
+      },
+      {
+        "line": 12,
+        "explain": "No register (0), then the address's high and low bytes."
+      },
+      {
+        "line": 16,
+        "explain": "The register, a 0, then the number."
+      }
+    ]
+  },
+  "$tests": {
+    "tests/week-04/design-note.test.ts > week 4 design note (docs/notes/week-04.md) 'goal' is filled in (12+ words of your own)": [],
+    "tests/week-04/design-note.test.ts > week 4 design note (docs/notes/week-04.md) 'parts' is filled in (12+ words of your own)": [],
+    "tests/week-04/design-note.test.ts > week 4 design note (docs/notes/week-04.md) 'messages' is filled in (12+ words of your own)": [],
+    "tests/week-04/design-note.test.ts > week 4 design note (docs/notes/week-04.md) 'states' is filled in (15+ words of your own)": [],
+    "tests/week-04/design-note.test.ts > week 4 design note (docs/notes/week-04.md) 'scenario' is filled in (15+ words of your own)": [],
+    "tests/week-04/design-note.test.ts > week 4 design note (docs/notes/week-04.md) 'board' is filled in (12+ words of your own)": [],
+    "tests/week-04/design-note.test.ts > week 4 design note (docs/notes/week-04.md) 'decisions' is filled in (15+ words of your own)": [],
+    "tests/week-04/design-note.test.ts > week 4 design note (docs/notes/week-04.md) 'questions' is filled in (3+ words of your own)": [],
+    "tests/week-04/design-note.test.ts > week 4 design note (docs/notes/week-04.md) 'brief' is filled in (20+ words of your own)": [],
+    "tests/week-04/design-note.test.ts > week 4 design note (docs/notes/week-04.md) links your board sketch, and the photo is committed next to the note": [],
+    "tests/week-04/isa.test.ts > decode NOP": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode LOAD R2, 0x3F1": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode STORE R0, 0x010": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode ADD R0, R1": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode SUB R3, R2": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode JMP 0x100": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode LOADI R1, 200": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode JZ 0x008": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode JNZ 0x010": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode IRET": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode HALT": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode rejects an unknown opcode": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode rejects a register above R3": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode rejects a second register above R3": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > decode rejects an address outside memory": [
+      "decode"
+    ],
+    "tests/week-04/isa.test.ts > encode is the exact opposite of decode": [
+      "decode",
+      "encode"
+    ],
+    "tests/week-04/isa.test.ts > encode puts 16-bit addresses high byte first": [
+      "encode"
+    ],
+    "tests/week-04/isa.test.ts > disassemble reads like the assembly you'd write": []
+  }
+}

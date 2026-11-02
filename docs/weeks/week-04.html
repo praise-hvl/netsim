@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="glossary" content="latched, flip-flop, fault, hex">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetSim Week 4 · Design + build: the CPU</title>
+<style>
+:root{--bg:#fff;--ink:#16201b;--muted:#56615b;--line:#dfe5e1;--soft:#f3f7f4;--green:#173627;--mint:#5fc79a;--mint-ink:#1f7a55;--red:#d8142a;--yellow:#ffcb12;--code-bg:#f3f5f4;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1512;--ink:#e8efeb;--muted:#9aa8a0;--line:#26312b;--soft:#151d18;--mint-ink:#6fd3a7;--red:#ff5a67;--code-bg:#151d18;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:18px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,"Helvetica Neue",Arial,sans-serif}
+.wrap{max-width:940px;margin:0 auto;padding-inline:20px}
+h1,h2,h3{line-height:1.15;margin:0;text-wrap:balance}
+h2{font-size:clamp(26px,4vw,34px);font-weight:800}
+h3{font-size:21px;font-weight:700;margin-top:6px}
+p{margin:0}
+a{color:var(--mint-ink);text-underline-offset:3px}
+code,pre,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+code{background:var(--code-bg);padding:1px 6px;border-radius:4px;font-size:.88em}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:0;font-size:.86em;line-height:1.55}
+pre code{background:none;padding:0}
+pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere}
+.hero{background:var(--green);color:#fff;padding-block:52px 44px}
+.hero .wrap{display:grid;gap:12px}
+.tag{font:700 13px/1 ui-monospace,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:#a8e3c8}
+.hero h1{font-size:clamp(36px,6.5vw,60px);font-weight:800;letter-spacing:-.02em}
+.hero p{font-size:19px;color:#d7e6de;max-width:66ch}
+main{display:grid;gap:52px;padding-block:40px 72px}
+section{display:grid;gap:16px}
+.lede{font-size:19px;color:var(--muted);max-width:66ch}
+ul,ol{margin:0;padding-left:24px;display:grid;gap:6px}
+li,section,main>*{min-width:0}
+.steps>li{padding-left:4px}
+.steps>li+li{border-top:1px solid color-mix(in srgb,var(--muted) 45%,transparent);padding-top:18px;margin-top:8px}
+.steps>li>ul{margin-top:6px}
+.check{background:var(--soft);border-left:4px solid var(--mint);padding:10px 14px;border-radius:0 6px 6px 0}
+.note{background:var(--soft);border-left:4px solid var(--yellow);padding:10px 14px;border-radius:0 6px 6px 0}
+.warn{background:var(--soft);border-left:4px solid var(--red);padding:10px 14px;border-radius:0 6px 6px 0}
+.diagram{margin:0;max-width:100%;min-width:0;overflow-x:auto;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fff}
+.diagram svg{display:block;width:100%;height:auto}
+.diagram text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Arial,sans-serif}
+.diagram text.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.caption{font-size:15px;color:var(--muted)}
+.table-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:16px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.cards>div{border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;gap:8px;align-content:start}
+.minutes{font:700 13px/1 ui-monospace,Menlo,monospace;color:var(--mint-ink)}
+details{border:1px solid var(--line);border-radius:8px;padding:10px 14px;min-width:0;max-width:100%}
+details>*{max-width:100%}
+details+details{margin-top:8px}
+summary{cursor:pointer;font-weight:700}
+details[open] summary{margin-bottom:8px}
+.box{display:inline-block;width:18px;height:18px;border:2px solid var(--mint);border-radius:4px;vertical-align:-3px;margin-right:8px}
+ul.checklist{list-style:none;padding-left:0}
+.toc{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:15px}
+@media (max-width:640px){body{font-size:17px}.hero{padding-block:36px 30px}main{gap:40px}}
+@media print{
+  :root{--bg:#fff;--ink:#000;--muted:#333;--line:#bbb;--soft:#f4f4f4}
+  .hero{background:#fff;color:#000;border-bottom:3px solid #000;padding-block:10px}
+  .hero p,.tag{color:#000}
+  .diagram{overflow:visible;break-inside:avoid}
+  .diagram svg{min-width:0!important}
+  section{break-inside:auto}
+  h2,h3{break-after:avoid}
+  a{color:#000}
+}
+</style>
+<style data-glossary>
+.term{border-bottom:1.5px dotted currentColor;cursor:help;position:relative;outline-offset:2px}
+.term:focus-visible{outline:2px solid #1f7a55;border-radius:2px}
+.term>.tip{position:absolute;left:0;top:calc(100% + 6px);z-index:30;width:max-content;max-width:min(300px,calc(100vw - 32px));padding:8px 11px;border-radius:8px;background:#16201b;color:#f3f7f4;font:400 15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif;letter-spacing:0;text-transform:none;white-space:normal;text-align:left;box-shadow:0 4px 14px rgba(0,0,0,.22);display:none;pointer-events:none}
+.term:hover>.tip,.term:focus>.tip,.term.open>.tip{display:block}
+@media (prefers-color-scheme:dark){.term>.tip{background:#e8efeb;color:#0f1512}.term:focus-visible{outline-color:#6fd3a7}}
+</style>
+</head>
+<body>
+<header class="hero"><div class="wrap">
+<div class="tag">Week 4 · Design + build</div>
+<h1>The CPU</h1>
+<p>Your bus and memory work. Today you design the part that uses them: a CPU core that fetches an instruction from memory, decodes it and executes it, one clock tick at a time. Then you build its first piece.</p>
+</div></header>
+<main class="wrap">
+
+<section>
+<p class="note"><b>This class moved into week 5.</b> We do the design and <code>decode()</code> together with the build, in one class: go to Week 5's page for the class and the take-home. This page stays as reference, and <code>decode</code> and <code>encode</code> keep their cards in this week's Code tab.</p>
+<p class="lede">The hour has two halves. <b>Design (30 min):</b> the parts of your note next week's build needs. <b>Build (30 min):</b> <code>decode()</code>, which turns 4 bytes into an instruction, coded together. Next week you build the rest: a CPU that runs real programs, on screen.</p>
+<figure class="diagram"><svg viewBox="0 0 900 262" role="img" aria-label="Today: four design tasks in the first half, then decode() in the second half" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><text x="20" y="30" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">Today: design the CPU core, then build its first piece</text><rect x="40" y="56" width="480" height="166" rx="12" fill="#fff" stroke="#16201b" stroke-width="2.6"/><text x="60" y="84" font-size="15" font-weight="800" text-anchor="start" fill="#16201b">DESIGN · 30 min · your note</text><rect x="55" y="96" width="215" height="54" rx="8" fill="#ffcb12" stroke="#16201b" stroke-width="2"/><text x="162.5" y="118" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">1 · the tick table</text><text x="162.5" y="138" font-size="12" text-anchor="middle" fill="#16201b">8 min · one program, tick by tick</text><rect x="290" y="96" width="215" height="54" rx="8" fill="#ffcb12" stroke="#16201b" stroke-width="2"/><text x="397.5" y="118" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">2 · the state machine</text><text x="397.5" y="138" font-size="12" text-anchor="middle" fill="#16201b">12 min · section 4</text><rect x="55" y="158" width="215" height="54" rx="8" fill="#ffcb12" stroke="#16201b" stroke-width="2"/><text x="162.5" y="180" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">3 · instructions as bytes</text><text x="162.5" y="200" font-size="12" text-anchor="middle" fill="#16201b">5 min · section 3</text><rect x="290" y="158" width="215" height="54" rx="8" fill="#ffcb12" stroke="#16201b" stroke-width="2"/><text x="397.5" y="180" font-size="15" font-weight="800" text-anchor="middle" fill="#16201b">4 · the agent brief</text><text x="397.5" y="200" font-size="12" text-anchor="middle" fill="#16201b">2 min · top of section 9</text><rect x="565" y="60" width="300" height="166" rx="12" fill="#5fc79a"/><rect x="560" y="56" width="300" height="166" rx="12" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="580" y="84" font-size="15" font-weight="800" text-anchor="start" fill="#16201b">BUILD · 30 min · together</text><text x="710" y="140" font-size="24" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">decode()</text><text x="710" y="166" font-size="13" text-anchor="middle" fill="#16201b">core/isa.ts</text><text x="710" y="186" font-size="13" text-anchor="middle" fill="#16201b">4 bytes in, an instruction out</text><text x="20" y="250" font-size="13" text-anchor="start" fill="#585654">Take-home: encode(), the rest of your note (the count-down trace, decisions, agent brief), and your storyboard.</text></svg></figure>
+<p class="caption">The design half is yours alone; the build half is coded together on my shared screen.</p>
+</section>
+
+<section id="goals">
+<h2>Goals</h2>
+<ul>
+<li><b>Hardware idea:</b> <b>fetch–decode–execute</b>. A <b>program counter</b> (PC) says where the next instruction is; <b>registers</b> (<code>R0</code>–<code>R3</code>, one byte each) hold the values being worked on; <b>flags</b> (<code>zero</code>, <code>carry</code>) remember facts about the last result. Every instruction is exactly <b>4 bytes</b> with an agreed <b>encoding</b>. Memory has <b>latency</b>: a fetch costs a tick of waiting, so a <code>LOAD</code> takes one tick more than an <code>ADD</code>.</li>
+<li><b>OS idea:</b> the core is a <b>finite state machine</b> that only changes on the clock edge. Replies that arrive during a tick are <span class="term" tabindex="0" aria-describedby="tip-1">latched<span class="tip" role="tooltip" id="tip-1">Captured and held until the next tick: the reply arrives during tick 41, but the CPU only uses it in tick 42.</span></span> and used on the next one, like a <span class="term" tabindex="0" aria-describedby="tip-2">flip-flop<span class="tip" role="tooltip" id="tip-2">A one-bit storage circuit that takes in a new value only at the clock edge. It's why hardware changes on ticks, not in between.</span></span>.</li>
+<li><b>Design idea:</b> a state machine is easiest to design as a <b>table</b> (from, event, to, what it does), and easiest to explain as a <b>storyboard</b> (what you'd see on each tick).</li>
+<li><b>Software idea:</b> decoding is a pure function: bytes in, an instruction (or an error) out. Every way the input can be wrong is an answer, never a crash.</li>
+</ul>
+</section>
+
+<section id="class">
+<h2>In class (1 hour, on Zoom)</h2>
+<p class="note">Class is on Zoom, camera on. You work <b>on your own</b> all hour, and we all stay in the one call. Keep Zoom's <b>chat</b> open: I post the time for each block there. <b>Stuck?</b> Raise your Zoom hand or send me a private message; I'll answer with a question. At the end of each block I ask two or three of you to share your screen for a minute or two. While someone shares, answer in the chat: what did you write differently?</p>
+<p>Fill in your own design note: <code>docs/notes/week-04.md</code> (the app shows it on Week 4's <b>Design note</b> tab), with the nine headings from <a href="../notes/design-note-template.md">the design-note template</a>. If it isn't there, copy the template to that path.</p>
+<p><b>Short on time, or stuck?</b> Use this starting design and build on it (change anything you like):</p>
+<details><summary>Starting design for the core</summary>
+<p>Section 4, the core's states:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>From</th><th>Event (on a tick)</th><th>Condition</th><th>To</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>IDLE</code></td><td>tick</td><td>a program is assigned</td><td><code>FETCH</code></td><td>loads the program's PC</td></tr>
+<tr><td><code>FETCH</code></td><td>tick</td><td></td><td><code>WAIT_FETCH</code></td><td>sends <code>mem.read</code> for the 4 bytes at PC</td></tr>
+<tr><td><code>WAIT_FETCH</code></td><td>tick</td><td>no bytes yet</td><td><code>WAIT_FETCH</code></td><td>stalls</td></tr>
+<tr><td><code>WAIT_FETCH</code></td><td>tick</td><td>the bytes arrived</td><td><code>DECODE</code></td><td>puts them in the instruction register</td></tr>
+<tr><td><code>WAIT_FETCH</code> or <code>WAIT_DATA</code></td><td>tick</td><td>a <span class="term" tabindex="0" aria-describedby="tip-3"><code>fault</code><span class="tip" role="tooltip" id="tip-3">A reply that says a request failed and why, for example OUT_OF_RANGE for an address memory doesn't have. It replaces the normal reply, so the asker always hears back.</span></span> arrived</td><td><code>FAULT</code></td><td>stops, shows why</td></tr>
+<tr><td><code>DECODE</code></td><td>tick</td><td>a valid instruction</td><td><code>EXECUTE</code></td><td></td></tr>
+<tr><td><code>DECODE</code></td><td>tick</td><td>an unknown opcode or register</td><td><code>FAULT</code></td><td>stops, shows the bytes</td></tr>
+<tr><td><code>EXECUTE</code></td><td>tick</td><td>ALU op or jump</td><td><code>FETCH</code></td><td>changes registers, flags or PC</td></tr>
+<tr><td><code>EXECUTE</code></td><td>tick</td><td>LOAD or STORE</td><td><code>WAIT_DATA</code></td><td>sends <code>mem.read</code> or <code>mem.write</code></td></tr>
+<tr><td><code>EXECUTE</code></td><td>tick</td><td>HALT</td><td><code>HALTED</code></td><td>stops</td></tr>
+<tr><td><code>WAIT_DATA</code></td><td>tick</td><td>the reply arrived</td><td><code>FETCH</code></td><td>LOAD: the byte goes in the register</td></tr>
+</tbody></table></div>
+<figure class="diagram"><svg viewBox="0 0 900 400" role="img" aria-label="The starting design&#x27;s state machine: IDLE, FETCH, WAIT_FETCH, DECODE, EXECUTE, WAIT_DATA, HALTED and FAULT, with the moves between them" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16201b"/></marker><marker id="ah4r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d8142a"/></marker></defs><text x="20" y="26" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">The core&#x27;s state machine: it moves only on a tick</text><rect x="20" y="90" width="120" height="60" rx="10" fill="#d3dbdc" stroke="#16201b" stroke-width="2.4"/><text x="80" y="117" font-size="14" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">IDLE</text><text x="80" y="136" font-size="11" text-anchor="middle" fill="#16201b">no program yet</text><rect x="180" y="90" width="120" height="60" rx="10" fill="#5fc79a" stroke="#16201b" stroke-width="2.4"/><text x="240" y="117" font-size="14" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">FETCH</text><text x="240" y="136" font-size="11" text-anchor="middle" fill="#16201b">asks for 4 bytes</text><rect x="340" y="90" width="120" height="60" rx="10" fill="#fff" stroke="#16201b" stroke-width="2.4"/><text x="400" y="117" font-size="14" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">WAIT_FETCH</text><text x="400" y="136" font-size="11" text-anchor="middle" fill="#16201b">waits for them</text><rect x="500" y="90" width="120" height="60" rx="10" fill="#5fc79a" stroke="#16201b" stroke-width="2.4"/><text x="560" y="117" font-size="14" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">DECODE</text><text x="560" y="136" font-size="11" text-anchor="middle" fill="#16201b">reads the 4 bytes</text><rect x="660" y="90" width="120" height="60" rx="10" fill="#5fc79a" stroke="#16201b" stroke-width="2.4"/><text x="720" y="117" font-size="14" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">EXECUTE</text><text x="720" y="136" font-size="11" text-anchor="middle" fill="#16201b">does it</text><rect x="800" y="90" width="84" height="60" rx="10" fill="#d3dbdc" stroke="#16201b" stroke-width="2.4"/><text x="842" y="125" font-size="13" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">HALTED</text><rect x="660" y="250" width="120" height="60" rx="10" fill="#fff" stroke="#16201b" stroke-width="2.4"/><text x="720" y="277" font-size="14" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">WAIT_DATA</text><text x="720" y="296" font-size="11" text-anchor="middle" fill="#16201b">waits for the data</text><rect x="420" y="328" width="150" height="54" rx="10" fill="#ffb3bb" stroke="#d8142a" stroke-width="2.4"/><text x="495" y="352" font-size="14" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">FAULT</text><text x="495" y="370" font-size="11" text-anchor="middle" fill="#16201b">stops, shows why</text><line x1="140" y1="120" x2="176" y2="120" stroke="#16201b" stroke-width="2.2" marker-end="url(#ah4)"/><line x1="300" y1="120" x2="336" y2="120" stroke="#16201b" stroke-width="2.2" marker-end="url(#ah4)"/><line x1="460" y1="120" x2="496" y2="120" stroke="#16201b" stroke-width="2.2" marker-end="url(#ah4)"/><line x1="620" y1="120" x2="656" y2="120" stroke="#16201b" stroke-width="2.2" marker-end="url(#ah4)"/><line x1="780" y1="120" x2="796" y2="120" stroke="#16201b" stroke-width="2.2" marker-end="url(#ah4)"/><path d="M372,90 C372,52 428,52 428,88" fill="none" stroke="#16201b" stroke-width="2.2" marker-end="url(#ah4)"/><text x="400" y="48" font-size="12" font-weight="700" text-anchor="middle" fill="#16201b">no bytes yet: stall</text><text x="842" y="80" font-size="12" font-weight="700" text-anchor="middle" fill="#16201b">HALT</text><polyline points="690,150 690,200 260,200 260,154" fill="none" stroke="#16201b" stroke-width="2.2" marker-end="url(#ah4)"/><text x="475" y="194" font-size="12" font-weight="700" text-anchor="middle" fill="#16201b">ALU op or jump: next instruction</text><line x1="750" y1="150" x2="750" y2="246" stroke="#16201b" stroke-width="2.2" marker-end="url(#ah4)"/><text x="758" y="226" font-size="12" font-weight="700" text-anchor="start" fill="#16201b">LOAD / STORE</text><polyline points="660,280 220,280 220,154" fill="none" stroke="#16201b" stroke-width="2.2" marker-end="url(#ah4)"/><text x="440" y="274" font-size="12" font-weight="700" text-anchor="middle" fill="#16201b">the reply arrived</text><line x1="420" y1="150" x2="470" y2="324" stroke="#d8142a" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ah4r)"/><line x1="560" y1="150" x2="530" y2="324" stroke="#d8142a" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ah4r)"/><line x1="680" y1="310" x2="574" y2="348" stroke="#d8142a" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ah4r)"/><text x="400" y="320" font-size="11" font-weight="700" text-anchor="end" fill="#d8142a">fault reply</text><text x="586" y="232" font-size="11" font-weight="700" text-anchor="start" fill="#d8142a">bad opcode or register</text><text x="640" y="368" font-size="11" font-weight="700" text-anchor="start" fill="#d8142a">fault reply</text></svg></figure>
+<p>Section 9, agent brief: "Draw each core as a card with four lights (fetch, decode, execute, idle); light the one for its state; show its program's name and PC; a waiting core is dimmed."</p>
+</details>
+
+<h3>Design (30 min)</h3>
+<ol class="steps">
+<li><p><b>Open the app (3 min).</b> In your course folder, run <code>npm start</code>: it gets week 4 ready, then shows this page and your design note. If the app won't start, the same by hand:</p>
+<pre><code>git fetch upstream &amp;&amp; git merge upstream/week-4
+npm install</code></pre></li>
+
+<li><p><b>The tick table (8 min).</b> I share this program, its bytes and the instruction table. Make your own table and fill it in, one row per tick:</p>
+<pre><code>LOAD  R0, 0x020    ; memory 0x020 holds 21
+ADD   R0, R0
+HALT</code></pre>
+<div class="table-wrap"><table>
+<thead><tr><th>Tick</th><th>State</th><th>PC</th><th>IR</th><th>R0</th><th>What travels the bus</th></tr></thead>
+<tbody><tr><td>1</td><td></td><td><span class="term" tabindex="0" aria-describedby="tip-4"><code>0x000</code><span class="tip" role="tooltip" id="tip-4">0x means the number is written in hexadecimal (base 16). 0x010 is 16 and 0x3FF is 1023, so 0x000–0x3FF are the 1,024 bytes of 1 KB.</span></span></td><td></td><td></td><td></td></tr><tr><td>2</td><td></td><td></td><td></td><td></td><td></td></tr><tr><td>…</td><td></td><td></td><td></td><td></td><td></td></tr></tbody></table></div>
+<p>The rules: the core only acts on a tick; to get bytes it sends the bus a request and waits; the bytes it gets during a tick are used on the <b>next</b> tick (they're latched). Then in the chat: why does <code>LOAD</code> take one tick more than <code>ADD</code>?</p></li>
+
+<li><p><b>The core's state machine (12 min).</b> Fill in section 4 as a table (from, event, condition, to, what it does), starting from your tick table. Include what happens when the bytes <b>haven't arrived yet</b>, when the instruction is <b>invalid</b>, and when memory answers with a fault. Compare with the starting design above when I share it.</p></li>
+
+<li><p><b>Instructions as bytes (5 min).</b> In section 3, encode by hand, 4 bytes each, from the instruction table: <code>LOADI R0, 9</code>, <code>STORE R0, 0x3F2</code> and <code>JNZ 0x008</code>. The address goes in bytes 3 and 4, high byte first. You've just done by hand what <code>decode()</code> does in reverse.</p></li>
+
+<li><p><b>The agent brief, in two lines (2 min).</b> At the top of section 9: what each core should look like on next week's board, and what a waiting core looks like.</p></li>
+</ol>
+
+<h3>Build (30 min)</h3>
+<ol class="steps" start="6">
+<li><p><b><code>decode()</code> (with the agent, in week 5's class).</b> In <code>core/isa.ts</code>, <code>TODO(week 4, decode)</code> inside <code>decode(bytes)</code>. Run the tests first and watch them fail:</p>
+<pre><code>npx vitest tests/week-04</code></pre>
+<p class="check">✅ The <code>decode</code> tests fail with errors that start <code>week 4:</code>. That's the stub telling you where to work. Leave Vitest running; it re-runs every time you save.</p>
+<p>Then, together:</p>
+<ul>
+<li>Split the 4 bytes: <code>const [opcode, a, b, c] = bytes;</code> and the address <code>(b &lt;&lt; 8) | c</code>.</li>
+<li>A <code>switch</code> on the opcode (<code>OPCODES</code> at the top of the file), one <code>case</code> per instruction, returning <code>{ ok: true, instruction: { op, ... } }</code>.</li>
+<li>Every way it can be wrong is an answer, not a crash: an unknown opcode, a register outside R0–R3, an address outside memory each return <code>{ ok: false, error }</code>. That's the <code>FAULT</code> row of your section 4.</li>
+</ul>
+<figure class="diagram"><svg viewBox="0 0 900 330" role="img" aria-label="decode() splits 4 bytes into opcode, register and a two-byte address, and returns an instruction or an error" style="min-width:640px" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ah4b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16201b"/></marker></defs><text x="20" y="30" font-size="17" font-weight="800" text-anchor="start" fill="#16201b">decode(): 4 bytes in, an instruction (or an error) out</text><rect x="45" y="60" width="170" height="74" rx="10" fill="#5fc79a"/><rect x="40" y="56" width="170" height="74" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="125" y="92" font-size="26" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">01</text><text x="125" y="116" font-size="13" text-anchor="middle" fill="#16201b">opcode · LOAD</text><rect x="235" y="60" width="170" height="74" rx="10" fill="#ffcb12"/><rect x="230" y="56" width="170" height="74" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="315" y="92" font-size="26" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">00</text><text x="315" y="116" font-size="13" text-anchor="middle" fill="#16201b">a · register R0</text><rect x="425" y="60" width="170" height="74" rx="10" fill="#d3dbdc"/><rect x="420" y="56" width="170" height="74" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="505" y="92" font-size="26" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">00</text><text x="505" y="116" font-size="13" text-anchor="middle" fill="#16201b">b · address, high byte</text><rect x="615" y="60" width="170" height="74" rx="10" fill="#d3dbdc"/><rect x="610" y="56" width="170" height="74" rx="10" fill="none" stroke="#16201b" stroke-width="2.6"/><text x="695" y="92" font-size="26" font-weight="800" text-anchor="middle" fill="#16201b" class="mono">20</text><text x="695" y="116" font-size="13" text-anchor="middle" fill="#16201b">c · address, low byte</text><polyline points="425,146 425,154 775,154 775,146" fill="none" stroke="#16201b" stroke-width="2"/><text x="600" y="176" font-size="14" font-weight="700" text-anchor="middle" fill="#16201b" class="mono">(b &lt;&lt; 8) | c = 0x020</text><line x1="300" y1="150" x2="300" y2="196" stroke="#16201b" stroke-width="2.2" marker-end="url(#ah4b)"/><rect x="40" y="200" width="590" height="50" rx="10" fill="#fff" stroke="#16201b" stroke-width="2.4"/><text x="335" y="230" font-size="14" font-weight="700" text-anchor="middle" fill="#16201b" class="mono">{ ok: true, instruction: { op: "LOAD", reg: 0, address: 0x020 } }</text><rect x="650" y="200" width="230" height="50" rx="10" fill="#fff" stroke="#d8142a" stroke-width="2.4" stroke-dasharray="6 4"/><text x="765" y="221" font-size="12" font-weight="700" text-anchor="middle" fill="#d8142a">bad opcode, register, address</text><text x="765" y="239" font-size="12" font-weight="700" text-anchor="middle" fill="#d8142a" class="mono">{ ok: false, error }</text><text x="20" y="284" font-size="13" text-anchor="start" fill="#585654">Every instruction uses the same 4 slots: ADD and SUB put the second register in b; LOADI puts its value in c;</text><text x="20" y="304" font-size="13" text-anchor="start" fill="#585654">JMP, JZ and JNZ only use the address. NOP, HALT and IRET are just the opcode.</text></svg></figure>
+<p>With the agent (Week 5's page has how), say your approach first, then this:</p>
+<pre class="prompt"><code>My approach: (your words: how you split the 4 bytes, and what counts as wrong)
+
+In core/isa.ts only, fill in TODO(week 4, decode) in decode(bytes). Don't change anything
+outside that region, or any test. Tell me what you'll change before you change it, and explain
+each line you write. Then run: npx vitest run tests/week-04/isa.test.ts -t "^decode "</code></pre>
+<p class="check">✅ The <code>decode</code> tests in <code>tests/week-04/isa.test.ts</code> pass. Commit: <code>week 4: decode</code>.</p></li>
+
+<li><p><b>Push (3 min).</b> What's left goes home.</p>
+<pre><code>git push</code></pre></li>
+</ol>
+</section>
+
+<section id="home">
+<h2>Take-home</h2>
+<p>Due before next session.</p>
+<ol class="steps">
+<li><p><b><code>encode()</code></b>, the opposite of <code>decode()</code>: <code>TODO(week 4, encode)</code> in <code>core/isa.ts</code>. It turns an instruction back into its 4 bytes; the assembler (<code>npm run asm</code>) uses it.</p>
+<p class="check">✅ The <code>encode</code> tests in <code>tests/week-04/isa.test.ts</code> pass, including "is the exact opposite of decode". Commit: <code>week 4: encode</code>.</p></li>
+<li><p><b>Finish your design note</b> in <code>docs/notes/week-04.md</code>, all nine sections. In particular:</p>
+<ul>
+<li><b>Section 5, the count-down traced:</b> the first 10 ticks of the count-down program (<code>programs/countdown.asm</code>): for each tick, the core's state, the PC, <code>R0</code>, and what the board shows. Check your bytes with <code>npm run asm -- programs/countdown.asm</code> once <code>encode()</code> works.</li>
+<li><b>Section 7, decisions:</b> at least two, with the option you didn't pick (how the board shows a <b>waiting</b> core; bytes, text or both for the current instruction).</li>
+<li><b>Section 9, agent brief:</b> what your agent builds next week in <code>board/student/core.tsx</code>: <code>board-cycle-step</code> (each core state to fetch, decode, execute or idle), <code>board-draw-core</code> (one core with the current step lit, its program and PC), <code>board-fetch-address</code> (this core's fetch among the tick's packets).</li>
+</ul></li>
+<li><p><b>Your storyboard:</b> one instruction (<code>LOAD R0, 0x020</code>), tick by tick, as your board shows it. Commit it as <code>docs/notes/week-04-board.jpg</code> (or <code>.png</code>) and link it in section 6.</p></li>
+<li><p><b>Commit and push</b> your <code>work</code> branch.</p></li>
+</ol>
+<h3>Acceptance criteria</h3>
+<ul class="checklist">
+<li><span class="box"></span><code>npx vitest run tests/week-04</code> passes: <code>decode</code> and <code>encode</code>, and every section of your note filled in with the storyboard there.</li>
+<li><span class="box"></span>Section 4 is a state table that covers bytes not arrived yet, an invalid instruction, and a fault reply.</li>
+<li><span class="box"></span>Section 3 has your three hand-encoded instructions, 4 bytes each.</li>
+<li><span class="box"></span>Section 5 traces the count-down's first 10 ticks, and says why <code>LOAD</code> takes a tick more than <code>ADD</code>.</li>
+<li><span class="box"></span>One commit per task (<code>week 4: …</code>), and <code>work</code> is pushed to your fork.</li>
+</ul>
+</section>
+
+<section id="codex">
+<h2>Using Codex this week</h2>
+<p>The design is yours: Codex shouldn't write your note. Codex is good to argue with, and can write <code>decode()</code> and <code>encode()</code> once you've said your approach. Run <code>codex</code> in a terminal in your course folder.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Fine to ask Codex</th><th>You must be able to explain yourself</th></tr></thead>
+<tbody>
+<tr><td>"Here's my state table. Which case did I miss?"</td><td>Every row of your state table</td></tr>
+<tr><td>"How does a real CPU's fetch–decode–execute cycle work?"</td><td>Why the core waits in <code>WAIT_FETCH</code></td></tr>
+<tr><td>"Quiz me on encoding <code>JNZ 0x008</code>."</td><td>The 4 bytes of each instruction you encoded</td></tr>
+<tr><td>"Critique my storyboard: what would confuse someone seeing it for the first time?"</td><td>What the board shows on each tick of a <code>LOAD</code>, and why</td></tr>
+<tr><td>"<code>encode</code> is decode backwards: here's my plan. Write it and explain it."</td><td>Why <code>encode(decode(b))</code> gives back <code>b</code></td></tr>
+</tbody></table></div>
+</section>
+
+<section id="explain">
+<h2>Explain it back</h2>
+<p>Before next session, explain your design note to me without notes or AI: book a 5-minute slot with me, or record a 3-minute video (your face and your sketch, no notes) answering the two questions I post after class. Be ready to:</p>
+<ol>
+<li><b>Walk through your state machine:</b> why does a waiting state exist at all? What happens if the bytes haven't arrived yet?</li>
+<li><b>The 4 bytes of one instruction</b> you encoded, and the line of your <code>decode()</code> that reads each.</li>
+<li><b>Why does <code>LOAD</code> take one tick more than <code>ADD</code>?</b></li>
+<li><b>Walk through your storyboard:</b> what the board shows during decode, and one decision you made about it, with the alternative.</li>
+</ol>
+</section>
+
+<section id="stretch">
+<h2>Stretch</h2>
+<ul>
+<li>Design a <code>CALL</code>/<code>RET</code> pair. What would the core need that it doesn't have yet? (A stack? Where does it live?)</li>
+<li>Design how the board shows a <b>fault</b> (an invalid instruction, or a fetch that runs off the end of memory) so someone watching sees exactly which instruction caused it.</li>
+<li>Read the rest of ARCHITECTURE.md's instruction table. Which instruction lets a program loop? Which flag does it read, and who sets it?</li>
+</ul>
+</section>
+
+</main>
+<script data-glossary>
+(function () {
+  var terms = document.querySelectorAll(".term");
+  // Keep the explanation inside the viewport (16px gutter), near the right edge too.
+  function place(t) {
+    var tip = t.querySelector(".tip");
+    // Hidden tips are display:none (so they never widen the page): show it to measure it.
+    tip.style.left = "0px";
+    tip.style.display = "block";
+    var r = tip.getBoundingClientRect(), dx = 0, max = document.documentElement.clientWidth - 16;
+    tip.style.display = "";
+    if (r.right > max) dx = max - r.right;
+    if (r.left + dx < 16) dx = 16 - r.left;
+    tip.style.left = dx + "px";
+  }
+  function closeAll(except) {
+    terms.forEach(function (t) { if (t !== except) t.classList.remove("open"); });
+  }
+  terms.forEach(function (t) {
+    t.addEventListener("mouseenter", function () { place(t); });
+    t.addEventListener("focus", function () { place(t); });
+    // Tap (touch) toggles; hover and keyboard focus are pure CSS.
+    t.addEventListener("click", function (e) {
+      e.stopPropagation();
+      closeAll(t);
+      place(t);
+      t.classList.toggle("open");
+    });
+  });
+  document.addEventListener("click", function () { closeAll(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    closeAll();
+    var a = document.activeElement;
+    if (a && a.classList.contains("term")) a.blur();
+  });
+})();
+</script>
+</body>
+</html>

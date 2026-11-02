@@ -1,0 +1,511 @@
+{
+  "board-cycle-step": {
+    "code": "switch (phase) {\n  case \"FETCH\":\n  case \"WAIT_FETCH\":\n    return \"fetch\";\n  case \"DECODE\":\n    return \"decode\";\n  case \"EXECUTE\":\n  case \"WAIT_DATA\":\n    return \"execute\";\n  default:\n    return \"idle\";\n}",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "The board lights one of three steps. The phases where the core is getting its instruction (`FETCH`, and `WAIT_FETCH` while the bytes travel) light fetch."
+      },
+      {
+        "line": 4,
+        "explain": "`DECODE` lights decode: the core is working out what the 4 bytes mean."
+      },
+      {
+        "line": 6,
+        "explain": "`EXECUTE` lights execute, and so does `WAIT_DATA`: a `LOAD` or `STORE` is still doing its work, it's just waiting for memory's answer."
+      },
+      {
+        "line": 9,
+        "explain": "Every other phase (`IDLE`, `HALTED`, `FAULT`) means the core isn't running an instruction, so it shows as idle."
+      }
+    ]
+  },
+  "board-fetch-address": {
+    "code": "const fetch = frame.packets.find((p) => p.type === \"mem.read\" && p.from === \"cpu\" && p.core === core && p.length === 4);\nreturn fetch?.address ?? null;",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "A fetch is a `mem.read` the CPU sent for this core asking for 4 bytes: a whole instruction. A `LOAD` reads only 1 byte, so the length tells them apart."
+      },
+      {
+        "line": 1,
+        "explain": "The fetch's address is where this core's PC was. No fetch this tick: `null`, and the board shows nothing."
+      }
+    ]
+  },
+  "board-draw-core": {
+    "code": "const step = cycleStep(core.phase);\nconst steps: CycleStep[] = [\"fetch\", \"decode\", \"execute\"];\nconst fetched = fetchAddress(frame, core.id);\nconst title = `Core ${core.id}${core.inHandler ? \" ⚡\" : \"\"}${core.process ? ` · ${core.process}` : \" · idle\"}`;\n// A short lane (many cores) gets one row: the name, then three small step boxes on the right.\nif (rect.h < 14) {\n  const boxW = 12;\n  return (\n    <g data-explain={explainCore(core)}>\n      <Box rect={rect} fill={INK.white} width={1.2} />\n      <Label x={rect.x + 2} y={rect.y + rect.h / 2} anchor=\"start\" size={10.5} weight={700}>\n        {title}\n      </Label>\n      {steps.map((name, i) => {\n        const box = { x: rect.x + rect.w - (3 - i) * (boxW + 1) - 1, y: rect.y + 0.8, w: boxW, h: rect.h - 1.6 };\n        return (\n          <g key={name}>\n            <Box rect={box} fill={step === name ? colour : INK.lightGrey} width={1} radius={1} explain={`${explainPhase(name)}${step === name ? ` ${explainCore(core)}` : \"\"}`} />\n            <Label x={box.x + box.w / 2} y={box.y + box.h / 2} size={9} weight={step === name ? 700 : 400}>\n              {name}\n            </Label>\n          </g>\n        );\n      })}\n    </g>\n  );\n}\nconst stepW = (rect.w - 8) / 3;\nreturn (\n  <g data-explain={explainCore(core)}>\n    <Box rect={rect} fill={INK.white} shadow={3} />\n    <Label x={rect.x + 3} y={rect.y + 4} anchor=\"start\" size={12} weight={700}>\n      {title}\n    </Label>\n    {steps.map((name, i) => {\n      const box = { x: rect.x + 2 + i * (stepW + 2), y: rect.y + 8, w: stepW, h: Math.max(6, rect.h - 16) };\n      return (\n        <g key={name}>\n          <Box rect={box} fill={step === name ? colour : INK.lightGrey} width={step === name ? 2.2 : 1.2} explain={`${explainPhase(name)}${step === name ? ` ${explainCore(core)}` : \"\"}`} />\n          <Label x={box.x + box.w / 2} y={box.y + box.h / 2} size={11} weight={step === name ? 700 : 500}>\n            {name}\n          </Label>\n        </g>\n      );\n    })}\n    <Label x={rect.x + 3} y={rect.y + rect.h - 3.5} anchor=\"start\" size={10} weight={500}>\n      {`PC ${hex(core.pc)}${core.instruction ? ` · ${core.instruction}` : \"\"}${fetched !== null ? ` · fetching ${hex(fetched)}` : \"\"}`}\n    </Label>\n  </g>\n);",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Work out what to draw: which step is lit, the three step names in order, the address being fetched (if any) and the title (core number, ⚡ in a handler, its program or idle)."
+      },
+      {
+        "line": 5,
+        "explain": "With many cores each lane is short, so it's drawn on one row: the title on the left, and three small boxes on the right, the lit one in the core's colour."
+      },
+      {
+        "line": 27,
+        "explain": "Otherwise, the full card: the title at the top, three step boxes side by side (the lit one in the core's colour, with a thicker border), and the PC, the current instruction and any fetch address along the bottom."
+      }
+    ]
+  },
+  "cpu-latch-reply": {
+    "code": "if (message.replyTo === undefined) return;\nconst core = waiting.get(message.replyTo);\nif (core === undefined) return;\nwaiting.delete(message.replyTo);\nif (message.type === \"mem.data\") cpu = receiveReply(cpu, core, { type: \"memData\", bytes: message.payload.bytes });\nelse if (message.type === \"mem.ack\") cpu = receiveReply(cpu, core, { type: \"memAck\" });\nelse if (message.type === \"fault\" || message.type === \"error\") cpu = receiveReply(cpu, core, { type: \"memFault\", message: message.payload.message });",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Only replies matter here, and only replies to a request this CPU sent: look the request id (`replyTo`) up in `waiting` to find which core asked."
+      },
+      {
+        "line": 3,
+        "explain": "That request is answered now, so forget it."
+      },
+      {
+        "line": 4,
+        "explain": "Turn the bus message into the core's own kind of reply (`memData`, `memAck` or `memFault`) and hand it to that core. `receiveReply` keeps it for the next tick: the core only uses it then, like a flip-flop."
+      }
+    ]
+  },
+  "cpu-send-effects": {
+    "code": "for (const effect of effects) {\n  const id =\n    effect.kind === \"read\"\n      ? client.send(\"mem.read\", \"memory\", { address: effect.address, length: effect.length })\n      : client.send(\"mem.write\", \"memory\", { address: effect.address, bytes: effect.bytes });\n  waiting.set(id, effect.core);\n}",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Each effect is a core asking memory for something. A read becomes a `mem.read` with the address and length, a write a `mem.write` with the bytes. `send` doesn't wait: it returns the new request's id."
+      },
+      {
+        "line": 5,
+        "explain": "Remember which core asked, under that id, so the reply can be handed to the right core when it comes back."
+      }
+    ]
+  },
+  "fetch": {
+    "code": "if (core.pc + INSTRUCTION_SIZE > MEMORY_SIZE) return faultWith(core, `PC ${hex(core.pc)} ran off the end of memory`);\nreturn {\n  core: moveTo(core, \"WAIT_FETCH\"),\n  effects: [{ kind: \"read\", address: core.pc, length: INSTRUCTION_SIZE }],\n};",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "An instruction is 4 bytes. If they don't all fit before the end of memory, there's nothing valid to fetch: the core faults."
+      },
+      {
+        "line": 1,
+        "explain": "Otherwise the core doesn't call memory itself: it moves to `WAIT_FETCH` and returns a read effect for the 4 bytes at PC. The CPU shell sends it on the bus."
+      }
+    ]
+  },
+  "await-instruction": {
+    "code": "if (reply === null) return { core: { ...core, stalls: core.stalls + 1 }, effects: [] };\nif (reply.type === \"memFault\") return faultWith(core, reply.message);\nif (reply.type !== \"memData\") return faultWith(core, `expected instruction bytes, got ${reply.type}`);\nreturn { core: moveTo(core, \"DECODE\", { ir: reply.bytes }), effects: [] };",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "No reply yet: stay in `WAIT_FETCH` and count a stall. The core tries again next tick."
+      },
+      {
+        "line": 1,
+        "explain": "Memory said no (a fault), or sent something that isn't instruction bytes: the core can't go on, so it faults."
+      },
+      {
+        "line": 3,
+        "explain": "The bytes arrived: put them in the instruction register (IR) and move on to `DECODE`."
+      }
+    ]
+  },
+  "decode-step": {
+    "code": "if (core.ir.length !== INSTRUCTION_SIZE) return faultWith(core, `IR holds ${core.ir.length} bytes, not ${INSTRUCTION_SIZE}`);\nconst result = decode([core.ir[0], core.ir[1], core.ir[2], core.ir[3]]);\nif (!result.ok) return faultWith(core, `at ${hex(core.pc)}: ${result.error}`);\nreturn { core: moveTo(core, \"EXECUTE\", { instruction: result.instruction }), effects: [] };",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "IR must hold exactly 4 bytes; anything else is a broken fetch."
+      },
+      {
+        "line": 1,
+        "explain": "Turn the 4 bytes into an instruction with your week-4 `decode`. A bad opcode, register or address faults, with where it happened."
+      },
+      {
+        "line": 3,
+        "explain": "A good instruction: keep it and move on to `EXECUTE`."
+      }
+    ]
+  },
+  "execute-core": {
+    "code": "case \"LOAD\":\n  return { core: moveTo(core, \"WAIT_DATA\"), effects: [{ kind: \"read\", address: instruction.address, length: 1 }] };\ncase \"ADD\": {\n  const sum = regs[instruction.reg] + regs[instruction.src];\n  const result = sum & 0xff;\n  return {\n    core: finish(core, { registers: setRegister(core, instruction.reg, result), flags: { zero: result === 0, carry: sum > 0xff } }),\n    effects: [],\n  };\n}\ncase \"HALT\":\n  return { core: moveTo(core, \"HALTED\"), effects: [] };",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "`LOAD` needs a byte from memory: return a 1-byte read effect and wait in `WAIT_DATA`. The register only changes when the byte arrives."
+      },
+      {
+        "line": 2,
+        "explain": "`ADD` adds two registers. A register holds 8 bits, so the result wraps (`& 0xff`). `zero` says the result is 0; `carry` says the real sum didn't fit. `finish` moves the PC on by 4 and goes back to `FETCH`."
+      },
+      {
+        "line": 10,
+        "explain": "`HALT` stops the core for good."
+      }
+    ]
+  },
+  "execute-rest": {
+    "code": "case \"STORE\":\n  return {\n    core: moveTo(core, \"WAIT_DATA\"),\n    effects: [{ kind: \"write\", address: instruction.address, bytes: [regs[instruction.reg]] }],\n  };\ncase \"SUB\": {\n  const difference = regs[instruction.reg] - regs[instruction.src];\n  const result = difference & 0xff;\n  return {\n    core: finish(core, { registers: setRegister(core, instruction.reg, result), flags: { zero: result === 0, carry: difference < 0 } }),\n    effects: [],\n  };\n}\ncase \"LOADI\":\n  return {\n    core: finish(core, { registers: setRegister(core, instruction.reg, instruction.value), flags: { ...core.flags, zero: instruction.value === 0 } }),\n    effects: [],\n  };\ncase \"JMP\":\n  return { core: finish(core, { pc: instruction.address }), effects: [] };\ncase \"JZ\":\ncase \"JNZ\": {\n  const jump = instruction.op === \"JZ\" ? core.flags.zero : !core.flags.zero;\n  return { core: jump ? finish(core, { pc: instruction.address }) : finish(core), effects: [] };\n}",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "`STORE` returns a write effect with the register's byte and waits in `WAIT_DATA` for memory's ack."
+      },
+      {
+        "line": 5,
+        "explain": "`SUB` is like `ADD`: the result wraps to 8 bits, `zero` is set when it's 0, and `carry` means it went below 0 (a borrow)."
+      },
+      {
+        "line": 13,
+        "explain": "`LOADI` puts the number from the instruction straight into the register: no memory trip. It sets `zero` and leaves `carry` as it was."
+      },
+      {
+        "line": 18,
+        "explain": "`JMP` always jumps: the PC becomes the address instead of moving on by 4."
+      },
+      {
+        "line": 20,
+        "explain": "`JZ` jumps when the last result was zero, `JNZ` when it wasn't. Not jumping is just the next instruction (PC + 4)."
+      }
+    ]
+  },
+  "await-data": {
+    "code": "if (reply === null) return { core: { ...core, stalls: core.stalls + 1 }, effects: [] };\nif (reply.type === \"memFault\") return faultWith(core, reply.message);\nconst instruction = core.instruction;\nif (instruction?.op === \"LOAD\" && reply.type === \"memData\") {\n  const value = reply.bytes[0] ?? 0;\n  return { core: finish(core, { registers: setRegister(core, instruction.reg, value), flags: { ...core.flags, zero: value === 0 } }), effects: [] };\n}\nif (instruction?.op === \"STORE\" && reply.type === \"memAck\") return { core: finish(core), effects: [] };\nreturn faultWith(core, `unexpected ${reply.type} while waiting for ${instruction?.op ?? \"nothing\"}`);",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "No reply yet: stay in `WAIT_DATA` and count a stall. A fault from memory faults the core."
+      },
+      {
+        "line": 2,
+        "explain": "A `LOAD` waits for `mem.data`: the byte goes in the register, `zero` follows it, and the core moves on (PC + 4, back to `FETCH`)."
+      },
+      {
+        "line": 7,
+        "explain": "A `STORE` waits for `mem.ack`: memory wrote it, so the core moves on."
+      },
+      {
+        "line": 8,
+        "explain": "Any other reply means something went wrong: fault, and say what came instead."
+      }
+    ]
+  },
+  "pick-next": {
+    "code": "return scheduler.processes.find((p) => p.state === \"READY\");",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "The queue is the list in order, so the next program is simply the first one that's `READY`."
+      }
+    ]
+  },
+  "switch-out": {
+    "code": "const running = scheduler.processes.find((p) => p.core === core.id && p.state === \"RUNNING\");\nif (!running) return { scheduler, core: clearCore(core) };\nconst saved: Process = {\n  ...running,\n  state: processFsm.go(running.state, state),\n  context: saveContext(core),\n  core: null,\n  instructions: running.instructions + core.retired,\n};\nconst others = scheduler.processes.filter((p) => p.pid !== running.pid);\nreturn { scheduler: { ...scheduler, processes: [...others, saved] }, core: clearCore(core) };",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Find the program running on this core. If there isn't one, there's nothing to save: just clear the core."
+      },
+      {
+        "line": 2,
+        "explain": "Save it: its new state (`READY`, `DONE` or `FAILED`, checked by the process FSM), its context (registers, PC, flags) copied from the core, no core, and the instructions it ran there added to its count."
+      },
+      {
+        "line": 9,
+        "explain": "Move it to the back of the queue so the others get their turn, and clear the core for the next program."
+      }
+    ]
+  },
+  "$tests": {
+    "tests/week-05/asm.test.ts > assembler turns instructions into 4 bytes each": [],
+    "tests/week-05/asm.test.ts > assembler resolves labels, including ones defined later": [],
+    "tests/week-05/asm.test.ts > assembler counts labels from the origin": [],
+    "tests/week-05/asm.test.ts > assembler supports .equ constants and symbols passed in": [],
+    "tests/week-05/asm.test.ts > assembler supports raw .byte data": [],
+    "tests/week-05/asm.test.ts > assembler explains an unknown instruction": [],
+    "tests/week-05/asm.test.ts > assembler explains a bad register": [],
+    "tests/week-05/asm.test.ts > assembler explains an unknown name": [],
+    "tests/week-05/asm.test.ts > assembler explains a value too big for a byte": [],
+    "tests/week-05/asm.test.ts > assembler explains a label defined twice": [],
+    "tests/week-05/asm.test.ts > assembler explains too few operands": [],
+    "tests/week-05/board-core.test.ts > cycleStep: which step a core is on names the step of each phase": [
+      "board-cycle-step"
+    ],
+    "tests/week-05/board-core.test.ts > cycleStep: which step a core is on counts waiting for memory as part of the step that asked": [
+      "board-cycle-step"
+    ],
+    "tests/week-05/board-core.test.ts > cycleStep: which step a core is on walks fetch -> decode -> execute for every instruction in a recorded run": [
+      "board-cycle-step"
+    ],
+    "tests/week-05/board-core.test.ts > fetchAddress: where the instruction comes from is the core's PC whenever it fetches": [
+      "board-fetch-address"
+    ],
+    "tests/week-05/board-core.test.ts > fetchAddress: where the instruction comes from is null on a tick the core didn't fetch, and doesn't pick up another core's fetch": [
+      "board-fetch-address"
+    ],
+    "tests/week-05/button-over-bus.test.ts > the button on a running system reports its state to the dashboard": [],
+    "tests/week-05/button-over-bus.test.ts > the button on a running system the host refuses kinds it doesn't know": [],
+    "tests/week-05/button.test.ts > button starts released and does nothing on a tick": [],
+    "tests/week-05/button.test.ts > button raises exactly one interrupt the tick after a press": [],
+    "tests/week-05/button.test.ts > button treats a double press within one tick as one press": [],
+    "tests/week-05/button.test.ts > button describes itself for the dashboard": [],
+    "tests/week-05/button.test.ts > button only moves along its transition table": [],
+    "tests/week-05/config-fields.test.ts > Add peripheral form fields builds a field per config property, with defaults": [],
+    "tests/week-05/config-fields.test.ts > Add peripheral form fields gives no fields for a peripheral without config": [],
+    "tests/week-05/cpu-core.test.ts > one step at a time: fetch, decode, LOAD, ADD, HALT FETCH asks memory for the 4 bytes at PC": [
+      "fetch"
+    ],
+    "tests/week-05/cpu-core.test.ts > one step at a time: fetch, decode, LOAD, ADD, HALT WAIT_FETCH waits (and counts a stall) until the bytes arrive": [
+      "fetch",
+      "await-instruction"
+    ],
+    "tests/week-05/cpu-core.test.ts > one step at a time: fetch, decode, LOAD, ADD, HALT DECODE turns IR into an instruction, or FAULTs": [
+      "fetch",
+      "await-instruction",
+      "decode-step"
+    ],
+    "tests/week-05/cpu-core.test.ts > one step at a time: fetch, decode, LOAD, ADD, HALT takes 4 ticks for ADD and 5 for LOAD": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "await-data"
+    ],
+    "tests/week-05/cpu-core.test.ts > one step at a time: fetch, decode, LOAD, ADD, HALT adds two numbers from memory": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "await-data"
+    ],
+    "tests/week-05/cpu-core.test.ts > one step at a time: fetch, decode, LOAD, ADD, HALT sets carry and zero when ADD wraps past 255": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "await-data"
+    ],
+    "tests/week-05/cpu-core.test.ts > one step at a time: fetch, decode, LOAD, ADD, HALT LOAD sets the zero flag from the loaded value": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "await-data"
+    ],
+    "tests/week-05/cpu-core.test.ts > one step at a time: fetch, decode, LOAD, ADD, HALT can read the last byte of memory": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "await-data"
+    ],
+    "tests/week-05/cpu-core.test.ts > one step at a time: fetch, decode, LOAD, ADD, HALT FAULTs instead of fetching past the end of memory": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-rest"
+    ],
+    "tests/week-05/cpu-core.test.ts > one step at a time: fetch, decode, LOAD, ADD, HALT FAULTs on an address that doesn't fit in memory": [
+      "fetch",
+      "await-instruction",
+      "decode-step"
+    ],
+    "tests/week-05/cpu-core.test.ts > one step at a time: fetch, decode, LOAD, ADD, HALT refuses to jump between phases that aren't connected": [],
+    "tests/week-05/cpu-core.test.ts > the rest of the instruction set STORE writes a register to memory": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest",
+      "await-data"
+    ],
+    "tests/week-05/cpu-core.test.ts > the rest of the instruction set SUB borrows below zero and sets carry": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest"
+    ],
+    "tests/week-05/cpu-core.test.ts > the rest of the instruction set SUB sets zero when the result is 0": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest"
+    ],
+    "tests/week-05/cpu-core.test.ts > the rest of the instruction set JMP lands exactly on its target": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest"
+    ],
+    "tests/week-05/cpu-core.test.ts > the rest of the instruction set JZ jumps only when zero is set, and lands exactly on its target": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest"
+    ],
+    "tests/week-05/cpu-core.test.ts > the rest of the instruction set JNZ jumps only when zero isn't set, and lands exactly on its target": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest"
+    ],
+    "tests/week-05/cpu-core.test.ts > the rest of the instruction set a taken jump's next fetch is at the target": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-rest"
+    ],
+    "tests/week-05/cpu-core.test.ts > the rest of the instruction set runs the count-down loop": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest",
+      "await-data"
+    ],
+    "tests/week-05/cpu-core.test.ts > the rest of the instruction set runs programs written in assembly, too": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest",
+      "await-data"
+    ],
+    "tests/week-05/dashboard-bus.test.ts > dashboard over the bus joining late, it sees every component's current status without waiting for a tick": [],
+    "tests/week-05/dashboard-bus.test.ts > dashboard over the bus steps the clock and follows the bus's status": [],
+    "tests/week-05/dashboard-bus.test.ts > dashboard over the bus loads a program: program.load waits for Memory's ack, then process.add waits for the CPU's ok": [],
+    "tests/week-05/dashboard-bus.test.ts > dashboard over the bus rejects with the bus's reason when a request is refused": [],
+    "tests/week-05/dashboard-bus.test.ts > dashboard over the bus sends input straight to a peripheral": [],
+    "tests/week-05/dashboard-demo.test.ts > Load demo adds the demo devices the host knows, then loads each program once": [],
+    "tests/week-05/dashboard-nodes.test.ts > CPU core card (in class) shows the FSM state and the PC": [],
+    "tests/week-05/dashboard-nodes.test.ts > CPU core card (in class) shows the current instruction and all four registers in hex": [],
+    "tests/week-05/dashboard-nodes.test.ts > CPU core card (in class) marks a core that is running an interrupt handler": [],
+    "tests/week-05/dashboard-nodes.test.ts > LED node (take-home) looks lit when ON and dark when OFF": [],
+    "tests/week-05/dashboard-nodes.test.ts > LED node (take-home) shows the register value": [],
+    "tests/week-05/dashboard-nodes.test.ts > memory highlight (take-home) highlights every byte of the last read": [],
+    "tests/week-05/dashboard-nodes.test.ts > memory highlight (take-home) highlights the last write": [],
+    "tests/week-05/dashboard-nodes.test.ts > memory highlight (take-home) prefers write when an address was both read and written": [],
+    "tests/week-05/dashboard-nodes.test.ts > memory highlight (take-home) handles no accesses yet": [],
+    "tests/week-05/dashboard-state.test.ts > dashboard state starts from welcome: tick, speed and who is connected": [],
+    "tests/week-05/dashboard-state.test.ts > dashboard state draws cpu, memory and peripherals but not the host": [],
+    "tests/week-05/dashboard-state.test.ts > dashboard state keeps the latest status per component and forgets components that leave": [],
+    "tests/week-05/dashboard-state.test.ts > dashboard state follows the bus's own status for the clock": [],
+    "tests/week-05/dashboard-state.test.ts > dashboard state links two drawn components when a message passes between them, and it is hot for a tick": [],
+    "tests/week-05/dashboard-state.test.ts > dashboard state ignores traffic to the bus and to everyone when drawing links": [],
+    "tests/week-05/dashboard-state.test.ts > dashboard state logs every message, in order": [],
+    "tests/week-05/dashboard-state.test.ts > dashboard state keeps only the newest LOG_LIMIT messages": [],
+    "tests/week-05/dashboard-state.test.ts > dashboard state starts fresh on a second welcome (the bus restarted): no old links, statuses or stalls": [],
+    "tests/week-05/dashboard-state.test.ts > dashboard state draws one edge per pair, peripheral first": [],
+    "tests/week-05/dashboard-state.test.ts > dashboard state gives a newcomer the first free spot in its lane, so two outputs never share one": [],
+    "tests/week-05/fsm.test.ts > defineFsm allows moves that are in the table": [],
+    "tests/week-05/fsm.test.ts > defineFsm always allows staying put": [],
+    "tests/week-05/fsm.test.ts > defineFsm refuses moves that aren't in the table": [],
+    "tests/week-05/host.test.ts > peripheral host gives peripherals spawned at the same time different slots": [],
+    "tests/week-05/host.test.ts > peripheral host frees the slot again when a spawn fails": [],
+    "tests/week-05/host.test.ts > peripheral host refuses a slot that is already taken": [],
+    "tests/week-05/integration.test.ts > CPU and Memory over the bus runs two programs on two cores to the right answer": [
+      "cpu-latch-reply",
+      "cpu-send-effects",
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest",
+      "await-data",
+      "pick-next"
+    ],
+    "tests/week-05/integration.test.ts > CPU and Memory over the bus produces exactly the same message trace every time": [],
+    "tests/week-05/integration.test.ts > CPU and Memory over the bus finishes both processes and frees the cores": [
+      "cpu-latch-reply",
+      "cpu-send-effects",
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest",
+      "pick-next",
+      "switch-out"
+    ],
+    "tests/week-05/integration.test.ts > CPU and Memory over the bus a fetch fault (running off the end of memory) stops only the program that caused it": [
+      "cpu-latch-reply",
+      "cpu-send-effects",
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest",
+      "await-data",
+      "pick-next",
+      "switch-out"
+    ],
+    "tests/week-05/led.test.ts > led starts OFF and asks for its register before it knows anything": [],
+    "tests/week-05/led.test.ts > led is ON at 128 and above, OFF below": [],
+    "tests/week-05/led.test.ts > led follows the register back down and keeps reading every tick": [],
+    "tests/week-05/led.test.ts > led describes itself for the dashboard": [],
+    "tests/week-05/led.test.ts > led only moves along its transition table": [],
+    "tests/week-05/led.test.ts > led lights up over the bus when a program stores to its register": [],
+    "tests/week-05/machine.test.ts > startMachine with 2 cores runs the demo programs to the end, in the page": [
+      "cpu-latch-reply",
+      "cpu-send-effects",
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest",
+      "await-data",
+      "pick-next",
+      "switch-out"
+    ],
+    "tests/week-05/machine.test.ts > startMachine with 8 cores runs the demo programs to the end, in the page": [
+      "cpu-latch-reply",
+      "cpu-send-effects",
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest",
+      "await-data",
+      "pick-next",
+      "switch-out"
+    ],
+    "tests/week-05/machine.test.ts > can start empty, and refuses a second machine with the same name": [],
+    "tests/week-05/programs-bundle.test.ts > programs/bundle.ts matches the .asm files": [],
+    "tests/week-05/programs.test.ts > every program in the catalogue assembles": [],
+    "tests/week-05/programs.test.ts > assembles handlers at their vector by default": [],
+    "tests/week-05/scheduler.test.ts > queue order pickNext returns the first READY process, not any READY one": [
+      "pick-next"
+    ],
+    "tests/week-05/scheduler.test.ts > queue order on one core, programs run one after another in the order they were added": [
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest",
+      "pick-next",
+      "switch-out"
+    ],
+    "tests/week-05/status.test.ts > status payloads button's view is a valid status payload": [],
+    "tests/week-05/status.test.ts > status payloads led's view is a valid status payload": [],
+    "tests/week-05/status.test.ts > status payloads timer's view is a valid status payload": [],
+    "tests/week-05/status.test.ts > status payloads seven-segment's view is a valid status payload": [],
+    "tests/week-05/status.test.ts > status payloads screen's view is a valid status payload": [],
+    "tests/week-05/status.test.ts > status payloads the CPU's view matches what the dashboard's CPU node reads": [],
+    "tests/week-05/transport-cpu.test.ts > runs two programs to the same answer, with the same trace, on both transports": [
+      "cpu-latch-reply",
+      "cpu-send-effects",
+      "fetch",
+      "await-instruction",
+      "decode-step",
+      "execute-core",
+      "execute-rest",
+      "await-data",
+      "pick-next",
+      "switch-out"
+    ]
+  }
+}

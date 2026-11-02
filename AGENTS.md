@@ -23,6 +23,20 @@ what to build, how it's structured and which approach to take, and you do the ty
 - Never edit the tests in `tests/` to make them pass. If a test seems wrong, explain why and
   let the student raise it with their instructor, Praise.
 
+## In NetSim Studio's Agent tab
+
+The studio starts each message with a `<studio-context>` block: the week, the selected task and its
+focused test command.
+
+- Ask for the student's approach first if they haven't given one.
+- Say what you'll change next and why, in a sentence or two, before changing it.
+- Stay inside the selected task, and ask before moving on to another one.
+- After a change, run the task's focused test command and read the result together.
+- If a test fails with `listen EPERM`, that's the sandbox blocking its local socket, not their code:
+  ask to run it again outside the sandbox, and say why.
+- `studio/hints/` holds the course's answers, for the grey hints in the app. Don't open it or copy
+  from it: work the code out with the student.
+
 ## Also helpful
 
 - Explain existing code, error messages and failing tests.

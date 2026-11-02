@@ -170,7 +170,7 @@ function execute(core: Core, instruction: Instruction): StepResult {
     case "LOAD":
     case "ADD":
     case "HALT":
-      return todo("week 3: execute-core", core, instruction, regs);
+      return todo("week 5: execute-core", core, instruction, regs);
     // @end
 
     // @student week=5 part=home id=execute-rest "Execute STORE, SUB, LOADI, JMP, JZ and JNZ"
@@ -182,7 +182,7 @@ function execute(core: Core, instruction: Instruction): StepResult {
     case "JMP":
     case "JZ":
     case "JNZ":
-      return todo("week 3: execute-rest", core, instruction, regs);
+      return todo("week 5: execute-rest", core, instruction, regs);
     // @end
 
     case "NOP":
