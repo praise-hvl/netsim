@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="glossary" content="quantum, vector, IRET">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetSim Week 6 · Build: taking turns and interrupts</title>
+<style>
+:root{--bg:#fff;--ink:#16201b;--muted:#56615b;--line:#dfe5e1;--soft:#f3f7f4;--green:#173627;--mint:#5fc79a;--mint-ink:#1f7a55;--red:#d8142a;--yellow:#ffcb12;--code-bg:#f3f5f4;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1512;--ink:#e8efeb;--muted:#9aa8a0;--line:#26312b;--soft:#151d18;--mint-ink:#6fd3a7;--red:#ff5a67;--code-bg:#151d18;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:18px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,"Helvetica Neue",Arial,sans-serif}
+.wrap{max-width:940px;margin:0 auto;padding-inline:20px}
+h1,h2,h3{line-height:1.15;margin:0;text-wrap:balance}
+h2{font-size:clamp(26px,4vw,34px);font-weight:800}
+h3{font-size:21px;font-weight:700;margin-top:6px}
+p{margin:0}
+a{color:var(--mint-ink);text-underline-offset:3px}
+code,pre,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+code{background:var(--code-bg);padding:1px 6px;border-radius:4px;font-size:.88em}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:0;font-size:.86em;line-height:1.55}
+pre code{background:none;padding:0}
+pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere}
+.round{border-top:1px solid var(--line);padding-top:18px}
+details.notes{min-width:0}
+.hero{background:var(--green);color:#fff;padding-block:52px 44px}
+.hero .wrap{display:grid;gap:12px}
+.tag{font:700 13px/1 ui-monospace,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:#a8e3c8}
+.hero h1{font-size:clamp(36px,6.5vw,60px);font-weight:800;letter-spacing:-.02em}
+.hero p{font-size:19px;color:#d7e6de;max-width:66ch}
+main{display:grid;gap:52px;padding-block:40px 72px}
+section{display:grid;gap:16px}
+.lede{font-size:19px;color:var(--muted);max-width:66ch}
+ul,ol{margin:0;padding-left:24px;display:grid;gap:6px}
+li,section,main>*{min-width:0}
+.steps>li{padding-left:4px}
+.steps>li+li{border-top:1px solid color-mix(in srgb,var(--muted) 45%,transparent);padding-top:18px;margin-top:8px}
+.steps>li>ul{margin-top:6px}
+.check{background:var(--soft);border-left:4px solid var(--mint);padding:10px 14px;border-radius:0 6px 6px 0}
+.note{background:var(--soft);border-left:4px solid var(--yellow);padding:10px 14px;border-radius:0 6px 6px 0}
+.warn{background:var(--soft);border-left:4px solid var(--red);padding:10px 14px;border-radius:0 6px 6px 0}
+.diagram{margin:0;max-width:100%;min-width:0;overflow-x:auto;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fff}
+.diagram svg{display:block;width:100%;height:auto}
+.diagram text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Arial,sans-serif}
+.diagram text.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.caption{font-size:15px;color:var(--muted)}
+.table-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:16px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.cards>div{border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;gap:8px;align-content:start}
+.minutes{font:700 13px/1 ui-monospace,Menlo,monospace;color:var(--mint-ink)}
+details{border:1px solid var(--line);border-radius:8px;padding:10px 14px}
+details+details{margin-top:8px}
+summary{cursor:pointer;font-weight:700}
+details[open] summary{margin-bottom:8px}
+.box{display:inline-block;width:18px;height:18px;border:2px solid var(--mint);border-radius:4px;vertical-align:-3px;margin-right:8px}
+ul.checklist{list-style:none;padding-left:0}
+.toc{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:15px}
+@media (max-width:640px){body{font-size:17px}.hero{padding-block:36px 30px}main{gap:40px}}
+@media print{
+  :root{--bg:#fff;--ink:#000;--muted:#333;--line:#bbb;--soft:#f4f4f4}
+  .hero{background:#fff;color:#000;border-bottom:3px solid #000;padding-block:10px}
+  .hero p,.tag{color:#000}
+  .diagram{overflow:visible;break-inside:avoid}
+  .diagram svg{min-width:0!important}
+  section{break-inside:auto}
+  h2,h3{break-after:avoid}
+  a{color:#000}
+}
+</style>
+<style data-glossary>
+.term{border-bottom:1.5px dotted currentColor;cursor:help;position:relative;outline-offset:2px}
+.term:focus-visible{outline:2px solid #1f7a55;border-radius:2px}
+.term>.tip{position:absolute;left:0;top:calc(100% + 6px);z-index:30;width:max-content;max-width:min(300px,calc(100vw - 32px));padding:8px 11px;border-radius:8px;background:#16201b;color:#f3f7f4;font:400 15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif;letter-spacing:0;text-transform:none;white-space:normal;text-align:left;box-shadow:0 4px 14px rgba(0,0,0,.22);display:none;pointer-events:none}
+.term:hover>.tip,.term:focus>.tip,.term.open>.tip{display:block}
+@media (prefers-color-scheme:dark){.term>.tip{background:#e8efeb;color:#0f1512}.term:focus-visible{outline-color:#6fd3a7}}
+</style>
+</head>
+<body>
+<header class="hero"><div class="wrap">
+<div class="tag">Week 6 · Build</div>
+<h1>Taking turns and interrupts</h1>
+<p>These steps give your computer the heart of an operating system: programs take turns on the cores, and a device can cut in between two instructions. Do them at home, in order, after week 5's steps (the Build tab lists anything still open from week 5 first). Monday 9 Nov is a check-in: bring what's stuck, show where you are, and I introduce interrupts.</p>
+</div></header>
+<main class="wrap">
+<section id="s1">
+<h2>How each step works</h2>
+<p>The steps are grouped into components, the parts of your computer. Each one starts with what it is and what it will do, and ends by showing it working. The Build tab walks you through them in order.</p>
+<ol><li>Read the idea (2-3 lines).</li>
+<li>Press <b>Send to the agent</b>, then read what it changed in the diff. Keep only what you can explain.</li>
+<li>When the tab says the step's tests pass, press <b>Commit it</b>, then <b>Next step</b>.</li>
+<li>Check you can answer the step's <b>Ask</b> in your own words: I use those questions in explain-it-back.</li></ol>
+<p>If a step fails, read its <b>Stuck?</b> line first. Push from the app whenever you stop. The Build tab remembers where you are: open it again and it shows your next step.</p>
+
+</section>
+<section id="s2">
+<h2>Getting help between classes</h2>
+<p>Post in the class chat: the step's number, and the first line of the failing test (or what the agent said). I answer there, and anyone who's past that step can help too. Mondays are check-ins: bring what's stuck.</p>
+<p>Due: every step on this page before the check-in on Monday 16 Nov.</p>
+
+</section>
+<section id="s3">
+<h2>Component 1 · The interrupt queue</h2>
+<p>Devices raise interrupts, and they wait in a queue, most urgent first. When it's done, the CPU always knows which interrupt to handle next.</p>
+<p class="note"><b>When it works:</b> the interrupt queue tests go green.<br>Check: <code>npx vitest run tests/week-06/interrupts.test.ts</code></p>
+<details class="notes"><summary>Design notes</summary>
+<div class="table-wrap"><table><thead><tr><th>Device</th><th>Priority (lower = more urgent)</th></tr></thead><tbody><tr><td>Button</td><td>0</td></tr><tr><td>Timer</td><td>2</td></tr></tbody></table></div>
+<ul><li>An interrupt carries a <span class="term" tabindex="0" aria-describedby="tip-1">vector<span class="tip" role="tooltip" id="tip-1">The address of an interrupt's handler: the button's is 0x200. Taking the interrupt saves the core's registers, PC and flags and sets the PC to the vector.</span></span> (its handler's address) and a priority.</li>
+<li>The queue keeps the most urgent first; equal priorities keep their arrival order.</li>
+<li>Both functions return a new queue and leave the one they were given alone.</li></ul>
+</details>
+<h3 class="round">Step 1 · The interrupt queue</h3>
+<p>Interrupts wait in a queue, the most urgent first: a lower number means more urgent, and equal ones keep the order they arrived in. Return a new queue; don't change the one you were given.</p>
+<pre><code>Use this approach: copy the queue and insert the irq just before the first entry with a larger
+priority number, so equal priorities keep their arrival order.
+
+In core/interrupts.ts only, fill in TODO(week 6, irq-enqueue) in enqueue. Don't change anything
+outside that region, or any test. Tell me what you'll change before you change it, and explain each
+line you write. Then run:
+npx vitest run tests/week-06/interrupts.test.ts -t "keeps|does not change"</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-06/interrupts.test.ts -t "keeps|does not change"</code> · Commit: <code>week 6: irq-enqueue</code><br>Ask: the timer (priority 2) is waiting and the button (priority 0) arrives. Who's first, and why?<br><b>Stuck?</b> If equal priorities come out in the wrong order, the newer one has to go after the older ones.</p>
+<h3 class="round">Step 2 · Take the next interrupt</h3>
+<p>The next interrupt is the one at the front. Give back it and the queue without it; an empty queue gives <code>null</code>.</p>
+<pre><code>Use this approach: return the first entry and a copy of the rest, or irq null and an empty queue
+when it's empty.
+
+In core/interrupts.ts only, fill in TODO(week 6, irq-take-next) in takeNext. Don't change anything
+outside that region, or any test. Tell me what you'll change before you change it, and explain each
+line you write. Then run: npx vitest run tests/week-06/interrupts.test.ts</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-06/interrupts.test.ts</code> · Commit: <code>week 6: irq-take-next</code><br>Ask: why return a new queue instead of removing the first item from the old one?<br><b>Stuck?</b> If the test says the queue changed, the code removed the first item from the queue it was given: build a new one.</p>
+
+</section>
+<section id="s4">
+<h2>Component 2 · Taking turns</h2>
+<p>Round robin: each program gets a few instructions on a core, then goes to the back of the queue. When it's done, every program gets its fair share of the cores.</p>
+<p class="note"><b>When it works:</b> three programs share two cores fairly.<br>Check: <code>npx vitest run tests/week-06/scheduler.test.ts</code></p>
+<details class="notes"><summary>Design notes</summary>
+<div class="table-wrap"><table><thead><tr><th>A program is…</th><th>When…</th><th>It becomes…</th></tr></thead><tbody><tr><td><code>READY</code></td><td>a core is free and it's first in the queue</td><td><code>RUNNING</code></td></tr><tr><td><code>RUNNING</code></td><td>its <span class="term" tabindex="0" aria-describedby="tip-2">quantum<span class="tip" role="tooltip" id="tip-2">How many instructions a program may run on a core before it gives the core up, if another program is waiting. NetSim counts finished instructions (retired), not ticks.</span></span> is used up and someone is waiting</td><td><code>READY</code>, at the back of the queue</td></tr><tr><td><code>RUNNING</code></td><td>its core halts / faults</td><td><code>DONE</code> / <code>FAILED</code></td></tr></tbody></table></div>
+<p>A core switches its program out only when <b>all</b> of these hold:</p>
+<div class="table-wrap"><table><thead><tr><th>Condition</th><th>Why</th></tr></thead><tbody><tr><td>quantum used up</td><td>everyone gets a fair turn</td></tr><tr><td>core in <code>FETCH</code></td><td>only between instructions, never while waiting for memory</td></tr><tr><td>not in a handler</td><td>a handler finishes first</td></tr><tr><td>someone is waiting</td><td>otherwise there's no one to switch to</td></tr></tbody></table></div>
+<p>The quantum counts finished instructions, not ticks.</p>
+</details>
+<h3 class="round">Step 3 · Round robin's rule</h3>
+<p>Each program gets a turn of a few instructions (the quantum). A core switches its program out only when the quantum is used up, the core is between instructions (<code>FETCH</code>), it isn't in a handler, and someone is waiting.</p>
+<pre><code>Use this approach: return one boolean that ANDs the four conditions: quantum used up, core in FETCH,
+not in a handler, and a READY process waiting.
+
+In core/scheduler.ts only, fill in TODO(week 6, should-preempt) in shouldPreempt. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it, and
+explain each line you write. Then run: npx vitest run tests/week-06/scheduler.test.ts</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-06/scheduler.test.ts</code> · Commit: <code>week 6: should-preempt</code><br>Ask: why never switch a program out while it's in <code>WAIT_DATA</code>?<br><b>Stuck?</b> If the error names <code>TODO(week 5: pick-next)</code>, week 5's steps aren't done: do those first.</p>
+
+</section>
+<section id="s5">
+<h2>Component 3 · Interrupts on the core</h2>
+<p>A core stops between two instructions, saves everything, runs the handler and puts everything back. When it's done, a button press is handled without disturbing the running program.</p>
+<p class="note"><b>When it works:</b> the interrupt tests go green: a core saves, runs the handler, and <span class="term" tabindex="0" aria-describedby="tip-3"><code>IRET</code><span class="tip" role="tooltip" id="tip-3">The instruction that ends an interrupt handler: it pops the saved frame and puts the registers, PC, flags and phase back as they were.</span></span> puts everything back exactly.<br>Check: <code>npx vitest run tests/week-07/cpu-core-irq.test.ts -t "only happens between|saves the registers|IRET"</code></p>
+<details class="notes"><summary>Design notes</summary>
+<div class="table-wrap"><table><thead><tr><th>Step</th><th>What happens</th></tr></thead><tbody><tr><td>A core may take one</td><td>only in <code>IDLE</code> or <code>FETCH</code> (between instructions), and not already in a handler</td></tr><tr><td>Enter</td><td>push a frame, set <code>PC = vector</code>, go to <code>FETCH</code></td></tr><tr><td>The handler runs</td><td>its own instructions, ending in <code>IRET</code></td></tr><tr><td><code>IRET</code></td><td>pop the frame and put everything back; back to <code>IDLE</code> if the core was idle</td></tr><tr><td><code>IRET</code> outside a handler</td><td><code>FAULT</code></td></tr></tbody></table></div>
+<p>The frame: registers, PC, flags, the count of instructions so far, and whether the core was idle.</p>
+<p>Pressing the button during a <code>LOAD</code>: the <code>LOAD</code> finishes, then at the next <code>FETCH</code> the core takes the interrupt, runs the handler, and <code>IRET</code> puts the program back as if nothing happened.</p>
+</details>
+<h3 class="round">Step 4 · When a core may take an interrupt</h3>
+<p>A core takes an interrupt only between instructions (<code>IDLE</code> or <code>FETCH</code>), and never while it's already running a handler.</p>
+<pre><code>Use this approach: return true only when the phase is IDLE or FETCH and the core isn't already in a
+handler.
+
+In core/cpu-core.ts only, fill in TODO(week 7, can-take-interrupt) in canTakeInterrupt. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it, and
+explain each line you write. Its test also needs the next step, so don't try to make it pass yet.</code></pre>
+<p class="check">Test: none yet: the next step's test covers it · Commit: <code>week 7: can-take-interrupt</code><br>Ask: what would go wrong if a core took an interrupt in the middle of a <code>LOAD</code>?<br><b>Stuck?</b> Nothing to test yet: the next step's test covers both. An error naming <code>TODO(week 7: enter-interrupt)</code> is expected.</p>
+<h3 class="round">Step 5 · Enter the handler</h3>
+<p>Taking an interrupt saves everything the program needs to carry on (registers, PC, flags, the count of instructions so far, and whether it was idle) as a frame, then jumps to the handler's address, the vector.</p>
+<pre><code>Use this approach: push one frame with the registers, pc, flags, retired count and whether the core
+was IDLE, then set pc to the vector and go to FETCH.
+
+In core/cpu-core.ts only, fill in TODO(week 7, enter-interrupt) in enterInterrupt. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it, and
+explain each line you write. Then run:
+npx vitest run tests/week-07/cpu-core-irq.test.ts -t "only happens between|saves the registers"</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-07/cpu-core-irq.test.ts -t "only happens between|saves the registers"</code> · Commit: <code>week 7: enter-interrupt</code><br>Ask: what's in the frame, and why does each part need saving?<br><b>Stuck?</b> If the test sees changed registers later, the frame holds the same object, not a copy.</p>
+<h3 class="round">Step 6 · Return from the handler</h3>
+<p><code>IRET</code> pops the frame and puts everything back exactly as it was, so the program carries on as if nothing happened. <code>IRET</code> outside a handler is a fault.</p>
+<pre><code>Use this approach: if there's no frame, go to FAULT; otherwise pop it and put the registers, pc,
+flags and retired count back, going to IDLE if the core was idle and FETCH otherwise.
+
+In core/cpu-core.ts only, fill in TODO(week 7, iret) in returnFromInterrupt. Don't change anything
+outside that region, or any test. Tell me what you'll change before you change it, and explain each
+line you write. Then run: npx vitest run tests/week-07/cpu-core-irq.test.ts -t "IRET"</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-07/cpu-core-irq.test.ts -t "IRET"</code> · Commit: <code>week 7: iret</code><br>Ask: what would break if <code>IRET</code> forgot to put the flags back? Name a program.<br><b>Stuck?</b> If the test says the phase is wrong after <code>IRET</code>, the frame's "was it idle" part isn't being used to go back to <code>IDLE</code> or <code>FETCH</code>.</p>
+
+</section>
+<section id="s6">
+<h2>Component 4 · The timer</h2>
+<p>The timer is a device that raises an interrupt every few ticks. When it's done, your computer has a clock that cuts in on its own.</p>
+<p class="note"><b>When it works:</b> the timer tests go green, and on the Board, <b>Load demo</b> then <b>Start</b>: a core takes the timer's interrupts while the programs carry on.<br>Check: <code>npx vitest run tests/week-07/timer.test.ts -t "raises an irq|fires every|does nothing|counts the|starts and stops"</code></p>
+<details class="notes"><summary>Design notes</summary>
+<div class="table-wrap"><table><thead><tr><th>From</th><th>When…</th><th>To</th><th>What it does</th></tr></thead><tbody><tr><td><code>STOPPED</code></td><td>the dashboard sends start</td><td><code>COUNTING</code></td><td></td></tr><tr><td><code>COUNTING</code></td><td><code>interval</code> ticks have gone by</td><td><code>COUNTING</code></td><td>raises one interrupt, starts counting again</td></tr><tr><td><code>COUNTING</code></td><td>the dashboard sends stop</td><td><code>STOPPED</code></td><td>forgets the ticks counted so far</td></tr></tbody></table></div>
+<p>With interval 3, it raises an interrupt on ticks 3, 6, 9… Its priority (2) is lower than the button's (0).</p>
+</details>
+<h3 class="round">Step 7 · The timer ticks</h3>
+<p>The timer is a device that raises one interrupt every <code>interval</code> ticks while it's <code>COUNTING</code>. It does nothing while <code>STOPPED</code>.</p>
+<pre><code>Use this approach: while COUNTING, add 1 to elapsed; when it reaches interval, set it back to 0, add
+1 to count and return one irq effect.
+
+In components/peripherals/timer.ts only, fill in TODO(week 7, timer-tick) in onTick. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it, and
+explain each line you write. Then run:
+npx vitest run tests/week-07/timer.test.ts -t "raises an irq|fires every|does nothing|counts the"</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-07/timer.test.ts -t "raises an irq|fires every|does nothing|counts the"</code> · Commit: <code>week 7: timer-tick</code><br>Ask: with interval 3, on which ticks does it raise an interrupt?<br><b>Stuck?</b> If it fires on tick 1, it's raising before <code>interval</code> ticks have gone by.</p>
+<h3 class="round">Step 8 · Start and stop the timer</h3>
+<p>The dashboard starts and stops the timer. Stopping forgets the ticks counted so far, so the next start counts a full interval.</p>
+<pre><code>Use this approach: start goes to COUNTING; stop goes to STOPPED and sets elapsed back to 0.
+
+In components/peripherals/timer.ts only, fill in TODO(week 7, timer-input) in onInput. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it, and
+explain each line you write. Then run: npx vitest run tests/week-07/timer.test.ts -t "starts and stops"</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-07/timer.test.ts -t "starts and stops"</code> · Commit: <code>week 7: timer-input</code><br>Ask: why reset the count when it stops?<br><b>Stuck?</b> If a restart fires at once, stopping didn't reset the count.</p>
+
+</section>
+<section id="s7">
+<h2>When the steps are done</h2>
+<p>In the Board tab, press <b>Load demo</b>, then <b>Start</b>, then the button: a core runs the handler and the program carries on.</p>
+<p><b>Explain it back</b> before the next check-in, no notes or AI: a 5-minute slot with me, or a 3-minute video answering two of the Ask questions above, which I post in the class chat.</p>
+<p class="note">If the Build tab won't start: press <b>Copy the prompt</b> on the step, run <code>codex</code> in a terminal in your course folder, and paste it.</p>
+</section>
+</main>
+<script>addEventListener('beforeprint',()=>document.querySelectorAll('details').forEach(d=>d.open=true));</script>
+<script data-glossary>
+(function () {
+  var terms = document.querySelectorAll(".term");
+  // Keep the explanation inside the viewport (16px gutter), near the right edge too.
+  function place(t) {
+    var tip = t.querySelector(".tip");
+    // Hidden tips are display:none (so they never widen the page): show it to measure it.
+    tip.style.left = "0px";
+    tip.style.display = "block";
+    var r = tip.getBoundingClientRect(), dx = 0, max = document.documentElement.clientWidth - 16;
+    tip.style.display = "";
+    if (r.right > max) dx = max - r.right;
+    if (r.left + dx < 16) dx = 16 - r.left;
+    tip.style.left = dx + "px";
+  }
+  function closeAll(except) {
+    terms.forEach(function (t) { if (t !== except) t.classList.remove("open"); });
+  }
+  terms.forEach(function (t) {
+    t.addEventListener("mouseenter", function () { place(t); });
+    t.addEventListener("focus", function () { place(t); });
+    // Tap (touch) toggles; hover and keyboard focus are pure CSS.
+    t.addEventListener("click", function (e) {
+      e.stopPropagation();
+      closeAll(t);
+      place(t);
+      t.classList.toggle("open");
+    });
+  });
+  document.addEventListener("click", function () { closeAll(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    closeAll();
+    var a = document.activeElement;
+    if (a && a.classList.contains("term")) a.blur();
+  });
+})();
+</script>
+</body>
+</html>

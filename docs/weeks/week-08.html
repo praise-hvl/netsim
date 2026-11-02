@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="glossary" content="">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetSim Week 8 · Demo: ship it</title>
+<style>
+:root{--bg:#fff;--ink:#16201b;--muted:#56615b;--line:#dfe5e1;--soft:#f3f7f4;--green:#173627;--mint:#5fc79a;--mint-ink:#1f7a55;--red:#d8142a;--yellow:#ffcb12;--code-bg:#f3f5f4;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1512;--ink:#e8efeb;--muted:#9aa8a0;--line:#26312b;--soft:#151d18;--mint-ink:#6fd3a7;--red:#ff5a67;--code-bg:#151d18;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:18px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,"Helvetica Neue",Arial,sans-serif}
+.wrap{max-width:940px;margin:0 auto;padding-inline:20px}
+h1,h2,h3{line-height:1.15;margin:0;text-wrap:balance}
+h2{font-size:clamp(26px,4vw,34px);font-weight:800}
+h3{font-size:21px;font-weight:700;margin-top:6px}
+p{margin:0}
+a{color:var(--mint-ink);text-underline-offset:3px}
+code,pre,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+code{background:var(--code-bg);padding:1px 6px;border-radius:4px;font-size:.88em}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:0;font-size:.86em;line-height:1.55}
+pre code{background:none;padding:0}
+pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere}
+.round{border-top:1px solid var(--line);padding-top:18px}
+details.notes{min-width:0}
+.hero{background:var(--green);color:#fff;padding-block:52px 44px}
+.hero .wrap{display:grid;gap:12px}
+.tag{font:700 13px/1 ui-monospace,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:#a8e3c8}
+.hero h1{font-size:clamp(36px,6.5vw,60px);font-weight:800;letter-spacing:-.02em}
+.hero p{font-size:19px;color:#d7e6de;max-width:66ch}
+main{display:grid;gap:52px;padding-block:40px 72px}
+section{display:grid;gap:16px}
+.lede{font-size:19px;color:var(--muted);max-width:66ch}
+ul,ol{margin:0;padding-left:24px;display:grid;gap:6px}
+li,section,main>*{min-width:0}
+.steps>li{padding-left:4px}
+.steps>li+li{border-top:1px solid color-mix(in srgb,var(--muted) 45%,transparent);padding-top:18px;margin-top:8px}
+.steps>li>ul{margin-top:6px}
+.check{background:var(--soft);border-left:4px solid var(--mint);padding:10px 14px;border-radius:0 6px 6px 0}
+.note{background:var(--soft);border-left:4px solid var(--yellow);padding:10px 14px;border-radius:0 6px 6px 0}
+.warn{background:var(--soft);border-left:4px solid var(--red);padding:10px 14px;border-radius:0 6px 6px 0}
+.diagram{margin:0;max-width:100%;min-width:0;overflow-x:auto;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fff}
+.diagram svg{display:block;width:100%;height:auto}
+.diagram text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Arial,sans-serif}
+.diagram text.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.caption{font-size:15px;color:var(--muted)}
+.table-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:16px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.cards>div{border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;gap:8px;align-content:start}
+.minutes{font:700 13px/1 ui-monospace,Menlo,monospace;color:var(--mint-ink)}
+details{border:1px solid var(--line);border-radius:8px;padding:10px 14px}
+details+details{margin-top:8px}
+summary{cursor:pointer;font-weight:700}
+details[open] summary{margin-bottom:8px}
+.box{display:inline-block;width:18px;height:18px;border:2px solid var(--mint);border-radius:4px;vertical-align:-3px;margin-right:8px}
+ul.checklist{list-style:none;padding-left:0}
+.toc{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:15px}
+@media (max-width:640px){body{font-size:17px}.hero{padding-block:36px 30px}main{gap:40px}}
+@media print{
+  :root{--bg:#fff;--ink:#000;--muted:#333;--line:#bbb;--soft:#f4f4f4}
+  .hero{background:#fff;color:#000;border-bottom:3px solid #000;padding-block:10px}
+  .hero p,.tag{color:#000}
+  .diagram{overflow:visible;break-inside:avoid}
+  .diagram svg{min-width:0!important}
+  section{break-inside:auto}
+  h2,h3{break-after:avoid}
+  a{color:#000}
+}
+</style>
+</head>
+<body>
+<header class="hero"><div class="wrap">
+<div class="tag">Week 8 · Demo</div>
+<h1>Ship it</h1>
+<p>This is the week your computer goes public. After week 7's class, as your last take-home, you put your board on the web, write the story of how you built it, and rehearse. In class you demo it live, and the recording of that demo is your portfolio video.</p>
+</div></header>
+<main class="wrap">
+<p>Your showpiece: <b>a multi-core computer I designed and built, with a bus, memory, a CPU, a scheduler and interrupts, running live in the browser.</b></p>
+<section id="s1">
+<h2>Goals</h2>
+<ul><li><b>Ship:</b> your board deployed to <b>GitHub Pages</b> from your fork, linked from your README.</li>
+<li><b>Tell the story:</b> a portfolio README in your own words: what you built, how, and what you decided, grounded in your commits.</li>
+<li><b>Show it:</b> a 3-minute live demo in class, recorded, then a 2-minute final explain-it-back.</li></ul>
+
+</section>
+<section id="s2">
+<h2>Get ready to demo (take-home after week 7's class)</h2>
+<p>There's no time for this in the demo class, so it's week 7's take-home. Start once your week-7 work is pushed.</p>
+<ol><li><b>Push your work.</b> Run <code>npm start</code>: the app has everything in already. With every step of weeks 5 to 7 green, push from the app (or <code>git push</code>). Week 8 brings the workflow that publishes your board (<code>.github/workflows/pages.yml</code>), so it has to be on GitHub before the next step.</li>
+<li><p><b>Deploy your board to GitHub Pages.</b> With week 8 merged and pushed, in your course folder:</p>
+<pre><code>npm run pages:enable</code></pre>
+<p>The first time, it prints:</p>
+<pre><code>✓ signed in to GitHub as &lt;you&gt;, who owns &lt;you&gt;/netsim
+✓ made work the default branch (was main)
+✓ turned on GitHub Actions for your fork
+✓ turned Pages on, built by GitHub Actions
+Your board will be at https://&lt;you&gt;.github.io/netsim/board/
+It's published each time you push work (the first time takes a minute or two: watch the Actions tab).</code></pre>
+<p>(Forks start with GitHub Actions switched off; that line turns them on so your board can be built.) Running it again is safe: it says "already" (for example "✓ GitHub Actions is already on for your fork") and changes nothing. If something's wrong, it prints one ✗ line with the fix:</p>
+<div class="table-wrap"><table><thead><tr><th>It says</th><th>Do this</th></tr></thead><tbody><tr><td><code>gh</code> isn't signed in</td><td><code>gh auth login --web -h github.com -p https</code>, then run it again</td></tr><tr><td>signed in as someone else</td><td><code>gh auth switch --user &lt;you&gt;</code>, then run it again</td></tr><tr><td><code>work</code> isn't on GitHub</td><td><code>git push -u origin work</code>, then run it again</td></tr><tr><td><code>The GitHub CLI (gh) isn't installed.</code></td><td>run <code>node setup.mjs</code> (it installs it), or install it from https://cli.github.com</td></tr><tr><td><code>Your work branch doesn't have .github/workflows/pages.yml yet.</code></td><td>you skipped step 1: <code>npm start</code>, push, then run it again</td></tr><tr><td><code>couldn't turn on GitHub Actions for &lt;you&gt;/netsim</code></td><td>on GitHub, open your fork's <b>Actions</b> tab and click <b>"I understand my workflows, go ahead and enable them"</b>, then run it again</td></tr><tr><td>GitHub refused to turn Pages on</td><td>do it by hand: your fork → <b>Settings</b> → <b>Pages</b> → Source: <b>GitHub Actions</b> (the ✗ line gives the exact path)</td></tr></tbody></table></div>
+<p>Then push <code>work</code> once more (<code>git push</code>). On your fork's <b>Actions</b> tab you'll see <b>Deploy the board to GitHub Pages</b> run; when it's green, open <code>https://&lt;you&gt;.github.io/netsim/board/</code>. Your board runs there, live in the browser, with nothing installed. Put that link at the top of your README.</p></li>
+<li><p><b>Write your portfolio README</b> with <code>npm run portfolio</code>. It works in three steps:</p>
+<pre><code>npm run portfolio</code></pre>
+<ul><li><b>Your history.</b> It writes <b><code>portfolio/HISTORY.md</code></b> (and <code>history.json</code>): your commits week by week, your design notes, and when each week's tests first went green.</li>
+<li><b>The interview.</b> It asks you about <b>8 questions</b> about <i>your</i> work: what you designed, what you decided, what went wrong. Answer <b>in your own words, without AI</b>; short is fine. Your answers are saved in <b><code>portfolio/answers.md</code></b>. You can stop any time (type <code>stop</code>) and run it again to carry on; <code>skip</code> skips a question. <code>npm run portfolio -- --redo</code> asks every question again, and <code>--new-questions</code> picks fresh questions from your latest history.</li>
+<li><b>The draft.</b> It writes <b><code>portfolio/README.draft.md</code></b>: your answers word for word between "your words" markers, the generated parts marked as generated, and a <code>TODO</code> wherever you skipped a question. Edit it until it sounds like you, fill in the TODOs, and add your <b>GitHub Pages link</b> (and, after class, your <b>in-class demo recording</b>).</li>
+<li><b>Make it your README.</b> <code>npm run portfolio -- --copy</code> copies the draft to <code>README.md</code> (links fixed up); the course's README is kept as <code>portfolio/README.before.md</code>. Want a single file to share? <code>--zip</code> bundles your repo, its history and <code>portfolio/</code> into one zip.</li>
+<li><p>Commit and push:</p>
+<pre><code>git add -A &amp;&amp; git commit -m "week 8: portfolio README" &amp;&amp; git push</code></pre></li></ul></li>
+<li><b>Check your portfolio README covers</b> everything in "What your portfolio README must say" (below).</li>
+<li><b>Rehearse your 3 minutes</b> out loud, with a timer, once, from your deployed page. On GitHub Pages, <code>/board</code> runs your machine live in the browser on 2 cores, so the Button works. For the 8-core part of your demo, open <code>…/board/?source=machine&amp;cores=8</code>. (If the page header says it's playing a paused recording instead, your machine couldn't start yet: the header says why. Fix that before the demo. Locally, <code>npm run dev:all</code> shows the recording unless you add <code>?source=machine</code>.)</li></ol>
+
+</section>
+<section id="s3">
+<h2>In class: live demos (1 hour, on Zoom)</h2>
+<p>About ten demos fit in the hour. Each is <b>3 minutes</b>, then a <b>2-minute</b> final explain-it-back. When it's your turn, camera on, share your screen with your deployed page, and nothing else open. I record your demo (a recording of the Zoom call while you share): that recording is your portfolio video, and I'll share it with you after class.</p>
+<p><b>Your 3 minutes</b>, from your deployed page (the live machine; <code>?source=machine&amp;cores=8</code> for 8 cores):</p>
+<ol><li><b>What it is</b> (about 20 s): one sentence, your showpiece line in your own words.</li>
+<li><b>A program running</b> (about 60 s): countdown or blink (or your own), with the board showing the bus, memory and the CPU at work. Say what we're looking at as it happens.</li>
+<li><b>An interrupt</b> (about 40 s): press the button (or let the Timer fire) and show the core that takes it, the handler running, and the program carrying on.</li>
+<li><b>Change the core count</b> (about 40 s): from 2 to 8 (or the other way). Show what changes on the board, and say why the answer stays the same.</li>
+<li><b>One decision</b> (about 20 s): one thing in your design you chose on purpose, and why.</li></ol>
+
+</section>
+<section id="s4">
+<h2>Final explain-it-back (graded, live)</h2>
+<p>Right after your demo. I'll pause the clock and name <b>one moment</b> on the board or in the message trace, for example a fetch just before a context switch, or an interrupt arriving while a core waits on memory. You explain it at <b>both levels</b>:</p>
+<ul><li><b>The hardware:</b> what each part is doing and why (the core is between instructions, so it takes the interrupt; the scheduler moves a program because its quantum is used up).</li>
+<li><b>Your code:</b> which function did it (<code>shouldPreempt</code>, <code>enterInterrupt</code>, <code>request()</code>…), and what it checked.</li></ul>
+<p>No notes and no AI. It's two minutes and one moment.</p>
+
+</section>
+<section id="s5">
+<h2>What your portfolio README must say</h2>
+<p>It's your reflection too, in your own words (the interview helps you get there). Make sure it has:</p>
+<ol><li><b>What I built:</b> one paragraph, as if to a friend who knows code but not this course.</li>
+<li><b>What surprised me:</b> about hardware, and about software.</li>
+<li><b>One bug:</b> what went wrong, <b>how you found it</b> (a test? the board? the trace?), how you fixed it. Link the commit.</li>
+<li><b>How I worked with AI:</b> what you designed and what Codex wrote; one time it was wrong or you changed its code; how you made sure you understood what you kept.</li>
+<li><b>What I'd change:</b> one design decision you'd make differently, and why.</li></ol>
+
+</section>
+<section id="s6">
+<h2>Acceptance criteria</h2>
+<ul class="checklist"><li><span class="box"></span>Your board runs on GitHub Pages, and the link is at the top of your README.</li>
+<li><span class="box"></span><code>npx vitest run</code> passes on <code>work</code>.</li>
+<li><span class="box"></span>Your portfolio README (from <code>portfolio/README.draft.md</code>, copied to <code>README.md</code>) is in your own words, has no <code>TODO</code>s left, matches <code>portfolio/HISTORY.md</code>, and has your Pages link (and the demo recording, once I've shared it).</li>
+<li><span class="box"></span>Demo done live in class, and the final explain-it-back passed.</li></ul>
+
+</section>
+<section id="s7">
+<h2>Tests and commands this week</h2>
+<div class="table-wrap"><table><thead><tr><th>Command</th><th>What it does</th><th>Works this week?</th></tr></thead><tbody><tr><td><code>npx vitest run</code></td><td>every test, all weeks</td><td>✅</td></tr><tr><td><code>npm run dev:all</code></td><td>the whole system locally; the board at <a href="http://localhost:3005/board">localhost:3005/board</a></td><td>✅</td></tr><tr><td><code>npm run demo -- --cores N</code></td><td>the demo programs and peripherals on N cores (1–8)</td><td>✅</td></tr><tr><td><code>npm run portfolio</code></td><td>your work history, the interview (resumable), and the README draft; <code>-- --copy</code> makes it your README, <code>-- --zip</code> bundles everything</td><td>✅</td></tr><tr><td><code>npm run pages:enable</code></td><td>turns on GitHub Pages for your fork (once); then every push of <code>work</code> publishes your board at <code>https://&lt;you&gt;.github.io/netsim/board/</code></td><td>✅</td></tr></tbody></table></div>
+
+</section>
+<section id="s8">
+<h2>Using Codex this week</h2>
+<div class="table-wrap"><table><thead><tr><th>Fine to ask Codex</th><th>You must be able to explain yourself</th></tr></thead><tbody><tr><td>"Why did <i>Deploy the board to GitHub Pages</i> fail? Here's the log."</td><td>Any moment on your board, at both levels</td></tr><tr><td>"Tighten this README paragraph; keep my words where you can."</td><td>Every decision your README claims you made</td></tr><tr><td>"Quiz me: pick a moment in my trace and ask me what's happening."</td><td>Which function in your code handles each message</td></tr><tr><td>"Proofread my portfolio README."</td><td>The bug story in your README</td></tr></tbody></table></div>
+<p>Codex can polish your README, but the interview answers and the decisions in them are yours. Asking Codex to quiz you is a great way to prepare; it can't take the explain-it-back for you.</p>
+
+</section>
+<section id="s9">
+<h2>Stretch</h2>
+<p>Portfolio only, no extra credit. Anything from <code>docs/stretch/</code> you finished (save and restore, a new peripheral, the timer race fix, diagrams from your FSMs, a design for paging, caches, DMA or a tiny RTOS kernel) can go in your portfolio README with a short "what I added" section.</p>
+</section>
+</main>
+<script>addEventListener('beforeprint',()=>document.querySelectorAll('details').forEach(d=>d.open=true));</script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+{
+  "irq-enqueue": {
+    "code": "const index = queue.findIndex((other) => irq.priority < other.priority || (irq.priority === other.priority && irq.seq < other.seq));\nif (index === -1) return [...queue, irq];\nreturn [...queue.slice(0, index), irq, ...queue.slice(index)];",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Find the first interrupt the new one should go before: one less urgent (a bigger priority number), or as urgent but newer (a bigger `seq`)."
+      },
+      {
+        "line": 1,
+        "explain": "None: it goes at the end."
+      },
+      {
+        "line": 2,
+        "explain": "Otherwise slot it in there. A new array: the old queue isn't changed."
+      }
+    ]
+  },
+  "irq-take-next": {
+    "code": "const [irq, ...rest] = queue;\nreturn { irq: irq ?? null, queue: rest };",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "The first interrupt is the most urgent, because `enqueue` keeps the queue sorted."
+      },
+      {
+        "line": 1,
+        "explain": "Hand it back with the rest of the queue. An empty queue gives `null`."
+      }
+    ]
+  },
+  "should-preempt": {
+    "code": "return core.phase === \"FETCH\" && !inHandler(core) && core.retired >= scheduler.quantum && pickNext(scheduler) !== undefined;",
+    "steps": [
+      {
+        "line": 0,
+        "explain": "Switch a program out only when all four hold: the core is between instructions (`FETCH`), it isn't in an interrupt handler, the program has run its quantum of instructions, and another program is waiting for a turn."
+      }
+    ]
+  },
+  "$tests": {
+    "tests/week-06/interrupts.test.ts > interrupt queue keeps the most urgent (lowest number) first": [
+      "irq-enqueue"
+    ],
+    "tests/week-06/interrupts.test.ts > interrupt queue keeps arrival order between equal priorities": [
+      "irq-enqueue"
+    ],
+    "tests/week-06/interrupts.test.ts > interrupt queue does not change the queue it was given": [],
+    "tests/week-06/interrupts.test.ts > interrupt queue takes from the front, and gives null when empty": [
+      "irq-take-next"
+    ],
+    "tests/week-06/scheduler.test.ts > shouldPreempt only preempts between instructions, after a full quantum, when someone is waiting": [
+      "should-preempt"
+    ],
+    "tests/week-06/scheduler.test.ts > round robin on two cores shares two cores fairly between three programs": [
+      "should-preempt"
+    ],
+    "tests/week-06/scheduler.test.ts > round robin on two cores never switches a program out while it waits for memory": [
+      "should-preempt"
+    ]
+  }
+}

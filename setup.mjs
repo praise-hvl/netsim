@@ -83,7 +83,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 13;
+export const STUDIO_VERSION = 14;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -95,11 +95,11 @@ export const COURSE_WEEKS = [
   { week: 1, title: "Setup & system roles", kind: "setup", guide: "docs/weeks/week-01.md", page: "docs/weeks/week-01.html", note: "docs/notes/week-01.md", board: false },
   { week: 2, title: "Design: the machine and its bus", kind: "design", guide: "docs/weeks/week-02.md", page: "docs/weeks/week-02.html", note: "docs/notes/week-02.md", board: false },
   { week: 3, title: "Build: bus + memory on screen", kind: "build", guide: "docs/weeks/week-03.md", page: "docs/weeks/week-03.html", note: null, board: true },
-  { week: 4, title: "Design: the CPU", kind: "design", guide: "docs/weeks/week-04.md", page: "docs/weeks/week-04.html", note: "docs/notes/week-04.md", board: false },
-  { week: 5, title: "Design + build: a CPU that runs programs", kind: "build", guide: "docs/weeks/week-05.md", page: "docs/weeks/week-05.html", note: "docs/notes/week-04.md", board: true },
-  { week: 6, title: "Design: scheduling + interrupts", kind: "design", guide: "docs/weeks/week-06.md", page: "docs/weeks/week-06.html", note: "docs/notes/week-06.md", board: false },
-  { week: 7, title: "Build: cores, scheduler, interrupts", kind: "build", guide: "docs/weeks/week-07.md", page: "docs/weeks/week-07.html", note: null, board: true },
-  { week: 8, title: "Demo: ship it", kind: "demo", guide: "docs/weeks/week-08.md", page: null, note: null, board: true },
+  { week: 4, title: "Build: decode and encode (in week 5)", kind: "design", guide: "docs/weeks/week-04.md", page: "docs/weeks/week-04.html", note: null, board: false },
+  { week: 5, title: "Design + build: a CPU that runs programs", kind: "build", guide: "docs/weeks/week-05.md", page: "docs/weeks/week-05.html", note: null, board: true },
+  { week: 6, title: "Build: taking turns and interrupts", kind: "design", guide: "docs/weeks/week-06.md", page: "docs/weeks/week-06.html", note: null, board: false },
+  { week: 7, title: "Build: many cores on the board", kind: "build", guide: "docs/weeks/week-07.md", page: "docs/weeks/week-07.html", note: null, board: true },
+  { week: 8, title: "Demo: ship it", kind: "demo", guide: "docs/weeks/week-08.md", page: "docs/weeks/week-08.html", note: null, board: true },
 ];
 /**
  * The newest week fetched from the course (upstream/week-N, from the course's week-N tag): where a
@@ -375,6 +375,20 @@ export function parseRemote(url) {
   const scp = /^(?:[^@/:]+@)?([^/:\\]{2,}):([^/]+)\/([^/]+)$/.exec(trimmed);
   if (scp) return { protocol: "ssh", host: scp[1], owner: scp[2], repo: scp[3] };
   return null;
+}
+
+/**
+ * Is Codex signed in? `codex login status`, which reads whichever store this laptop uses.
+ * @param {Context} ctx
+ */
+export function codexSignedIn(ctx) {
+  // Codex keeps its sign-in in the keychain or in auth.json: ask it (once it has run, so a Mac's first-run
+  // check is out of the way), and only fall back to the file before that.
+  if (ctx.state.codexVersion) {
+    const r = ctx.capture(["codex", ...CODEX_FLAGS, "login", "status"]);
+    if (r) return r.code === 0;
+  }
+  return ctx.exists(join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json"));
 }
 
 /**
@@ -1129,13 +1143,32 @@ export function courseSteps() {
       // it, which can take minutes. It looks for the program instead, and runs `codex --version`
       // once, visibly, after installing.
       check: async (ctx) => {
-        const auth = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json");
         const version = ctx.state.codexVersion ? ` (${ctx.state.codexVersion})` : "";
         if (!onPath(ctx, "codex")) return { done: false, found: "Codex isn't installed yet." };
-        return { done: ctx.exists(auth), found: ctx.exists(auth) ? `Codex is installed${version} and signed in.` : `Codex is installed${version} but not signed in.` };
+        if (ctx.state.codexVersion && versionOlder(ctx.state.codexVersion, CODEX_MIN_VERSION)) return { done: false, found: `Codex ${ctx.state.codexVersion} is too old for the studio's Agent tab (it needs ${CODEX_MIN_VERSION} or newer).` };
+        const signedIn = codexSignedIn(ctx);
+        return { done: signedIn, found: signedIn ? `Codex is installed${version} and signed in.` : `Codex is installed${version} but not signed in.` };
       },
       plan: (ctx) => {
         const installed = onPath(ctx, "codex");
+        const old = installed && ctx.state.codexVersion && versionOlder(ctx.state.codexVersion, CODEX_MIN_VERSION);
+        if (old)
+          return [
+            cmd("npm install -g @openai/codex@latest", ["npm", "install", "-g", "@openai/codex@latest"], {
+              what: "Updates Codex to the newest version.",
+              words: [["npm", "Node's installer for packages"], ["-g", "global: for the whole laptop"], ["@latest", "the newest version"]],
+              record: (/** @type {Context} */ c) => {
+                delete c.state.codexVersion; // read again below
+              },
+            }),
+            {
+              kind: /** @type {const} */ ("auto"),
+              command: { display: "codex --version", argv: ["codex", ...CODEX_FLAGS, "--version"], what: "Checks the version you have now.", record: (/** @type {Context} */ c, /** @type {string} */ text) => {
+                const version = /\d+\.\d+\.\d+[\w.-]*/.exec(text)?.[0];
+                if (version) c.state.codexVersion = version;
+              } },
+            },
+          ];
         return [
           ...(installed
             ? []
@@ -1926,7 +1959,7 @@ const ACCOUNT_STEPS = new Set(["gh-login", "git-helper", "fork", "clone", "push"
  * current step planned, and only once the typed text matches.
  * @param {Context} ctx
  * @param {Step[]} steps
- * @param {{ mode?: "setup" | "week", week?: number, published?: boolean, setupSteps?: number, autoSteps?: number, inWork?: boolean, next?: number, groups?: WeekGroup[], update?: boolean, focus?: number }} [meta]  what the page is for:
+ * @param {{ mode?: "setup" | "week", week?: number, published?: boolean, setupSteps?: number, autoSteps?: number, inWork?: boolean, next?: number, groups?: WeekGroup[], update?: boolean, focus?: number, home?: number }} [meta]  what the page is for:
  *   setup (week 1), or getting week N (published: false when week N isn't out yet)
  * @param {{ agentTransport?: (cwd: string) => AgentTransport }} [options]  (tests: a scripted Codex)
  */
@@ -2057,6 +2090,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
       checks: { week: checks.week, phase: checks.phase, out: cleanOutput(checks.out) },
       code,
       focus: meta.focus ?? 0,
+      home: meta.home ?? 0,
       update: Boolean(meta.update),
       next: meta.next ?? 0,
       // Only on the finish screen: it asks git.
@@ -2155,7 +2189,21 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
   /** Runs the next action if it needs no typing. @param {number} mine */
   async function advance(mine) {
     const action = plan[view.index];
-    if (action?.kind === "auto") await runCommand(/** @type {Command} */ (commandOf(action, ctx)), mine, true);
+    const command = action ? commandOf(action, ctx) : null;
+    // Never an account change by itself (gh auth switch): that's the person's call.
+    // Never an account change (gh auth switch) or undoing a merge (it would throw away a hand-resolved,
+    // uncommitted merge) by itself: those are the person's call.
+    const theirs = command && (command.argv[0] === "gh" || (command.argv[0] === "git" && command.argv.includes("--abort")));
+    if (action?.kind === "auto" || (command && resuming() && !command.waitFor && !theirs)) await runCommand(/** @type {Command} */ (command), mine, true);
+  }
+
+  /**
+   * Getting the week's work runs by itself (save, fetch, merge, push, install, check): students do it
+   * every week. Only the week steps after setup, and never a command that needs the person (a
+   * browser sign-in): a step that fails stops here, saying what to do, as before.
+   */
+  function resuming() {
+    return meta.mode === "week" && setupSteps > 0 && current >= setupSteps && current < steps.length && !ctx.dryRun;
   }
 
   /** @param {string} text @param {boolean} [already] */
@@ -2166,6 +2214,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     view = { ...blank("passed"), already, index: view.index };
     if (!ctx.dryRun) ctx.save?.();
     publish();
+    if (resuming() && !acct) void enter(current + 1);
   }
 
   /** @param {{ what: string, fix: string, back?: number, stop?: boolean, items?: { check: string, found: string, fix: string }[] }} error */
@@ -2389,7 +2438,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
   /** A week the student has in their work (its page, board, checks and code open). @param {number} week */
   function weekIn(week) {
     const g = (meta.groups ?? []).find((x) => x.week === week);
-    return Boolean(g && (["setup", "done", "inwork"].includes(g.status) || (g.status === "get" && current >= steps.length)));
+    return Boolean(g && (["setup", "done", "inwork", "open"].includes(g.status) || (g.status === "get" && current >= steps.length)));
   }
 
   /** @param {Record<string, unknown>} a */
@@ -2469,15 +2518,17 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     const week = Number(a.week);
     if (!dir || !Number.isInteger(week) || !weekIn(week)) return reject(409, "That week isn't in your work yet.");
     const task = weekCode(ctx, dir, week).find((t) => t.id === a.id);
-    if (!task || code[task.id]?.phase !== "passed") return reject(409, "Commit a task once its tests pass.");
-    if (code[task.id]?.rev !== task.rev) return reject(409, "This task changed after its tests ran: run them again first.");
+    // A task no test checks yet (the guide says "Test: none yet") is committed once it's written.
+    const untested = Boolean(task && !task.stubbed && task.needs && !Object.values(task.needs).some((ids) => ids.includes(task.id)));
+    if (!task || (code[task.id]?.phase !== "passed" && !untested)) return reject(409, "Commit a task once its tests pass.");
+    if (!untested && code[task.id]?.rev !== task.rev) return reject(409, "This task changed after its tests ran: run them again first.");
     // Once is enough: a second press would commit whatever else is in the file by then, under this task's name.
-    if (code[task.id]?.done) return reject(409, "This task is already committed.");
+    if (code[task.id]?.done && code[task.id]?.rev === task.rev) return reject(409, "This task is already committed.");
     const message = `week ${week}: ${task.id}`;
     const r = ctx.capture(["git", "commit", "-q", "-m", message, "--", task.file], dir);
     const said = `${r?.stdout ?? ""}${r?.stderr ?? ""}`;
     const committed = r?.code === 0 ? `Committed: ${message}` : /nothing (added )?to commit|no changes added/i.test(said) ? "Nothing new to commit: it's already in a commit." : `The commit didn't work: ${said.trim().split("\n")[0]}`;
-    code = { ...code, [task.id]: { ...code[task.id], committed, done: r?.code === 0 || /already in a commit/.test(committed) } };
+    code = { ...code, [task.id]: { ...(code[task.id] ?? { phase: "passed" }), rev: task.rev, committed, done: r?.code === 0 || /already in a commit/.test(committed) } };
     agent.commitDone(task.id);
     publish();
     return { ...ok, said: committed };
@@ -2502,7 +2553,10 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
   /** The tasks the Agent tab can work on: this week's first, then earlier weeks' (a class may reach back). @param {string} dir @param {number} week */
   const agentTaskList = (dir, week) => {
     const out = [];
-    for (let w = week; w >= 1; w--) out.push(...weekCode(ctx, dir, w).map((t) => ({ ...t, week: w })));
+    // This week's first, then earlier weeks', then later ones (a class can reach either way, and
+    // later weeks' code may be in the folder already).
+    const order = [week, ...Array.from({ length: week - 1 }, (_, i) => week - 1 - i), ...Array.from({ length: Math.max(0, 9 - week) }, (_, i) => week + 1 + i)];
+    for (const w of order) out.push(...weekCode(ctx, dir, w).map((t) => ({ ...t, week: w })));
     return out;
   };
   const agent = createAgent(ctx, {
@@ -2519,7 +2573,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
   async function runChecks(week) {
     const dir = ctx.state.repoDir;
     const g = (meta.groups ?? []).find((x) => x.week === week);
-    if (!dir || !g || !(["setup", "done", "inwork"].includes(g.status) || (g.status === "get" && current >= steps.length))) return reject(409, "That week isn't in your work yet.");
+    if (!dir || !g || !(["setup", "done", "inwork", "open"].includes(g.status) || (g.status === "get" && current >= steps.length))) return reject(409, "That week isn't in your work yet.");
     if (checksRun) return reject(409, "The checks are already running.");
     checks = { week, phase: "running", out: "" };
     publish();
@@ -2856,7 +2910,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
      */
     weekPage: (week) => {
       const g = (meta.groups ?? []).find((x) => x.week === week);
-      const isIn = g && (["setup", "done", "inwork"].includes(g.status) || (g.status === "get" && current >= steps.length));
+      const isIn = g && (["setup", "done", "inwork", "open"].includes(g.status) || (g.status === "get" && current >= steps.length));
       const dir = ctx.state.repoDir;
       if (!isIn || !dir) return null;
       for (const rel of [g.page, g.guide ?? `docs/weeks/week-${pad2(week)}.md`]) {
@@ -2875,7 +2929,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
       // week is in the student's work, as always.
       if (ctx.state.repoDir) return null;
       const g = (meta.groups ?? []).find((x) => x.week === week);
-      if (!g || !["setup", "done", "inwork", "get"].includes(g.status)) return null;
+      if (!g || !["setup", "done", "inwork", "get", "open"].includes(g.status)) return null;
       for (const rel of [g.page, g.guide ?? `docs/weeks/week-${pad2(week)}.md`]) if (rel && /^docs\/weeks\/week-\d{2}\.(html|md)$/.test(rel)) return rel;
       return null;
     },
@@ -2888,6 +2942,12 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
       const dir = ctx.state.repoDir;
       if (!dir || !weekIn(week)) return null;
       return agentTaskList(dir, week).map((t) => ({ id: t.id, week: t.week, description: t.description }));
+    },
+    /** The Build tab's steps for a week, from its guide, each with where its task stands. @param {number} week */
+    buildSteps: (week) => {
+      const dir = ctx.state.repoDir;
+      if (!dir || !weekIn(week)) return null;
+      return buildSteps(ctx, dir, week, agentTaskList(dir, week));
     },
     /** The Agent tab's state: a snapshot; numbered "agent" events follow it. */
     agentSnapshot: () => agent.snapshot(),
@@ -2959,7 +3019,7 @@ export const AGENT_PERMISSIONS_LINE = "Without asking, Codex can read files on y
 export const AGENT_CONFIG = { sandbox_workspace_write: { writable_roots: [], network_access: false }, web_search: "disabled", features: { multi_agent: false } };
 /** Studio's teaching policy, as trusted instructions for the thread. The course's rules are in the repo's AGENTS.md. */
 export const AGENT_POLICY = `You are working with a student inside NetSim Studio, on their own copy of the NetSim course. The repo's AGENTS.md has the course's rules. Each message may start with a <studio-context> block from the studio: the week, the selected task and its focused test command.
-- The student leads. If they haven't said how they want to approach the task, ask for their approach before changing anything.
+- The student leads. If the message already names an approach, use it; ask for their approach only when it doesn't. Also: when the <studio-context> says "Guided step", the course's prompt is the approach they chose: don't ask, go ahead.
 - Before each change, say in a sentence or two what you'll change and why. Stay inside the selected task. You may write the code; they must be able to explain it, so explain it.
 - After a change, run the task's focused test command and read the result with them.
 - Ask before moving on to a different task. Never edit tests.
@@ -3096,7 +3156,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
   let seq = 0;
   let generation = 0;
   let version = "";
-  /** @type {{ type: string, email?: string | null } | null} */
+  /** @type {{ type: string, email?: string | null, planType?: string } | null} */
   let account = null;
   let problem = "";
   let loginUrl = "";
@@ -3150,7 +3210,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     generation,
     version,
     minVersion: CODEX_MIN_VERSION,
-    account: account && { type: account.type, ...(account.email ? { email: account.email } : {}) },
+    account: account && { type: account.type, ...(account.email ? { email: account.email } : {}), ...(account.planType ? { planType: account.planType } : {}) },
     problem,
     loginUrl,
     threadId,
@@ -3214,9 +3274,14 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
   // ── Approvals ──
   const cardKey = (/** @type {{ generation: number, threadId: string, turnId: string, itemId: string, approvalId: string, requestId: number | string, fingerprint: string }} */ c) =>
     [c.generation, c.threadId, c.turnId, c.itemId, c.approvalId, c.requestId, c.fingerprint].join("|");
+  /** A path as the student knows it: inside the course folder, relative to it. @param {string} p */
+  const shortPath = (p) => {
+    const dir = repo();
+    return dir && p.startsWith(`${dir}/`) ? p.slice(dir.length + 1) : p;
+  };
   const fileChanges = (/** @type {unknown} */ changes) =>
     (Array.isArray(changes) ? changes : []).map((c) => ({
-      path: String(c?.path ?? ""),
+      path: shortPath(String(c?.path ?? "")),
       kind: String(typeof c?.kind === "object" ? (c.kind?.type ?? "update") : (c?.kind ?? "update")),
       diff: String(c?.diff ?? "").slice(0, AGENT_MAX_OUTPUT),
       ...(c?.kind?.move_path ? { movePath: String(c.kind.move_path) } : {}),
@@ -3380,11 +3445,20 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
         return;
       case "error":
         if (params.willRetry) return note("info", `Codex hit a problem and is trying again: ${String(params.error?.message ?? "").slice(0, 300)}`);
-        return note("bad", `Codex: ${String(params.error?.message ?? "something went wrong").slice(0, 500)}`);
+        return note("bad", planWords(params.error) ?? `Codex: ${String(params.error?.message ?? "something went wrong").slice(0, 500)}`);
       case "turn/completed":
         return onTurnDone(params.turn);
       default:
     }
+  }
+
+  /** Codex refusing for plan or usage reasons, in words a student can act on (null for anything else). @param {any} error */
+  function planWords(error) {
+    const info = JSON.stringify(error?.codexErrorInfo ?? "");
+    const text = `${info} ${String(error?.message ?? "")}`;
+    if (/usageLimit|usage limit|rate.?limit|quota/i.test(text)) return `You've reached your plan's Codex limit (${String(error?.message ?? "").slice(0, 200)}). The course uses ChatGPT Plus: upgrade to Plus at chatgpt.com, or wait until the limit resets, then send again.`;
+    if (/plan|subscription|upgrade|not (available|included)|unauthori[sz]ed|401|403/i.test(text)) return `Codex refused because of your ChatGPT account: ${String(error?.message ?? "").slice(0, 300)} The course needs a paid plan with Codex: upgrade at chatgpt.com, then send again.`;
+    return null;
   }
 
   /** @param {any} done */
@@ -3393,7 +3467,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     if (stopTimer) clearTimeout(stopTimer);
     stopTimer = null;
     cards = cards.filter((c) => c.turnId !== (done?.id ?? turn?.id));
-    if (done?.status === "failed") note("bad", `This turn failed: ${String(done?.error?.message ?? "Codex didn't say why.").slice(0, 500)}`);
+    if (done?.status === "failed") note("bad", planWords(done?.error) ?? `This turn failed: ${String(done?.error?.message ?? "Codex didn't say why.").slice(0, 500)}`);
     else if (done?.status === "interrupted") {
       note("info", "Stopped. Anything it had already changed is still in your folder.");
       // Interrupting a turn leaves a command it started still running (measured on 0.166.0): end those too.
@@ -3603,11 +3677,12 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
    * tasks, never from the browser's words.
    * @param {string} dir @param {number} week @param {unknown} taskId
    */
-  function turnContext(dir, week, taskId) {
+  function turnContext(dir, week, taskId, guided = false) {
     const lines = [`${weekTitle(week)} (week ${week}).`, `Guide: docs/weeks/week-${pad2(week)}.md. Tests: tests/week-${pad2(week)}/.`];
     const task = taskId ? weekTasks(dir, week).find((t) => t.id === taskId) : undefined;
     if (task) lines.push(`Selected task: ${task.id} in ${task.file}: ${task.description}`, `Focused test command: ${focusedTestCommand(task)}`, "Tests in those files that belong to tasks not done yet don't count against this one; the studio checks that itself at the end of your turn.");
     else lines.push("No task selected: ask which one they're on if it matters.");
+    if (guided) lines.push("Guided step: the student pressed Send on this step in the Build tab, so the message is the course's prompt and its approach is the one they chose. Don't ask for an approach: write it, explaining each part as you go, then run the focused test.");
     return `<studio-context>\n${lines.join("\n")}\n</studio-context>`;
   }
 
@@ -3631,19 +3706,19 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     notedHints = false;
     put({ id: `user-${++noteId}`, kind: "user", text });
     publishState();
-    void startTurn(dir, week, a.task, text);
+    void startTurn(dir, week, a.task, text, a.guided === true);
     return good;
   }
 
-  /** @param {string} dir @param {number} week @param {unknown} task @param {string} text */
-  async function startTurn(dir, week, task, text) {
+  /** @param {string} dir @param {number} week @param {unknown} task @param {string} text @param {boolean} [guided] */
+  async function startTurn(dir, week, task, text, guided = false) {
     const mine = generation;
     try {
       await ensureThread(dir);
       const r = await rpc("turn/start", {
         threadId,
         input: [
-          { type: "text", text: turnContext(dir, week, task), text_elements: [] },
+          { type: "text", text: turnContext(dir, week, task, guided), text_elements: [] },
           { type: "text", text, text_elements: [] },
         ],
         cwd: dir,
@@ -3744,6 +3819,11 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
           return stopTurn();
         case "agent-login":
           return login();
+        case "agent-recheck":
+          // After upgrading the plan: ask Codex again who's signed in, and on which plan.
+          if (phase !== "ready" || !link) return fail(409, "Codex isn't running.");
+          await readAccount();
+          return good;
         case "agent-fix":
           return runFix(a);
         default:
@@ -3798,21 +3878,147 @@ export function checkRequest(req, studio) {
 }
 
 /**
+ * Markdown for the agent's replies in the chat. The text is untrusted (it comes from the model), so
+ * everything is escaped before any markup is added: no HTML gets through, links are http(s) only and
+ * open in a new tab with no referrer or opener, and images are never loaded (their alt text shows).
+ * Fenced code gets a box with its language and a Copy button; a fence still open while the reply
+ * streams shows as code until it closes. Self-contained: it also runs in the page.
+ * @param {string} markdown
+ * @returns {string}
+ */
+export function chatMarkdown(markdown) {
+  const esc = (/** @type {string} */ t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  /** @param {string} escaped  the URL as it stands in escaped text @param {string} label */
+  const link = (escaped, label) => {
+    const url = escaped.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    return /^https?:\/\/[^\s"'<>`\\]+$/i.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${label}</a>` : label;
+  };
+  /** Inline markup on already-escaped text: code, links, bold, italic. @param {string} raw */
+  const inline = (raw) =>
+    raw
+      .split(/(`[^`\n]+`)/)
+      .map((part, i) => {
+        if (i % 2 === 1) return `<code>${esc(part.slice(1, -1))}</code>`;
+        // Links become placeholders first, so emphasis can't reach into their markup or address.
+        /** @type {string[]} */
+        const held = [];
+        const hold = (/** @type {string} */ html) => `\u0000${held.push(html) - 1}\u0000`;
+        return esc(part.replace(/\u0000/g, ""))
+          .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt) => `[image: ${alt}]`)
+          .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => hold(link(url, label)))
+          .replace(/(^|[\s(])(https?:\/\/(?:(?!&quot;|&#39;|&lt;|&gt;)[^\s<\u0000])*[^\s<.,;:!?)&\u0000])/g, (_m, pre, url) => `${pre}${hold(link(url, url))}`)
+          .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+          .replace(/(^|[^*\w])\*([^*\s][^*\n]*)\*/g, "$1<em>$2</em>")
+          .replace(/(^|\W)_([^_\s][^_\n]*)_(?=\W|$)/g, "$1<em>$2</em>")
+          .replace(/\u0000(\d+)\u0000/g, (_m, n) => held[Number(n)] ?? "");
+      })
+      .join("");
+  const lines = String(markdown ?? "").replace(/\r\n?/g, "\n").split("\n");
+  const listMark = /^(\s*)([-*+]|\d+[.)])\s+/;
+  const rule = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+  const cells = (/** @type {string} */ l) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  /** @type {string[]} */
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+    const fence = /^\s*```\s*([\w+#.-]*)/.exec(line);
+    if (fence) {
+      const body = [];
+      i++;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) body.push(lines[i++]);
+      i++;
+      out.push(`<div class="mdcode"><div class="mdcodebar"><span>${esc(fence[1] || "text")}</span><button class="mdcopy" type="button" data-md-copy>Copy</button></div><pre><code>${esc(body.join("\n"))}</code></pre></div>`);
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      const level = Math.min(6, heading[1].length + 2);
+      out.push(`<h${level}>${inline(heading[2].replace(/\s*#+\s*$/, ""))}</h${level}>`);
+      i++;
+      continue;
+    }
+    if (/^\s*>/.test(line)) {
+      const body = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) body.push(lines[i++].replace(/^\s*>\s?/, ""));
+      out.push(`<blockquote>${chatMarkdown(body.join("\n"))}</blockquote>`);
+      continue;
+    }
+    if (line.includes("|") && i + 1 < lines.length && rule.test(lines[i + 1])) {
+      const head = cells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) rows.push(cells(lines[i++]));
+      out.push(`<div class="mdtable"><table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+      continue;
+    }
+    const mark = listMark.exec(line);
+    if (mark) {
+      const ordered = /\d/.test(mark[2]);
+      const items = [];
+      while (i < lines.length) {
+        const m = listMark.exec(lines[i]);
+        if (!m || /\d/.test(m[2]) !== ordered) break;
+        const body = [lines[i].slice(m[0].length)];
+        i++;
+        while (i < lines.length && lines[i].trim() && !listMark.test(lines[i]) && !/^\s*```/.test(lines[i])) body.push(lines[i++].trim());
+        items.push(`<li>${inline(body.join(" "))}</li>`);
+      }
+      out.push(ordered ? `<ol>${items.join("")}</ol>` : `<ul>${items.join("")}</ul>`);
+      continue;
+    }
+    const para = [line.trim()];
+    i++;
+    while (i < lines.length && lines[i].trim() && !/^\s*(```|#{1,6}\s|>)/.test(lines[i]) && !listMark.test(lines[i]) && !(lines[i].includes("|") && rule.test(lines[i + 1] ?? ""))) para.push(lines[i++].trim());
+    out.push(`<p>${inline(para.join(" "))}</p>`);
+  }
+  return out.join("");
+}
+
+/**
+ * A command as a student reads it: without the shell wrapper Codex puts around it
+ * (`/bin/zsh -lc 'npx vitest run …'` shows as `npx vitest run …`).
+ * @param {string} command
+ */
+export function plainCommand(command) {
+  const m = /^\s*(?:\/(?:usr\/)?bin\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1\s*$/.exec(String(command ?? ""));
+  if (!m) return /^\s*(?:\/(?:usr\/)?bin\/)?(?:ba|z)?sh\s+-l?c\s+(\S+)\s*$/.exec(String(command ?? ""))?.[1] ?? String(command ?? "");
+  // The shell's ways of putting a ' inside '…': '\'' and '"'"'.
+  return m[1] === "'" ? m[2].replace(/'\\''/g, "'").replace(/'"'"'/g, "'") : m[2].replace(/\\(["\\$`])/g, "$1");
+}
+
+/**
  * Markdown to HTML for the course's own documents (guides, ARCHITECTURE.md, design notes), shown
  * inside the studio: headings, paragraphs, lists (nested, with code inside), code fences, tables,
  * quotes, rules, links and images. Everything is escaped first; only safe link schemes survive.
  * @param {string} markdown
  * @returns {string}
  */
-export function renderMarkdown(markdown) {
+export function renderMarkdown(markdown, { strict = false } = {}) {
   const lines = markdown.replace(/\r\n?/g, "\n").replace(/<!--[\s\S]*?-->/g, "").split("\n");
-  return blocks(lines);
+  strictLinks = strict;
+  try {
+    return blocks(lines);
+  } finally {
+    strictLinks = false;
+  }
 }
 
 /** @param {string} t */
 const escHtml = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 /** A link target the course's documents may use: relative, #anchor, http(s) or mailto. @param {string} url */
-const safeUrl = (url) => (/^(?:[a-z][a-z0-9+.-]*:)/i.test(url) && !/^(?:https?|mailto):/i.test(url) ? "#" : url);
+const safeUrl = (url) => {
+  // Browsers drop control characters and whitespace inside a URL, so "\x01javascript:" is javascript:.
+  const bare = url.replace(/[\x00-\x20\x7f-\x9f]/g, "");
+  if (strictLinks) return /^https?:\/\/[^\s"'<>`\\]+$/i.test(bare) ? bare : "#";
+  return /^(?:[a-z][a-z0-9+.-]*:)/i.test(bare) && !/^(?:https?|mailto):/i.test(bare) ? "#" : bare;
+};
+/** While rendering for the studio's own page (design notes): links only http(s), no images. */
+let strictLinks = false;
 
 /** @param {string} text */
 function inline(text) {
@@ -3821,8 +4027,8 @@ function inline(text) {
     .map((part, i) => {
       if (i % 2 === 1) return `<code>${escHtml(part.replace(/^`+|`+$/g, ""))}</code>`;
       return escHtml(part)
-        .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => `<img alt="${alt}" src="${safeUrl(url)}">`)
-        .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, url) => `<a href="${safeUrl(url)}">${label}</a>`)
+        .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => (strictLinks ? `[image: ${alt}]` : `<img alt="${alt}" src="${safeUrl(url)}">`))
+        .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, url) => (strictLinks ? (safeUrl(url) === "#" ? label : `<a href="${safeUrl(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`) : `<a href="${safeUrl(url)}">${label}</a>`))
         .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
         .replace(/(^|[^*\w])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>");
     })
@@ -4099,6 +4305,12 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
       res.writeHead(200, { ...secure, "content-type": "text/javascript; charset=utf-8" }).end(body);
       return;
     }
+    // The Build tab's steps.
+    if (req.method === "GET" && url.pathname === "/api/build") {
+      const steps = studio.buildSteps(Number(url.searchParams.get("week")));
+      res.writeHead(steps ? 200 : 409, { ...secure, "content-type": "application/json" }).end(JSON.stringify({ steps: steps ?? [] }));
+      return;
+    }
     // The tasks the Agent tab can work on.
     if (req.method === "GET" && url.pathname === "/api/agent/tasks") {
       const tasks = studio.agentTasks(Number(url.searchParams.get("week")));
@@ -4121,7 +4333,7 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
     // (pageCsp), at a read-only path of their own: the address with the cookie just goes there.
     const dir = studio.repoDir();
     const viewing = view !== null;
-    const file = req.method === "GET" && dir && (viewing || !["/events", "/api/act", "/api/code", "/api/agent", "/api/agent/tasks", "/editor.js"].includes(url.pathname)) ? courseFile(dir, viewing ? view[2] : url.pathname) : null;
+    const file = req.method === "GET" && dir && (viewing || !["/events", "/api/act", "/api/code", "/api/agent", "/api/agent/tasks", "/api/build", "/editor.js"].includes(url.pathname)) ? courseFile(dir, viewing ? view[2] : url.pathname) : null;
     if (file && !viewing) {
       res.writeHead(302, { ...secure, location: `/view/${viewToken}${url.pathname}` }).end();
       return;
@@ -4328,13 +4540,21 @@ export function codeFilePath(dir, rel) {
  */
 export function guideFor(guide, week, id, file) {
   const lines = guide.split("\n");
-  const at = lines.findIndex((l) => l.includes(`TODO(week ${week}, ${id})`));
+  // A guide in the build-step format marks each task (<!-- step week=W id=ID -->): its concept and
+  // prompt follow the mark. Older guides name the task's TODO in the text.
+  const marked = lines.findIndex((l) => new RegExp(`^\\s*<!--\\s*step\\s+week=\\d+\\s+id=${id}\\s*-->`).test(l));
+  const at = marked >= 0 ? marked : lines.findIndex((l) => l.includes(`TODO(week ${week}, ${id})`));
   if (at < 0) return { lesson: "", prompt: "", order: Infinity };
   let from = at;
   while (from > 0 && lines[from - 1].trim() && !/^\s*([-*]|\d+\.)\s/.test(lines[from])) from--;
   let to = at + 1;
   while (to < lines.length && lines[to].trim() && !/^\s*([-*]|\d+\.)\s/.test(lines[to]) && !/^\s*```/.test(lines[to])) to++;
-  const lesson = lines.slice(from, to).map((l) => l.trim()).join(" ").replace(/^([-*]|\d+\.)\s+/, "");
+  let lesson = lines.slice(from, to).map((l) => l.trim()).join(" ").replace(/^([-*]|\d+\.)\s+/, "");
+  if (marked >= 0) {
+    let end = marked + 1;
+    while (end < lines.length && !/^\s*```/.test(lines[end]) && !/^\s*<!--\s*step\b/.test(lines[end]) && !/^#{2,3} /.test(lines[end])) end++;
+    lesson = lines.slice(marked + 1, end).map((l) => l.trim()).join(" ").replace(/\s+/g, " ").trim();
+  }
   let prompt = "";
   {
     // The guide's ready prompt: the first ```text block after the task, if it names this file. The
@@ -4356,6 +4576,117 @@ export function guideFor(guide, week, id, file) {
     }
   }
   return { lesson, prompt, order: at };
+}
+
+/**
+ * A week's build steps, from its guide (docs/weeks/week-NN.md), in order. Each step is a block the
+ * guide marks with <!-- step week=W id=ID -->: the "### " heading above it is its title, the text
+ * between the mark and its first ```text block is the concept, that block is the prompt, then a
+ * "Test: `cmd`" (or "Test: none yet: why") line, an "Ask:" line and a "Stuck?" line (the common
+ * failure and what to try, shown under the step, first when its test is red). Steps under a "## " heading that
+ * says take-home come after, marked so. Each carries where its task stands: still the stub, or
+ * committed as it is now.
+ * @param {Context} ctx @param {string} dir @param {number} week
+ * @param {{ id: string, week: number, file: string, stubbed: boolean, rev: string }[]} tasks  every week's tasks
+ */
+export function buildSteps(ctx, dir, week, tasks) {
+  const guide = ctx.readText(join(dir, `docs/weeks/week-${pad2(week)}.md`)) ?? "";
+  const lines = guide.split("\n");
+  /** @type {{ title: string, week: number, id: string, concept: string, prompt: string, test: string, testNote: string, ask: string, stuck: string, takeHome: boolean, component: { id: string, title: string, intro: string, works: string, check: string, board: boolean, notes: string } }[]} */
+  const found = [];
+  let section = "";
+  let heading = "";
+  /** @type {{ id: string, title: string, intro: string, works: string, check: string, board: boolean, notes: string }} */
+  let component = { id: "", title: "", intro: "", works: "", check: "", board: false, notes: "" };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^## /.test(line)) section = line;
+    // A component: "## Component N · title", its mark, a short intro, then "When it works:", and
+    // optional "Check: `cmd`" and "Board: yes" lines. Its steps are the step blocks until the next one.
+    const comp = /^\s*<!--\s*component\s+id=([a-z0-9-]+)\s*-->\s*$/.exec(line);
+    if (comp) {
+      const intro = [];
+      let works = "";
+      let check = "";
+      let board = false;
+      let k = i + 1;
+      /** @type {string[]} */
+      const notes = [];
+      for (; k < lines.length && !/^#{2,3} /.test(lines[k]) && !/^\s*<!--\s*(step|component)\b/.test(lines[k]); k++) {
+        // The component's reference (state table, encoding…): <!-- notes --> … <!-- /notes -->.
+        if (/^\s*<!--\s*notes\s*-->\s*$/.test(lines[k])) {
+          for (k++; k < lines.length && !/^\s*<!--\s*\/notes\s*-->\s*$/.test(lines[k]); k++) if (!/^####\s+Design notes\s*$/i.test(lines[k])) notes.push(lines[k]);
+          continue;
+        }
+        const w = /^\s*When it works:\s*(.+)$/.exec(lines[k]);
+        const c = /^\s*Check:\s*`([^`]+)`/.exec(lines[k]);
+        if (w) {
+          works = w[1].trim();
+          check ||= /`([^`]+)`/.exec(works)?.[1] ?? "";
+          board ||= /On the Board/i.test(works);
+        }
+        else if (c) check = c[1];
+        else if (/^\s*Board:\s*yes\b/i.test(lines[k])) board = true;
+        else intro.push(lines[k].trim());
+      }
+      // Its title: "### Component · title" (or "## Component N · title") just above the mark.
+      const above = /^Component\b/i.test(heading) ? heading : section.replace(/^##\s+/, "");
+      component = { id: comp[1], title: above.replace(/^Component\s*(\d+\s*)?·\s*/i, "").trim(), intro: intro.join(" ").replace(/\s+/g, " ").trim(), works, check, board, notes: notes.length ? renderMarkdown(notes.join("\n"), { strict: true }) : "" };
+      continue;
+    }
+    if (/^### /.test(line)) heading = line.slice(4).trim();
+    const mark = /^\s*<!--\s*step\s+week=(\d+)\s+id=([a-z0-9-]+)\s*-->\s*$/.exec(line);
+    if (!mark) continue;
+    let j = i + 1;
+    const concept = [];
+    while (j < lines.length && !/^\s*```text\s*$/.test(lines[j]) && !/^\s*<!--\s*step\b/.test(lines[j]) && !/^#{2,3} /.test(lines[j])) concept.push(lines[j++]);
+    let prompt = "";
+    if (/^\s*```text\s*$/.test(lines[j] ?? "")) {
+      const close = lines.findIndex((l, k) => k > j && /^\s*```\s*$/.test(l));
+      const block = lines.slice(j + 1, close < 0 ? undefined : close);
+      const pad = Math.min(...block.filter((l) => l.trim()).map((l) => /^\s*/.exec(l)?.[0].length ?? 0));
+      // The guide wraps at 100 columns: each sentence back on one line (list items keep theirs).
+      prompt = block
+        .map((l) => l.slice(Number.isFinite(pad) ? pad : 0))
+        .reduce((out, l) => (out.length && l.trim() && !/^\s*(\d+\.|[-*])\s/.test(l) && out[out.length - 1].trim() ? [...out.slice(0, -1), `${out[out.length - 1]} ${l.trim()}`] : [...out, l]), /** @type {string[]} */ ([]))
+        .join("\n")
+        .trim();
+      j = close < 0 ? lines.length : close + 1;
+    }
+    let test = "";
+    let testNote = "";
+    let ask = "";
+    let stuck = "";
+    for (let k = j; k < lines.length && k < j + 8 && !/^\s*<!--\s*step\b/.test(lines[k]) && !/^#{2,3} /.test(lines[k]); k++) {
+      const t = /Test:\s*`([^`]+)`/.exec(lines[k]);
+      if (t) test = t[1];
+      else if (/^\s*Test:\s*none/i.test(lines[k])) testNote = lines[k].replace(/^\s*Test:\s*/i, "").replace(/\s*·.*$/, "").trim();
+      const q = /^\s*Ask:\s*(.+)$/.exec(lines[k]);
+      if (q) ask = q[1].trim();
+      const h = /^\s*Stuck\?\s*(.+)$/.exec(lines[k]);
+      if (h) stuck = h[1].trim();
+    }
+    found.push({ title: heading.replace(/^(Round|Step|Take-home)\s+\d+\s*·\s*/i, ""), week: Number(mark[1]), id: mark[2], concept: concept.map((l) => l.trim()).join(" ").replace(/\s+/g, " ").trim(), prompt, test, testNote, ask, stuck, takeHome: /take-?home/i.test(section), component });
+  }
+  const ordered = [...found.filter((x) => !x.takeHome), ...found.filter((x) => x.takeHome)];
+  /** @type {Map<string, Map<string, string>>} */
+  const committedFiles = new Map();
+  const inHead = (/** @type {string} */ file, /** @type {string} */ id) => {
+    if (!committedFiles.has(file)) {
+      const text = output(ctx, ["git", "show", `HEAD:${file}`], dir) ?? "";
+      const head = text.split("\n");
+      committedFiles.set(file, new Map(findCodeRegions(text).map((r) => [r.id, head.slice(r.start + 1, r.end).map((l) => l.trim()).join("\n")])));
+    }
+    return committedFiles.get(file)?.get(id);
+  };
+  return ordered.map((step, n) => {
+    const task = tasks.find((t) => t.id === step.id && t.week === step.week) ?? tasks.find((t) => t.id === step.id);
+    const now = task ? (ctx.readText(join(dir, task.file)) ?? "") : "";
+    const region = task ? findCodeRegions(now).find((r) => r.id === task.id) : undefined;
+    const body = region ? now.split("\n").slice(region.start + 1, region.end).map((l) => l.trim()).join("\n") : "";
+    const committed = Boolean(task && !task.stubbed && region && inHead(task.file, task.id) === body);
+    return { n: n + 1, ...step, week: task?.week ?? step.week, file: task?.file ?? "", found: Boolean(task), stubbed: task?.stubbed ?? true, committed };
+  });
 }
 
 /** A task's lines as the course released them, by week, file and task (they don't change while a studio runs). @type {Map<string, string | null>} */
@@ -4955,13 +5286,105 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .tab { font: 600 13.5px/1 "Inter", sans-serif; padding: 9px 14px; border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0; background: none; cursor: pointer; color: var(--muted); }
 .tab.on { color: var(--ink); background: var(--panel); border-color: var(--line); margin-bottom: -1px; }
 .tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
-.agenttab { display: grid; gap: 12px; padding-bottom: 24px; }
+.agenttab { display: grid; gap: 12px; padding-bottom: 24px; min-width: 0; }
+.chatui { display: grid; gap: 10px; }
+/* The Build view takes the whole width: the course list hides while it's open. */
+.work:has(.chatui) { grid-template-columns: minmax(0, 1fr) !important; }
+.work:has(.chatui) .steps { display: none; }
+.ctop { display: flex; justify-content: space-between; align-items: center; gap: 16px; background: var(--green); color: #fff; border-radius: 10px; padding: 10px 14px; }
+.ctop .csub { color: #cfe8dc; font-size: 13px; }
+.cprog { display: grid; gap: 4px; min-width: 200px; font-size: 12.5px; text-align: right; }
+.ctop .bbar { background: rgba(255,255,255,.2); }
+.cgrid { --chat: 40%; display: grid; grid-template-columns: minmax(280px, var(--chat)) 10px minmax(0, 1fr); align-items: stretch; height: calc(100vh - 320px); min-height: 380px; }
+.ccol { min-width: 0; overflow-y: auto; padding-right: 6px; display: flex; flex-direction: column; }
+.ccol .agenttab { flex: 1; align-content: start; padding-bottom: 0; }
+.ccol .aglog { max-height: none; overflow: visible; }
+.cdiv { cursor: col-resize; display: grid; place-items: center; }
+.cdiv::after { content: ""; width: 3px; height: 32px; border-radius: 3px; background: var(--line); }
+.cpanel { min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.ctabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); padding: 6px 8px 0; }
+.ctab { border: 0; background: none; padding: 8px 10px; font: 600 13px/1 "Inter", sans-serif; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+.cpane { flex: 1; overflow: auto; padding: 10px 12px; min-height: 0; }
+.cpane iframe.doc { min-height: 100%; height: calc(100vh - 360px); }
+.chatui:not([data-panel="notes"]) .cpane[data-pane="notes"], .chatui:not([data-panel="steps"]) .cpane[data-pane="steps"], .chatui:not([data-panel="files"]) .cpane[data-pane="files"], .chatui[data-panel="notes"] .cpane[data-pane="viz"], .chatui[data-panel="steps"] .cpane[data-pane="viz"], .chatui[data-panel="files"] .cpane[data-pane="viz"] { display: none; }
+.chatui:not([data-panel]) .cpane:not([data-pane="viz"]) { display: none; }
+.chatui[data-panel="viz"] .ctab[data-cpane-tab="viz"], .chatui:not([data-panel]) .ctab[data-cpane-tab="viz"], .chatui[data-panel="notes"] .ctab[data-cpane-tab="notes"], .chatui[data-panel="steps"] .ctab[data-cpane-tab="steps"], .chatui[data-panel="files"] .ctab[data-cpane-tab="files"] { color: var(--ink); border-bottom-color: var(--green); }
+.crow { display: flex; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.crow.locked { opacity: .5; }
+.crow.now { background: #e3f2ea; border-radius: 6px; }
+.cpane h4 { margin: 10px 0 4px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.ccol .ag.you { display: flex; flex-direction: column; align-items: flex-end; }
+.ccol .ag.you .who, .ccol .ag.bot .who { display: none; }
+.ccol .ag.you .said { background: #e3f2ea; border-radius: 18px 18px 4px 18px; padding: 8px 14px; max-width: 85%; }
+.ccol .ag.bot .said { padding: 2px 0; }
+.ccol .agcomposer.pinned { position: sticky; bottom: 0; background: var(--panel); border: 2px solid var(--green); border-radius: 16px; padding: 8px 10px; margin-top: 10px; }
+.ccol .agcomposer.pinned textarea { border: 0; padding: 4px; }
+.cdisclaim { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); text-align: center; }
+.build.guide .bcard { border: 1px solid var(--line); border-left: 3px solid var(--mint); box-shadow: none; border-radius: 10px; }
+@media (max-width: 900px) {
+  .cgrid { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .cdiv { display: none; }
+  .cpanel { order: -1; max-height: 50vh; }
+  .ccol { overflow: visible; }
+  .ctop { flex-direction: column; align-items: stretch; }
+  .cprog { text-align: left; }
+}
+.buildgrid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, 1fr); gap: 18px; align-items: start; }
+.bside { display: grid; gap: 12px; position: sticky; top: 0; min-width: 0; }
+.bnotes { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; background: var(--panel); max-height: 45vh; overflow: auto; }
+.bnotes summary { font-weight: 700; cursor: pointer; }
+.bnotes table { border-collapse: collapse; font-size: 13px; width: 100%; }
+.bnotes th, .bnotes td { border: 1px solid var(--line); padding: 3px 6px; text-align: left; }
+.bnotes pre { white-space: pre-wrap; font-size: 12.5px; }
+.bboard { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; background: var(--panel); min-width: 0; }
+.bboard h3 { margin: 0 0 6px; font-size: 14px; }
+.bboard iframe.doc { min-height: 420px; }
+@media (max-width: 1100px) { .buildgrid { grid-template-columns: minmax(0, 1fr); } .bside { position: static; } }
+.build { display: grid; gap: 12px; }
+.bprogress { font: 600 12px/1.2 "JetBrains Mono", monospace; color: var(--muted); }
+.bsteps { display: flex; flex-wrap: wrap; gap: 6px; }
+.bstep { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 10px; font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; }
+.bstep.locked { opacity: .5; }
+.bhead { display: grid; gap: 8px; }
+.bhead h1 { margin: 0; }
+.bcomps { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+.bcomp { padding: 2px 8px; border-radius: 6px; background: var(--well); color: var(--muted); }
+.bcomp.now { background: var(--green); color: #fff; }
+.bcomp.done { color: var(--green); }
+.bbar { height: 8px; border-radius: 999px; background: var(--well); overflow: hidden; }
+.bbar i { display: block; height: 100%; background: var(--mint); }
+.bfinish h2 { color: var(--green); }
+.linkish { background: none; border: 0; padding: 0; color: var(--link, #1f7a55); text-decoration: underline; cursor: pointer; justify-self: start; font: inherit; font-size: 13.5px; }
+.bstep .n { font: 700 11px/1 "JetBrains Mono", monospace; color: var(--muted); }
+.bstep.done { background: var(--well); color: var(--muted); }
+.bstep.done .n { color: var(--green); }
+.bstep.now { border-color: var(--ink); box-shadow: 2px 2px 0 var(--ink); font-weight: 600; }
+
+.bcard { border: 2px solid var(--ink); border-radius: 12px; padding: 16px 18px; display: grid; gap: 10px; background: var(--panel); box-shadow: 4px 4px 0 var(--ink); }
+.bcard h2 { margin: 0; font-size: 20px; }
+.bcard .stuck.bad { margin: 0; padding: 8px 12px; border-left: 3px solid var(--red); background: var(--well); border-radius: 6px; }
+.bcard .eyebrow { margin: 0; }
+.bprompt pre { white-space: pre-wrap; font: 12.5px/1.5 "JetBrains Mono", monospace; background: var(--well); border-radius: 8px; padding: 10px; }
 .agbar { display: flex; justify-content: flex-end; font-size: 12.5px; min-height: 16px; }
 .agperms { margin: 0; padding: 8px 12px; background: var(--well); border-radius: 8px; font-size: 13px; line-height: 1.45; color: var(--muted); }
 .aglog { display: grid; gap: 10px; max-height: calc(100vh - 430px); min-height: 120px; overflow-y: auto; align-content: start; }
 .ag { min-width: 0; }
 .ag .who { font: 700 11px/1.2 "JetBrains Mono", monospace; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
 .ag .said { white-space: pre-wrap; line-height: 1.5; overflow-wrap: anywhere; }
+.ag .said.md { white-space: normal; }
+.md p { margin: 0 0 8px; }
+.md ul, .md ol { margin: 0 0 8px; padding-left: 22px; display: block; }
+.md h3, .md h4, .md h5, .md h6 { margin: 10px 0 6px; font-size: 15px; }
+.md blockquote { margin: 0 0 8px; padding: 2px 10px; border-left: 3px solid var(--line); color: var(--muted); }
+.md code { font: 13px "JetBrains Mono", ui-monospace, Menlo, monospace; background: var(--well); padding: 1px 4px; border-radius: 4px; }
+.mdcode { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 0 0 8px; }
+.mdcodebar { display: flex; justify-content: space-between; align-items: center; padding: 3px 8px; background: var(--well); font: 600 11px "JetBrains Mono", monospace; color: var(--muted); }
+.mdcopy { border: 0; background: none; cursor: pointer; font: inherit; color: var(--link, #1f7a55); }
+.mdcode pre { margin: 0; padding: 8px 10px; overflow-x: auto; white-space: pre; }
+.mdcode pre code { background: none; padding: 0; }
+.mdtable { overflow-x: auto; margin: 0 0 8px; }
+.mdtable table { border-collapse: collapse; font-size: 13.5px; }
+.mdtable th, .mdtable td { border: 1px solid var(--line); padding: 3px 8px; text-align: left; }
 .ag.you .said { background: var(--well); border-radius: 8px; padding: 8px 12px; }
 .ag.note { font-size: 13.5px; color: var(--muted); }
 .ag.note.bad { color: var(--red); font-weight: 600; }
@@ -5162,7 +5585,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
   /** @type {number | null} */
   let viewingWeek = /^#week-(\d+)/.test(location.hash) ? Number(/^#week-(\d+)/.exec(location.hash)?.[1]) : null; // a week's view is open (its page, note, board)
   let focusShown = false; // npm start -- --week N: N's view opens once, when nothing before it is left to do
-  let weekTab = /^#week-\d+\/(\w+)$/.exec(location.hash)?.[1] ?? "page"; // the week view's tab: page, note, board, checks
+  let weekTab = /^#week-\d+\/(\w+)$/.exec(location.hash)?.[1] ?? ""; // "" = the week's first tab; the week view's tab: page, note, board, checks
   let detailHtml = ""; // what the main panel shows now (re-rendered only when it changes, so pages don't reload)
 
   // Back and forward: each view the student moves to (a week and its tab, the machine, a step looked
@@ -5171,12 +5594,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
   /** @returns {Nav} */
   const navNow = () => ({ week: viewingWeek, tab: weekTab, machine: machineOpen, step: viewing });
   /** @param {Nav} n */
-  const hashOf = (n) => (n.machine ? "#machine" : n.week !== null ? `#week-${n.week}${n.tab !== "page" ? `/${n.tab}` : ""}` : n.step !== null ? `#step-${n.step + 1}` : "");
+  const hashOf = (n) => (n.machine ? "#machine" : n.week !== null ? `#week-${n.week}${n.tab ? `/${n.tab}` : ""}` : n.step !== null ? `#step-${n.step + 1}` : "");
   /** @param {string} hash @returns {Nav} */
   const navOf = (hash) => {
     const week = /^#week-(\d+)(?:\/(\w+))?$/.exec(hash);
     const step = /^#step-(\d+)$/.exec(hash);
-    return { week: week ? Number(week[1]) : null, tab: week?.[2] ?? "page", machine: hash === "#machine", step: step ? Number(step[1]) - 1 : null };
+    return { week: week ? Number(week[1]) : null, tab: week?.[2] ?? "", machine: hash === "#machine", step: step ? Number(step[1]) - 1 : null };
   };
   /** After the student moves to another view: a new history entry, unless it's the same place. */
   function remember() {
@@ -5385,7 +5808,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const key = `account:${p.attempt}:${display}`;
       if (lineFor !== key) {
         lineFor = key;
-        line = lineStart(display);
+        line = { ...lineStart(display), typed: display };
         pasteNote = "";
       }
       return box(`<label class="cmd" data-cmdline><input class="sink" data-sink aria-label="Type: ${esc(a.display)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><span class="cmdtext" data-cmdtext></span></label>
@@ -5467,15 +5890,17 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         const key = `${step.id}:${v.attempt}:${v.index}:${display}`;
         if (lineFor !== key) {
           lineFor = key;
-          line = lineStart(display);
+          // Click to run: the command comes typed out, so it's one press of Run (or Enter). The studio still
+          // only runs the command this step planned, matched exactly (act "run").
+          line = { ...lineStart(display), typed: display };
           pasteNote = "";
         }
-        body = `${earlier}<div class="block"><h3>${esc(a.label || "Type this command")}</h3>
+        body = `${earlier}<div class="block"><h3>${esc(a.label || "Run this command")}</h3>
           <label class="cmd" data-cmdline><input class="sink" data-sink aria-label="Type: ${esc(a.display)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><span class="cmdtext" data-cmdtext></span></label>
           <p class="cmdnote" data-cmdnote></p>
           <p class="what"><b>What this does:</b> ${esc(a.what)}</p>${words(a.words ?? [])}
           ${a.cwd || a.runs ? `<p class="runs">${a.cwd ? `Runs in <code>${esc(a.cwd)}</code>. ` : ""}${a.runs ? `The studio runs it as <code>${esc(a.runs)}</code>.` : ""}</p>` : ""}
-          ${a.pasteOk ? `<p class="runs">It's a long one, so you can paste it.</p>` : ""}</div>
+</div>
           ${skip ? `<div class="row">${skip}</div>` : ""}`;
       } else if (a.kind === "form" || a.kind === "folder") {
         /** @type {Field[]} */
@@ -5542,8 +5967,13 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         <p class="why" style="margin-top:10px">Check back before Monday's class.</p></div>
         <p class="note">You can close this tab: the studio stops when you do.</p>`;
     if (snap.inWork) {
-      const home = snap.groups.find((g) => g.week === snap.week);
+      const home = snap.groups.find((g) => g.week === (snap.home || snap.week));
+      if (snap.home && snap.home !== snap.week) return `<div class="banner ok"><b>You're up to date.</b> Today: week ${esc(snap.home)}.</div>${home ? weekView(home) : ""}`;
       return `<div class="banner"><b>Week ${esc(snap.week)} is in your work.</b> Week ${esc(snap.next)} isn't out yet.</div>${home ? weekView(home) : ""}`;
+    }
+    if (snap.home && snap.home !== snap.week) {
+      const today = snap.groups.find((g) => g.week === snap.home);
+      return `<div class="banner ok"><b>You're up to date.</b> Everything the course has released is in your folder and on GitHub. Today: week ${esc(snap.home)}.</div>${today ? weekView(today) : ""}`;
     }
     const home = snap.groups.find((g) => g.week === snap.week);
     return `<div class="banner ok"><b>Week ${esc(snap.week)} is in your work!</b> ${esc(snap.arrived || `Week ${snap.week}'s files are in your folder, and on GitHub.`)}
@@ -5587,17 +6017,17 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       <div class="row"><button class="btn ghost" data-do="m-close">Back to the summary</button></div>`;
   }
 
-  /** One week's heading in the list: its number, title, and where it stands. @param {{ week: number, title: string, status: string }} g */
+  /** One week's heading in the list: its number, title, and where it stands. @param {{ week: number, title: string, status: string, label?: string, update?: boolean }} g */
   function weekHeading(g) {
-    const note = g.update ? "get the update" : ({ setup: "", done: "done", inwork: "in your work", get: "get it now", later: "after this one", future: "not out yet" }[g.status] ?? "");
-    const inner = `<span>Week ${esc(g.week)} · ${esc(g.title)}${g.update ? " · update" : ""}</span>${note ? `<em>${esc(note)}</em>` : ""}`;
+    const note = g.update ? "get the update" : g.week === snap?.home && g.status !== "get" ? "today" : ({ setup: "", done: "done", inwork: "in your work", get: "get it now", later: "after this one", future: "not out yet", open: "open" }[g.status] ?? "");
+    const inner = `<span>${g.label ? esc(g.label) : `Week ${esc(g.week)} · ${esc(g.title)}`}${g.update ? " · update" : ""}</span>${note ? `<em>${esc(note)}</em>` : ""}`;
     // A week that's in opens its home: its page, note and board.
     return weekIsIn(g) ? `<button class="sgroup ${g.status} open ${viewingWeek === g.week ? "viewing" : ""}" data-do="week" data-w="${g.week}" title="Open week ${g.week}">${inner}</button>` : `<div class="sgroup ${g.status}">${inner}</div>`;
   }
 
   /** In the student's work, so its page and board can open. @param {{ status: string }} g */
   function weekIsIn(g) {
-    return ["setup", "done", "inwork"].includes(g.status) || (g.status === "get" && !!snap && snap.current >= snap.total);
+    return ["setup", "done", "inwork", "open"].includes(g.status) || (g.status === "get" && !!snap && snap.current >= snap.total);
   }
 
   /**
@@ -5903,8 +6333,8 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     let selected = "";
     /** @type {{ week: number, el: HTMLElement, tasks: { id: string, week: number, description: string }[] } | null} */
     let mounted = null;
-    let fixTyped = "";
     let focusBox = false;
+    let chatPanel = "viz"; // the right panel's tab in the Build view
     /** @type {Set<any>} entries with deltas waiting for the next frame */
     const dirty = new Set();
     let painting = false;
@@ -5914,11 +6344,11 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     /** @param {any} e */
     function entryHtml(e) {
       if (e.kind === "user") return `<div class="ag you" data-entry="${esc(e.id)}"><div class="who">You</div><div class="said">${md(e.text)}</div></div>`;
-      if (e.kind === "agent") return `<div class="ag bot" data-entry="${esc(e.id)}"><div class="who">Codex</div><div class="said" data-field="text">${md(e.text)}</div></div>`;
+      if (e.kind === "agent") return `<div class="ag bot" data-entry="${esc(e.id)}"><div class="who">Codex</div><div class="said md" data-field="text">${chatMarkdown(e.text)}</div></div>`;
       if (e.kind === "note") return `<div class="ag note ${esc(e.tone)}" data-entry="${esc(e.id)}">${md(e.text)}${e.commit ? `<div class="row"><button class="btn primary" data-agent-commit="${esc(e.commit.id)}" data-w="${esc(e.commit.week)}">Commit it</button></div>` : ""}${e.runTests ? `<div class="row"><button class="btn primary" data-agent-test="${esc(e.runTests.id)}" data-w="${esc(e.runTests.week)}">Run its tests</button></div>` : ""}</div>`;
       if (e.kind === "command") {
         const status = e.status === "completed" ? (e.exitCode ? `exit ${esc(e.exitCode)}` : "done") : e.status === "inProgress" ? "running…" : esc(e.status);
-        return `<details class="ag ran" data-entry="${esc(e.id)}"><summary><span class="what">Ran</span> <code>${esc(e.command)}</code> <em>${status}</em></summary><pre class="log" data-field="output">${esc(e.output)}</pre></details>`;
+        return `<details class="ag ran" data-entry="${esc(e.id)}"><summary><span class="what">Ran</span> <code>${esc(plainCommand(e.command))}</code> <em>${status}</em></summary><pre class="log" data-field="output">${esc(e.output)}</pre></details>`;
       }
       if (e.kind === "file") {
         const list = (e.changes ?? []).map((/** @type {any} */ c) => `<div><code>${esc(c.path)}</code>${c.movePath ? ` moves to <code>${esc(c.movePath)}</code>` : ""} <em>${esc(c.kind)}</em></div>`).join("");
@@ -5930,7 +6360,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
 
     /** @param {any} c */
     function cardHtml(c) {
-      const what = c.kind === "command" ? `<b>Codex wants to run this:</b><pre class="log">${esc(c.command)}</pre>${c.cwd ? `<div class="sub">in <code>${esc(c.cwd)}</code></div>` : ""}` : `<b>Codex wants to change files${c.grantRoot ? ` under ${esc(c.grantRoot)}` : ""}:</b>${(c.changes ?? []).map((/** @type {any} */ f) => `<div><code>${esc(f.path)}</code>${f.movePath ? ` moves to <code>${esc(f.movePath)}</code>` : ""} <em>${esc(f.kind)}</em></div>`).join("")}${(c.changes ?? []).some((/** @type {any} */ f) => f.diff) ? `<pre class="log">${esc(c.changes.map((/** @type {any} */ f) => f.diff).join("\n"))}</pre>` : ""}`;
+      const what = c.kind === "command" ? `<b>Codex wants to run this:</b><pre class="log">${esc(plainCommand(c.command))}</pre>${c.cwd ? `<div class="sub">in <code>${esc(c.cwd)}</code></div>` : ""}` : `<b>Codex wants to change files${c.grantRoot ? ` under ${esc(c.grantRoot)}` : ""}:</b>${(c.changes ?? []).map((/** @type {any} */ f) => `<div><code>${esc(f.path)}</code>${f.movePath ? ` moves to <code>${esc(f.movePath)}</code>` : ""} <em>${esc(f.kind)}</em></div>`).join("")}${(c.changes ?? []).some((/** @type {any} */ f) => f.diff) ? `<pre class="log">${esc(c.changes.map((/** @type {any} */ f) => f.diff).join("\n"))}</pre>` : ""}`;
       return `<div class="status wait agcard"><span class="icon">?</span><div>${what}${c.reason ? `<div class="sub">Why: ${esc(c.reason)}</div>` : ""}<div class="row"><button class="btn primary" data-agent-answer="accept" data-key="${esc(c.key)}">Approve</button><button class="btn" data-agent-answer="decline" data-key="${esc(c.key)}">Decline</button></div></div></div>`;
     }
 
@@ -5941,11 +6371,13 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       if (s.phase === "missing" || s.phase === "too-old") {
         const running = s.fix?.phase === "running";
         return `<div class="status bad"><span class="icon">!</span><div><b>${esc(s.problem)}</b><div class="sub">Type this to ${s.phase === "missing" ? "install it" : "update it"}, then the studio checks again.</div></div></div>
-          <form class="agfix" data-agent-fix><label class="sub">Type: <code>${esc(s.fixCommand)}</code></label><input name="agentfix" value="${esc(fixTyped)}" autocomplete="off" autocapitalize="off" spellcheck="false" ${running ? "disabled" : ""}><button class="btn primary" type="submit" ${running ? "disabled" : ""}>${running ? "Running…" : "Run it"}</button></form>
+          <form class="agfix" data-agent-fix><div class="cmd doneline"><span class="p">$</span>${esc(s.fixCommand)}</div><button class="btn primary" type="submit" ${running ? "disabled" : ""}>${running ? "Running…" : "Run it"}</button></form>
           ${s.fix?.out ? `<pre class="log">${esc(s.fix.out)}</pre>` : ""}`;
       }
       if (s.phase === "signed-out") return `<div class="status bad"><span class="icon">!</span><div><b>Codex isn't signed in.</b>${s.problem ? `<div class="sub">${esc(s.problem)}</div>` : ""}<div class="sub">It signs in with your ChatGPT account, in your browser. The studio never sees your password or token.</div></div></div><div class="row"><button class="btn primary" data-agent-login>Sign in to Codex</button></div>`;
       if (s.phase === "signing-in") return `<div class="status wait"><i class="spin"></i><div><b>Finish signing in in your browser.</b><div class="sub"><a href="${esc(s.loginUrl)}" target="_blank" rel="noopener noreferrer">Open the sign-in page</a>. This page carries on by itself once it's done.</div></div></div>`;
+      if (s.phase === "ready" && s.account?.type === "chatgpt" && s.account.planType === "free")
+        return `<div class="status bad"><span class="icon">!</span><div><b>Your ChatGPT account${s.account.email ? ` (${esc(s.account.email)})` : ""} is on the Free plan.</b><div class="sub">Free includes Codex only for quick tasks, so you'll most likely reach its limit partway through a step. The course uses ChatGPT Plus: upgrade to Plus at <a href="https://chatgpt.com/#pricing" target="_blank" rel="noopener noreferrer">chatgpt.com</a> with this account, then press Check again. You can still send messages below until then. Signed in with the wrong account? Run <code>codex logout</code> in a terminal, then start the studio again.</div></div></div><div class="row"><button class="btn primary" data-agent-recheck>Check again</button></div>`;
       if (s.phase === "failed") return `<div class="status bad"><span class="icon">!</span><div><b>${esc(s.problem || "Codex stopped.")}</b></div></div><div class="row"><button class="btn primary" data-agent-open>Start Codex again</button></div>`;
       if (s.phase === "unavailable") return `<div class="status bad"><span class="icon">!</span><div><b>${esc(s.problem)}</b></div></div>`;
       return "";
@@ -5973,6 +6405,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const ready = s?.phase === "ready";
       const busy = Boolean(s?.turn);
       const composer = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-composer]"));
+      // In a build week the walkthrough leads; the free-form box opens from its link.
       composer.hidden = !ready;
       /** @type {HTMLButtonElement} */ (mounted.el.querySelector("[data-agent-send]")).disabled = busy;
       const stop = /** @type {HTMLButtonElement} */ (mounted.el.querySelector("[data-agent-stop]"));
@@ -6037,7 +6470,11 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         const wasWorking = Boolean(state.turn);
         state = { ...e.state, entries, seq: e.seq };
         paintState();
-        if (wasWorking && !state.turn) codeTab.refresh(); // the agent may have changed the file
+        if (wasWorking && !state.turn) {
+          codeTab.refresh(); // the agent may have changed the file
+          if (mounted) void loadBuild(mounted);
+        }
+        paintBuild();
       } else if (e.type === "entry") {
         const at = state.entries.findIndex((/** @type {any} */ x) => x.id === e.entry.id);
         if (at >= 0) state.entries[at] = e.entry;
@@ -6060,24 +6497,166 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       }
     }
 
+    // ── The Build list: the week's steps, one at a time (concept, one-click prompt, its result, Commit) ──
+    /** @type {any[]} */
+    let buildList = [];
+    const stepDone = (/** @type {any} */ st) => st.committed || Boolean(snap?.code?.[st.id]?.done);
+    /** @param {{ week: number, el: HTMLElement }} m */
+    async function loadBuild(m) {
+      const res = await fetch(`/api/build?week=${m.week}`, { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null);
+      if (mounted !== m) return;
+      buildList = res?.steps ?? [];
+      paintBuild();
+    }
+    function currentBuildStep() {
+      return buildList.find((st) => !stepDone(st)) ?? null;
+    }
+    /** The components, in order, each with its steps. */
+    function components() {
+      /** @type {{ c: any, steps: any[] }[]} */
+      const out = [];
+      for (const st of buildList) {
+        const last = out[out.length - 1];
+        if (last && last.c.id === st.component.id) last.steps.push(st);
+        else out.push({ c: st.component, steps: [st] });
+      }
+      return out;
+    }
+    /** Finish screens already seen, on this laptop: the walkthrough then goes on to the next component. */
+    const seenKey = (/** @type {string} */ id) => `netsim-built:${mounted?.week}:${id}`;
+    const seen = (/** @type {string} */ id) => {
+      try {
+        return localStorage.getItem(seenKey(id)) === "1";
+      } catch {
+        return true;
+      }
+    };
+    /** The result line for a step: from the studio's own test run of its task. @param {any} st */
+    function buildResult(st) {
+      const r = snap?.code?.[st.id];
+      if (stepDone(st)) return `<div class="status ok"><span class="icon">✓</span><div><b>Done and committed.</b></div></div>`;
+      if (!r && !st.stubbed && st.testNote) return `<p class="muted">Written. No test checks this one yet: read the change, then</p><div class="row"><button class="btn primary" data-build-commit="${esc(st.id)}" data-w="${esc(st.week)}">Commit it</button></div>`;
+      if (!r) return st.stubbed ? `<p class="muted">Press Send to the agent. Read what Codex changes; the studio checks it when Codex finishes.</p>` : `<p class="muted">Written, not checked yet: press Run its tests.</p>`;
+      if (r.phase === "running") return `<div class="status run"><i class="spin"></i><div><b>Checking ${esc(st.id)}…</b></div></div>`;
+      if (r.phase === "error") return `<div class="status bad"><span class="icon">!</span><div><b>The tests couldn't run.</b></div></div>`;
+      if (r.phase === "failed") return `<div class="status bad"><span class="icon">!</span><div><b>${esc(r.failed)} of its tests fail.</b><div class="sub">${esc(r.failures?.[0]?.test ?? "")}: ${esc(String(r.failures?.[0]?.message ?? "").split("\n")[0])}</div><div class="sub">Tell Codex what you see (Ask the agent something else, below), or press Run its tests after a change.</div></div></div>`;
+      const todo = r.waiting?.length ? ` Waiting on: ${r.waiting.join(", ")}.` : "";
+      return `<div class="status ok"><span class="icon">✓</span><div><b>${r.passed ? `${esc(r.passed)} test${r.passed === 1 ? "" : "s"} pass.` : "Nothing fails."}</b>${todo ? `<div class="sub">${esc(todo)}</div>` : ""}</div></div>
+        <div class="row"><button class="btn primary" data-build-commit="${esc(st.id)}" data-w="${esc(st.week)}">Commit it</button><span class="muted">It commits the whole file.</span></div>`;
+    }
+    /** @param {any} st */
+    function stepCard(st) {
+      return `<section class="bcard">
+          <p class="eyebrow">Step ${esc(st.n)} · ${esc(String(st.id).toUpperCase())}${st.week !== mounted?.week ? ` · from week ${esc(st.week)}` : ""} · <code>${esc(st.id)}</code>${st.file ? ` in <code>${esc(st.file)}</code>` : ""}</p>
+          <h2>${esc(st.title || st.id)}</h2>
+          ${st.concept ? `<p class="lesson">${esc(st.concept).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")}</p>` : ""}
+          ${st.prompt ? `<details class="bprompt"><summary>What it sends to the agent</summary><pre>${esc(st.prompt)}</pre></details>` : ""}
+          <div class="row">${st.prompt && st.found && !stepDone(st) ? `<button class="btn primary" data-build-send="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>Send to the agent</button>` : ""}${st.found && !stepDone(st) ? `<button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">Run its tests</button>` : ""}</div>
+          ${st.found ? buildResult(st) : `<p class="muted">This step's code isn't in your folder yet.</p>`}
+          ${st.stuck ? `<p class="${snap?.code?.[st.id]?.phase === "failed" ? "stuck bad" : "muted"}"><b>Stuck?</b> ${esc(st.stuck).replace(/`([^`\n]+)`/g, "<code>$1</code>")}</p>` : ""}
+          ${st.ask ? `<p class="muted"><b>Ask yourself:</b> ${esc(st.ask).replace(/`([^`\n]+)`/g, "<code>$1</code>")}</p>` : ""}
+        </section>`;
+    }
+    function paintBuild() {
+      const box = /** @type {HTMLElement | null} */ (mounted?.el.querySelector("[data-build]") ?? null);
+      if (!box || !buildList.length) return;
+      const all = components();
+      // The component being built: the first with a step left, unless one just finished whose finish
+      // screen hasn't been seen yet.
+      const finished = all.find((x) => x.steps.every(stepDone) && !seen(x.c.id) && x.c.id);
+      const building = all.find((x) => x.steps.some((st) => !stepDone(st)));
+      const now = finished ?? building ?? all[all.length - 1];
+      const st = finished ? null : currentBuildStep();
+      // The free-form box works on the current step's task too.
+      if (st && selected !== st.id) selected = st.id;
+      const done = now.steps.filter(stepDone).length;
+      const pct = Math.round((done / now.steps.length) * 100);
+      const others = all.map((x) => `<span class="bcomp ${x === now ? "now" : x.steps.every(stepDone) ? "done" : "locked"}">${x.steps.every(stepDone) ? "✓ " : ""}${esc(x.c.title || "This week's build")}</span>`).join("");
+      const rows = now.steps
+        .map((x) => `<div class="bstep ${stepDone(x) ? "done" : x === st ? "now" : "locked"}"><span class="n">${stepDone(x) ? "✓" : x === st ? "▸" : "🔒"}</span>${esc(x.title || x.id)}</div>`)
+        .join("");
+      const head = `<div class="bhead"><div class="bcomps">${others}</div>
+        <h1 class="q">${esc(now.c.title || "This week's build")}</h1>
+        ${now.c.intro ? `<p class="lesson">${esc(now.c.intro)}</p>` : ""}
+        ${now.c.works ? `<p class="muted"><b>When it works:</b> ${esc(now.c.works).replace(/`([^`\n]+)`/g, "<code>$1</code>")}</p>` : ""}
+        <div class="bbar" role="progressbar" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>
+        <div class="bprogress">${esc(done)} of ${esc(now.steps.length)} steps</div></div>`;
+      let card;
+      if (finished) {
+        const next = all[all.indexOf(finished) + 1];
+        card = `<section class="bcard bfinish"><h2>✓ ${esc(finished.c.title)} works.</h2>
+          ${finished.c.works ? `<p class="lesson">${esc(finished.c.works)}</p>` : ""}
+          <div class="row">${finished.steps[0]?.found ? `<button class="btn" data-build-test="${esc(finished.steps[finished.steps.length - 1].id)}" data-w="${esc(finished.steps[finished.steps.length - 1].week)}">Run its tests again</button>` : ""}${finished.c.board ? `<button class="btn" data-do="tab" data-tab="board">See it on the board</button>` : ""}<button class="btn primary" data-build-seen="${esc(finished.c.id)}">${next ? `Next: ${esc(next.c.title || "the next part")}` : "Done"}</button></div></section>`;
+      } else if (!st) card = `<section class="bcard bfinish"><h2>✓ Everything this week is built.</h2><p class="lesson">Push your work with <code>git push</code> (or run npm start again: it pushes for you).</p></section>`;
+      else card = stepCard(st);
+      const notes = /** @type {HTMLElement | null} */ (document.querySelector("[data-bnotes]"));
+      // Notes HTML is rendered by the studio from the student's own guide (escaped markdown).
+      const notesHtml = now.c.notes || `<p class="muted">No notes for this part.</p>`;
+      if (notes && notes.dataset.html !== notesHtml) {
+        notes.innerHTML = notesHtml;
+        notes.dataset.html = notesHtml;
+      }
+      const ui = /** @type {HTMLElement | null} */ (document.querySelector("[data-chatui]"));
+      if (ui) {
+        const ci = all.indexOf(now);
+        const totalDone = buildList.filter(stepDone).length;
+        const set = (/** @type {string} */ sel, /** @type {string} */ text) => {
+          const x = /** @type {HTMLElement | null} */ (ui.querySelector(sel));
+          if (x && x.textContent !== text) x.textContent = text;
+        };
+        set("[data-ctitle]", now.c.title || "This week's build");
+        set("[data-csub]", ` · Component ${ci + 1} of ${all.length}${st ? ` · step ${now.steps.indexOf(st) + 1} of ${now.steps.length}` : ""}`);
+        set("[data-cpct]", `${pct}% of steps done · ${totalDone} of ${buildList.length}`);
+        const bar = /** @type {HTMLElement | null} */ (ui.querySelector("[data-cbar]"));
+        if (bar) bar.style.width = `${pct}%`;
+        set('[data-ccount="steps"]', ` (${buildList.length})`);
+        const list = /** @type {HTMLElement | null} */ (ui.querySelector("[data-bsteplist]"));
+        const listHtml = all
+          .map((x) => `<h4>${esc(x.c.title || "This week's build")}</h4>${x.steps.map((y) => `<div class="crow ${stepDone(y) ? "done" : y === st ? "now" : "locked"}"><span>${stepDone(y) ? "✓" : y === st ? "▸" : "🔒"}</span><div><b>${esc(y.n)}. ${esc(y.title || y.id)}</b><div class="muted">${esc(y.test || y.testNote || "")}</div></div></div>`).join("")}`)
+          .join("");
+        if (list && list.dataset.html !== listHtml) {
+          list.innerHTML = listHtml;
+          list.dataset.html = listHtml;
+        }
+        const files = /** @type {HTMLElement | null} */ (ui.querySelector("[data-bfiles]"));
+        const touched = [...new Set((state?.entries ?? []).filter((x) => x.kind === "file").flatMap((x) => (x.changes ?? []).map((/** @type {any} */ c) => `${c.path}`)))];
+        const filesHtml = touched.length ? `<ul>${touched.map((f) => `<li><code>${esc(f)}</code></li>`).join("")}</ul>` : `<p class="muted">Files Codex changes show here.</p>`;
+        if (files && files.dataset.html !== filesHtml) {
+          files.innerHTML = filesHtml;
+          files.dataset.html = filesHtml;
+        }
+        ui.dataset.panel ||= chatPanel;
+      }
+      const html = ui ? `<div class="build guide">${card}</div>` : `<div class="build">${head}<div class="bsteps">${rows}</div>${card}</div>`;
+      if (box.dataset.html !== html) {
+        box.innerHTML = html;
+        box.dataset.html = html;
+      }
+    }
+
     /** @param {number} week @param {HTMLElement} el */
     async function mount(week, el) {
+      buildList = [];
       mounted = { week, el, tasks: [] };
       const mine = mounted;
-      el.innerHTML = `<div class="agbar"><span class="muted" data-agent-who></span></div>
+      const chat = week >= 4;
+      el.innerHTML = `${chat ? "" : `<div data-build></div>`}<div class="agbar"><span class="muted" data-agent-who></span></div>
         <p class="agperms" data-agent-perms></p>
         <div data-agent-status></div>
         <div class="aglog" data-agent-log></div>
         <div data-agent-cards></div>
         <div class="agworking muted" data-agent-working hidden><i class="spin"></i> Codex is working…</div>
-        <form class="agcomposer" data-agent-composer hidden>
-          <label class="sub">Working on <select name="agenttask" data-agent-task><option value="">no particular task</option></select></label>
-          <textarea name="agentmessage" rows="4" placeholder="Say how you want to approach it, then what you'd like Codex to do." spellcheck="true">${esc(draft)}</textarea>
+        ${chat ? `<div data-build></div>` : ""}
+        <form class="agcomposer${chat ? " pinned" : ""}" data-agent-composer hidden>
+          <label class="sub" ${week >= 4 ? "hidden" : ""}>Working on <select name="agenttask" data-agent-task><option value="">no particular task</option></select></label>
+          <textarea name="agentmessage" rows="${week >= 4 ? 2 : 4}" placeholder="${week >= 4 ? "Ask the agent about this step…" : "Say how you want to approach it, then what you'd like Codex to do."}" spellcheck="true">${esc(draft)}</textarea>
           <div class="row"><button class="btn primary" type="submit" data-agent-send>Send <kbd>⌘↵</kbd></button><button class="btn" type="button" data-agent-stop hidden>Stop</button></div>
+          ${week >= 4 ? `<p class="cdisclaim">The agent can make mistakes. Check its work with the tests.</p>` : ""}
         </form>`;
       paintAll();
       paintState();
       void act({ type: "agent-open" });
+      if (week >= 4) void loadBuild(mine);
       const res = await fetch(`/api/agent/tasks?week=${week}`, { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null);
       if (mounted !== mine) return;
       mine.tasks = res?.tasks ?? [];
@@ -6108,6 +6687,25 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       draft = "";
     }
 
+    // The divider between the chat and the panel: drag to resize (remembered while the page is open).
+    let chatWidth = 0;
+    document.addEventListener("pointerdown", (e) => {
+      const div = /** @type {HTMLElement} */ (e.target).closest?.("[data-cdiv]");
+      const grid = /** @type {HTMLElement | null} */ (div?.closest("[data-cgrid]") ?? null);
+      if (!div || !grid) return;
+      e.preventDefault();
+      const move = (/** @type {PointerEvent} */ m) => {
+        const box = grid.getBoundingClientRect();
+        chatWidth = Math.max(25, Math.min(75, ((m.clientX - box.left) / box.width) * 100));
+        grid.style.setProperty("--chat", `${chatWidth}%`);
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    });
     document.addEventListener("submit", (e) => {
       const form = /** @type {HTMLElement} */ (e.target);
       if (form.matches?.("[data-agent-composer]")) {
@@ -6115,13 +6713,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         void submit();
       } else if (form.matches?.("[data-agent-fix]")) {
         e.preventDefault();
-        void act({ type: "agent-fix", typed: fixTyped });
+        void act({ type: "agent-fix", typed: state?.fixCommand ?? "" });
       }
     });
     document.addEventListener("input", (e) => {
       const el = /** @type {HTMLInputElement} */ (e.target);
       if (el.name === "agentmessage") draft = el.value;
-      else if (el.name === "agentfix") fixTyped = el.value;
     });
     document.addEventListener("change", (e) => {
       const el = /** @type {HTMLSelectElement} */ (e.target);
@@ -6135,8 +6732,13 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       }
     });
     document.addEventListener("click", (e) => {
-      const el = /** @type {HTMLElement} */ (e.target).closest("[data-agent-answer],[data-agent-stop],[data-agent-login],[data-agent-open],[data-agent-commit],[data-agent-test]");
+      const el = /** @type {HTMLElement} */ (e.target).closest("[data-cpane-tab],[data-md-copy],[data-agent-answer],[data-agent-stop],[data-agent-login],[data-agent-open],[data-agent-recheck],[data-agent-commit],[data-agent-test],[data-build-send],[data-build-test],[data-build-commit],[data-build-seen],[data-agent-more]");
       if (!(el instanceof HTMLElement)) return;
+      if (el.dataset.mdCopy !== undefined) {
+        const code = el.closest(".mdcode")?.querySelector("code")?.textContent ?? "";
+        void navigator.clipboard?.writeText(code).then(() => toast("Copied."), () => toast("Select the code and copy it."));
+        return;
+      }
       if (el.dataset.agentAnswer) {
         // Off at once: a second click can't answer twice, and the studio refuses a stale card anyway.
         for (const b of el.parentElement?.querySelectorAll("button") ?? []) b.disabled = true;
@@ -6146,6 +6748,45 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
             void refetch();
           }
         });
+      } else if (el.dataset.agentRecheck !== undefined) {
+        void act({ type: "agent-recheck" });
+      } else if (el.dataset.buildSend !== undefined) {
+        const st = buildList[Number(el.dataset.buildSend)];
+        if (!st || !mounted) return;
+        /** @type {HTMLButtonElement} */ (el).disabled = true;
+        void ask({ type: "agent-send", week: mounted.week, task: st.id, text: st.prompt, guided: true, clientId: clientId() }).then((/** @type {any} */ r) => {
+          if (!r.ok) toast(r.error ?? "It didn't send.");
+          mounted?.el.querySelector("[data-agent-log]")?.scrollIntoView({ block: "start" });
+        });
+      } else if (el.dataset.buildTest) {
+        void ask({ type: "code-test", week: Number(el.dataset.w), id: el.dataset.buildTest }).then((/** @type {any} */ r) => r.ok || toast(r.error ?? "That didn't run."));
+      } else if (el.dataset.buildCommit) {
+        /** @type {HTMLButtonElement} */ (el).disabled = true;
+        void ask({ type: "code-commit", week: Number(el.dataset.w), id: el.dataset.buildCommit }).then((/** @type {any} */ r) => {
+          toast(r.ok ? (r.said ?? "Committed.") : (r.error ?? "That didn't go through."));
+          if (r.ok && mounted) void loadBuild(mounted); // on to the next step
+          // The board reruns with the new code.
+          const frame = /** @type {HTMLIFrameElement | null} */ (document.querySelector("iframe.board"));
+          if (r.ok && frame) frame.src = frame.src;
+        });
+      } else if (el.dataset.buildSeen) {
+        try {
+          localStorage.setItem(seenKey(el.dataset.buildSeen), "1");
+        } catch {
+          // not remembered: it shows once more next time
+        }
+        paintBuild();
+      } else if (el.dataset.agentMore !== undefined) {
+        const form = /** @type {HTMLElement | null} */ (mounted?.el.querySelector("[data-agent-composer]") ?? null);
+        if (form) {
+          form.dataset.open = form.dataset.open ? "" : "1";
+          paintState();
+          if (form.dataset.open) /** @type {HTMLElement | null} */ (form.querySelector("textarea"))?.focus();
+        }
+      } else if (el.dataset.cpaneTab) {
+        chatPanel = el.dataset.cpaneTab;
+        const ui = /** @type {HTMLElement | null} */ (document.querySelector("[data-chatui]"));
+        if (ui) ui.dataset.panel = chatPanel;
       } else if (el.dataset.agentTest) {
         void ask({ type: "code-test", week: Number(el.dataset.w), id: el.dataset.agentTest, fromAgent: true }).then((/** @type {any} */ r) => r.ok || toast(r.error ?? "That didn't run."));
       } else if (el.dataset.agentCommit) {
@@ -6166,7 +6807,10 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           return;
         }
         const week = Number(el.dataset.agenttab);
-        if (!mounted || mounted.el !== el || mounted.week !== week) void mount(week, el);
+          if (!mounted || mounted.el !== el || mounted.week !== week) void mount(week, el);
+        else paintBuild();
+        const grid = /** @type {HTMLElement | null} */ (document.querySelector("[data-cgrid]"));
+        if (grid && chatWidth) grid.style.setProperty("--chat", `${chatWidth}%`);
       },
       /** The Code tab's "Send to the agent": the prompt in the box, the task selected; the student adds their approach and sends. @param {string} task @param {string} text */
       prefill(task, text) {
@@ -6180,8 +6824,10 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
 
   function weekView(g) {
     const nn = String(g.week).padStart(2, "0");
-    const tabs = [["page", g.page ? "Lesson page" : "Guide"], ...(g.kind !== "setup" ? [["code", "Code"], ["agent", "Agent"]] : []), ...(g.note ? [["note", g.kind === "setup" ? "Your notes" : "Design note"]] : []), ["board", "Board"], ["checks", "Checks"]];
-    const tab = tabs.some(([id]) => id === weekTab) ? weekTab : "page";
+    // From week 4 the class is building: the Build tab (the agent, step by step) comes first.
+    const building = g.kind !== "setup" && g.week >= 4;
+    const tabs = [...(building ? [["agent", "Build"]] : []), ["page", g.page ? "Lesson page" : "Guide"], ...(g.kind !== "setup" ? [["code", "Code"], ...(building ? [] : [["agent", "Agent"]])] : []), ...(g.note ? [["note", g.kind === "setup" ? "Your notes" : "Design note"]] : []), ["board", "Board"], ["checks", "Checks"]];
+    const tab = tabs.some(([id]) => id === weekTab) ? weekTab : tabs[0][0];
     const bar = `<div class="tabs" role="tablist">${tabs.map(([id, label]) => `<button role="tab" class="tab ${id === tab ? "on" : ""}" data-do="tab" data-tab="${id}" aria-selected="${id === tab}">${esc(label)}</button>`).join("")}</div>`;
     /** @type {string} */
     let body;
@@ -6192,6 +6838,24 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     // The tasks are drawn by codeTab (their editors outlive the page's re-renders).
     else if (tab === "code") body = `<div class="codetab" data-codetab="${esc(g.week)}"><p class="why">Loading this week's tasks…</p></div>`;
     // Drawn by agentTab, from the studio's state (its conversation outlives the page's re-renders).
+    // A build week's Build tab is one screen: the guided step and the agent on the left; the board and
+    // the component's design notes beside it.
+    // The chat on the left, and a panel on the right (Visualizer, Design notes, Steps, Files) whose
+    // tabs only show and hide its panes, so the chat never moves.
+    else if (tab === "agent" && building)
+      body = `<div class="chatui" data-chatui>
+        <div class="ctop"><div><b data-ctitle>This week's build</b><span class="csub" data-csub></span></div><div class="cprog"><span data-cpct></span><div class="bbar"><i data-cbar style="width:0%"></i></div></div></div>
+        <div class="cgrid" data-cgrid>
+          <div class="ccol"><div class="agenttab" data-agenttab="${esc(g.week)}"></div></div>
+          <div class="cdiv" data-cdiv title="Drag to resize"></div>
+          <aside class="cpanel" data-cpanel>
+            <div class="ctabs">${[["viz", "Visualizer"], ["notes", "Design notes"], ["steps", "Steps"], ["files", "Files"]].map(([id, label]) => `<button class="ctab" data-cpane-tab="${id}">${label}<span data-ccount="${id}"></span></button>`).join("")}</div>
+            <div class="cpane" data-pane="viz">${boardPanel()}</div>
+            <div class="cpane md" data-pane="notes"><div data-bnotes><p class="muted">The notes for the part you're building show here.</p></div></div>
+            <div class="cpane" data-pane="steps"><div data-bsteplist></div></div>
+            <div class="cpane" data-pane="files"><div data-bfiles><p class="muted">Files Codex changes show here.</p></div></div>
+          </aside>
+        </div></div>`;
     else if (tab === "agent") body = `<div class="agenttab" data-agenttab="${esc(g.week)}"></div>`;
     else body = checksPanel(g.week, g.kind === "setup" ? "npm run doctor" : `npx vitest run tests/week-${nn}`);
     return `<div class="weekhead"><p class="eyebrow">Week ${esc(g.week)}${g.kind ? ` · ${esc(g.kind)}` : ""}</p><h1 class="q">${esc(g.title)}</h1></div>${bar}<div class="tabbody">${body}</div>`;
@@ -6363,7 +7027,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     if (what === "board-start" || what === "board-stop") return act({ type: what });
     if (what === "checks") return act({ type: "checks", week: Number(el?.dataset.w) });
     if (what === "week") {
-      if (viewingWeek !== Number(el?.dataset.w)) weekTab = "page";
+      if (viewingWeek !== Number(el?.dataset.w)) weekTab = "";
       viewingWeek = Number(el?.dataset.w);
       viewing = null;
       machineOpen = false;
@@ -6488,7 +7152,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
  * @param {string} token
  */
 export function studioPage(token) {
-  const shared = [pasteAllowed, lineStart, lineKey, linePaste, lineComplete, enterAction, cleanOutput, lastLine, corePhase, describeTick, machinePlayer].map((f) => f.toString()).join("\n");
+  const shared = [pasteAllowed, lineStart, lineKey, linePaste, lineComplete, enterAction, cleanOutput, lastLine, corePhase, describeTick, machinePlayer, chatMarkdown, plainCommand].map((f) => f.toString()).join("\n");
   // JSON inside a <script>: escape < so no string in it can close the script tag.
   const js = (/** @type {unknown} */ value) => JSON.stringify(value).replace(/</g, "\\u003c");
   const data = `const MACHINE_TRACE = ${js(MACHINE_TRACE)};\nconst SKETCHES = ${js(SKETCHES)};`;
@@ -6740,7 +7404,7 @@ function dryRunStream(argv, cwd, onData) {
 }
 
 /**
- * @typedef {CourseWeek & { status: "setup" | "done" | "inwork" | "get" | "later" | "future", start: number, count: number, update?: boolean }} WeekGroup
+ * @typedef {CourseWeek & { status: "setup" | "done" | "inwork" | "get" | "later" | "future" | "open", start: number, count: number, update?: boolean, label?: string }} WeekGroup
  *   One week in the studio's list. start/count: its steps in the flow (count 0: a heading only).
  *   setup: week 1, re-checked. done: in work, a later week too. inwork: the newest week in work.
  *   get: the week to get now. later: published, after the one to get. future: not out yet.
@@ -6754,10 +7418,12 @@ function dryRunStream(argv, cwd, onData) {
  * week to get comes next; weeks not out yet are greyed out. Steps already done tick themselves off
  * (meta.autoSteps), so the student lands on the first thing left to do.
  * @param {Context} ctx
- * @param {{ forceSetup?: boolean, withSetup?: boolean, weekList?: CourseWeek[] }} [options]
- * @returns {{ steps: Step[], meta: { mode: "setup" | "week", week?: number, published?: boolean, setupSteps?: number, autoSteps?: number, inWork?: boolean, next?: number, groups?: WeekGroup[], update?: boolean } }}
+ * @param {{ forceSetup?: boolean, withSetup?: boolean, weekList?: CourseWeek[], today?: number }} [options]
+ *   today: the week the class is on (weeks.json's "current"); later weeks may be out already, but the
+ *   studio opens on today's, and weeks from today on aren't shown as done (nobody has done them yet).
+ * @returns {{ steps: Step[], meta: { mode: "setup" | "week", week?: number, published?: boolean, setupSteps?: number, autoSteps?: number, inWork?: boolean, next?: number, groups?: WeekGroup[], update?: boolean, home?: number } }}
  */
-export function chooseFlow(ctx, { forceSetup = false, withSetup = false, weekList = COURSE_WEEKS } = {}) {
+export function chooseFlow(ctx, { forceSetup = false, withSetup = false, weekList = COURSE_WEEKS, today = 0 } = {}) {
   // A folder remembered from last time that isn't a copy of this course (an old netsim-starter copy,
   // or one that's gone) is forgotten, with what was checked in it: its pages and its doctor result
   // aren't this course's. Setup makes the new copy.
@@ -6802,8 +7468,12 @@ export function chooseFlow(ctx, { forceSetup = false, withSetup = false, weekLis
     steps.push(...list);
   };
   add(1, "setup", courseSteps());
+  // Weeks from today's on that are (or are about to be) in the folder: open to look at and build in,
+  // with no steps of their own, so nothing is ticked off that the student hasn't done.
+  const ahead = (/** @type {number} */ n) => today > 0 && n >= today && n !== (toGet ?? newest);
   for (const n of [...new Set([...merged, ...brought])].filter((m) => m > 1).sort((a, b) => a - b)) {
-    if (brought.includes(n)) add(n, "done", doneWeekSteps(n, hadBefore(n) ? `Week ${n}'s update comes with week ${toGet}.` : `Week ${n} comes with week ${toGet}.`));
+    if (ahead(n)) groups.push({ ...entry(n), status: "open", start: 0, count: 0 });
+    else if (brought.includes(n)) add(n, "done", doneWeekSteps(n, hadBefore(n) ? `Week ${n}'s update comes with week ${toGet}.` : `Week ${n} comes with week ${toGet}.`));
     else add(n, n === newest && toGet === null ? "inwork" : "done", n === newest && toGet === null ? inWorkSteps(n) : doneWeekSteps(n));
   }
   const autoSteps = steps.length;
@@ -6812,13 +7482,23 @@ export function chooseFlow(ctx, { forceSetup = false, withSetup = false, weekLis
     // An earlier week changed after a later one came in (a fix Praise published): an update, not a second week 1.
     if (hadBefore(toGet)) groups[groups.length - 1].update = true;
   }
+  // One tag can hold several weeks (Praise publishes week 8 with 4-7 inside): a week below the one
+  // being got (or the newest in work) comes with it, so it's open, not "not out yet".
+  const top = toGet ?? newest;
   for (const w of later(2)) {
     if (groups.some((g) => g.week === w.week)) continue;
-    groups.push({ ...w, status: published.includes(w.week) ? "later" : "future", start: steps.length, count: 0 });
+    groups.push({ ...w, status: today > 0 && w.week < top ? "open" : published.includes(w.week) ? "later" : "future", start: steps.length, count: 0 });
   }
+  // Headings with no steps sit after the steps (their start is the end).
+  for (const g of groups) if (g.count === 0) g.start = steps.length;
+  // The newest week's own steps are getting (or keeping up) the course's work: when that week is
+  // ahead of the class, they're labelled as that, not as the week.
+  const topGroup = groups.find((g) => g.week === top && g.count > 0 && g.status !== "setup");
+  if (topGroup && today > 0 && topGroup.week > today) topGroup.label = topGroup.status === "get" ? "Get this week's work" : "Your work";
+  const home = today > 0 && groups.some((g) => g.week === today && g.status !== "future" && g.status !== "later") ? { home: today } : {};
   const setupSteps = groups[0].count;
-  if (toGet !== null) return { steps, meta: { mode: "week", week: toGet, published: true, setupSteps, autoSteps, groups, ...(groups.some((g) => g.update) ? { update: true } : {}) } };
-  if (newest > 1) return { steps, meta: { mode: "week", week: newest, published: true, setupSteps, autoSteps, inWork: true, next: newest + 1, groups } };
+  if (toGet !== null) return { steps, meta: { mode: "week", week: toGet, published: true, setupSteps, autoSteps, groups, ...home, ...(groups.some((g) => g.update) ? { update: true } : {}) } };
+  if (newest > 1) return { steps, meta: { mode: "week", week: newest, published: true, setupSteps, autoSteps, inWork: true, next: newest + 1, groups, ...home } };
   return { steps, meta: { mode: "week", week: 2, published: false, setupSteps, autoSteps, groups } };
 }
 
@@ -6871,8 +7551,8 @@ export function inWorkSteps(week) {
  * @param {Context & { close: () => void }} ctx
  * @param {{ open?: boolean, port?: number, forceSetup?: boolean, weekList?: CourseWeek[], focus?: number }} options
  */
-async function runStudio(ctx, { open = true, port = 0, forceSetup = false, weekList = COURSE_WEEKS, focus = 0 }) {
-  const { steps, meta } = chooseFlow(ctx, { forceSetup, withSetup: true, weekList });
+async function runStudio(ctx, { open = true, port = 0, forceSetup = false, weekList = COURSE_WEEKS, focus = 0, today = 0 }) {
+  const { steps, meta } = chooseFlow(ctx, { forceSetup, withSetup: true, weekList, today });
   if (focus) Object.assign(meta, { focus });
   const studio = createStudio(ctx, steps, meta);
   /** @type {Awaited<ReturnType<typeof serveStudio>> | null} */
@@ -6929,6 +7609,27 @@ async function fromCourse(week, file) {
  * @param {number | null} newest
  * @returns {Promise<CourseWeek[]>}
  */
+/**
+ * The week the class is on (weeks.json's "current", which Praise moves each Monday): the studio
+ * opens on it, even when later weeks are already out. From the newest published week on GitHub,
+ * else the course folder's copy; null when neither says.
+ * @param {Context} ctx
+ * @param {number | null} newest
+ * @returns {Promise<number | null>}
+ */
+export async function loadCurrentWeek(ctx, newest) {
+  const local = ctx.readText(join(ctx.cwd, "weeks.json"));
+  for (const text of [newest ? await fromCourse(newest, "weeks.json") : null, local]) {
+    try {
+      const current = text ? JSON.parse(text).current : null;
+      if (Number.isInteger(current) && current >= 1) return current;
+    } catch {
+      // not usable: try the next one
+    }
+  }
+  return null;
+}
+
 export async function loadWeekList(ctx, newest) {
   const local = ctx.readText(join(ctx.cwd, "weeks.json"));
   for (const text of [newest ? await fromCourse(newest, "weeks.json") : null, local]) {
@@ -7006,8 +7707,9 @@ async function main() {
     }
   }
   const weekList = await loadWeekList(ctx, newest);
-  if (!terminal) return runStudio(ctx, { open: !args.includes("--no-open"), port: portArg === -1 ? 0 : Number(args[portArg + 1]), forceSetup, weekList, focus });
-  const { steps, meta } = chooseFlow(ctx, { forceSetup, withSetup: true, weekList });
+  const today = await loadCurrentWeek(ctx, newest);
+  if (!terminal) return runStudio(ctx, { open: !args.includes("--no-open"), port: portArg === -1 ? 0 : Number(args[portArg + 1]), forceSetup, weekList, focus, today: today ?? 0 });
+  const { steps, meta } = chooseFlow(ctx, { forceSetup, withSetup: true, weekList, today: today ?? 0 });
   const week = meta.mode === "week" ? meta.week : undefined;
   const { quit } = await runSteps(steps, ctx, { week, setupSteps: meta.setupSteps ?? 0, autoSteps: meta.autoSteps, published: meta.published !== false, nextWeek: meta.next ?? 0, groups: meta.groups ?? [] });
   const home = (meta.groups ?? []).find((g) => g.week === (focus || week));

@@ -1,5 +1,6 @@
 {
-  "note": "The weeks NetSim Studio lists, in order (it reads this file from the newest published week on GitHub). A week is out once its week-N-start branch is published. Each week: kind (setup, design, build, demo), guide and page (docs/weeks/week-NN.md and .html: the studio shows the page, or the guide when there's no page), note (a design week's note), board (the week has a board to open). Room for later fields (a build week's tasks, Join class): the studio keeps what it doesn't use.",
+  "note": "The weeks NetSim Studio lists, in order (it reads this file from the newest published week on GitHub). A week is out once its week-N-start branch is published. Each week: kind (setup, design, build, demo), guide and page (docs/weeks/week-NN.md and .html: the studio shows the page, or the guide when there's no page), note (a design week's note), board (the week has a board to open). Room for later fields (a build week's tasks, Join class): the studio keeps what it doesn't use. current: the week the class is on, where the studio opens (move it each Monday); later weeks can be out already.",
+  "current": 5,
   "weeks": [
     {
       "week": 1,
@@ -30,11 +31,11 @@
     },
     {
       "week": 4,
-      "title": "Design: the CPU",
+      "title": "Build: decode and encode (in week 5)",
       "kind": "design",
       "guide": "docs/weeks/week-04.md",
       "page": "docs/weeks/week-04.html",
-      "note": "docs/notes/week-04.md",
+      "note": null,
       "board": false
     },
     {
@@ -43,21 +44,21 @@
       "kind": "build",
       "guide": "docs/weeks/week-05.md",
       "page": "docs/weeks/week-05.html",
-      "note": "docs/notes/week-04.md",
+      "note": null,
       "board": true
     },
     {
       "week": 6,
-      "title": "Design: scheduling + interrupts",
+      "title": "Build: taking turns and interrupts",
       "kind": "design",
       "guide": "docs/weeks/week-06.md",
       "page": "docs/weeks/week-06.html",
-      "note": "docs/notes/week-06.md",
+      "note": null,
       "board": false
     },
     {
       "week": 7,
-      "title": "Build: cores, scheduler, interrupts",
+      "title": "Build: many cores on the board",
       "kind": "build",
       "guide": "docs/weeks/week-07.md",
       "page": "docs/weeks/week-07.html",
@@ -69,7 +70,7 @@
       "title": "Demo: ship it",
       "kind": "demo",
       "guide": "docs/weeks/week-08.md",
-      "page": null,
+      "page": "docs/weeks/week-08.html",
       "note": null,
       "board": true
     }
