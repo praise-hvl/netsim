@@ -83,7 +83,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 16;
+export const STUDIO_VERSION = 17;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -2434,6 +2434,8 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
   let code = {};
   /** @type {Running | null} */
   let codeRun = null;
+  let checking = false; // buildCheck is walking the steps
+  let checkQueued = false; // buildCheck waits for a test run to finish
 
   /** A week the student has in their work (its page, board, checks and code open). @param {number} week */
   function weekIn(week) {
@@ -2469,23 +2471,28 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
 
   /**
    * @param {string} dir @param {number} week @param {ReturnType<typeof weekCode>[number]} task
-   * @param {"" | "agent" | "sandbox"} [from]  "agent": the student pressed it in the Agent tab, say the result there.
+   * @param {"" | "agent" | "sandbox" | "check"} [from]  "agent": the student pressed it in the Agent tab, say the result there.
    *   "sandbox": the end of a turn, nobody pressed anything: in Codex's sandbox, and said there too.
+   *   "check": the Build view finding where the student is: in the sandbox, nothing said.
+   * @param {(green: boolean) => void} [then]  called with whether it came out green
    */
-  function runTaskTests(dir, week, task, from = "") {
+  function runTaskTests(dir, week, task, from = "", then = () => {}) {
     const id = task.id;
-    if (from) agent.testOfferDone(id);
+    // "check": the Build view checking where the student is, quietly, in the sandbox (nobody pressed anything).
+    const quiet = from === "check";
+    const sandboxed = from === "sandbox" || quiet;
+    if (from && !quiet) agent.testOfferDone(id);
     code = { ...code, [id]: { phase: "running" } };
     publish();
     const report = join(tmpdir(), `netsim-studio-${process.pid}-${id}.json`);
     const vitest = [process.execPath, join(dir, "node_modules", "vitest", "vitest.mjs"), "run", ...task.tests, "--reporter=json", `--outputFile=${report}`];
-    const argv = from === "sandbox" ? ["codex", ...CODEX_FLAGS, "-c", `sandbox_mode="${AGENT_SANDBOX_MODE}"`, "-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=false", "sandbox", "--", ...vitest] : vitest;
+    const argv = sandboxed ? ["codex", ...CODEX_FLAGS, "-c", `sandbox_mode="${AGENT_SANDBOX_MODE}"`, "-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=false", "sandbox", "--", ...vitest] : vitest;
     let text = "";
     codeRun = /** @type {NonNullable<Context["stream"]>} */ (ctx.stream)(argv, dir, (t) => (text = (text + t).slice(-20_000)));
     void codeRun.done.then(() => {
       codeRun = null;
       const stubs = agentTaskList(dir, week).filter((t) => t.stubbed);
-      const results = taskResults(ctx.readText(report) ?? "", task, stubs, task.needs, from === "sandbox");
+      const results = taskResults(ctx.readText(report) ?? "", task, stubs, task.needs, sandboxed);
       try {
         rmSync(report, { force: true });
       } catch {
@@ -2493,14 +2500,19 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
       }
       if (!results) {
         // The sandbox couldn't run them: leave it to the student's press, with no verdict.
-        if (from === "sandbox") {
+        if (sandboxed) {
           code = { ...code };
           delete code[id];
-          agent.testOffer(week, id);
-          return publish();
+          if (!quiet) agent.testOffer(week, id);
+          publish();
+          return then(false);
         }
         code = { ...code, [id]: { phase: "error", error: `The tests couldn't run:\n${cleanOutput(text).slice(-1500)}` } };
       } else code = { ...code, [id]: { phase: results.failed ? "failed" : "passed", rev: task.rev, ...results } };
+      if (quiet) {
+        publish();
+        return then(Boolean(results && !results.failed && results.passed > 0));
+      }
       if (from && results) {
         const todo = results.waiting.length ? ` ${results.waiting.join(", ")} still to do.` : "";
         const socket = results.blocked ? ` ${results.blocked} more open a local socket, so they need Run its tests.` : "";
@@ -2509,7 +2521,45 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
         else agent.commitOffer(week, id, `\`${id}\`: ${results.passed} test${results.passed === 1 ? "" : "s"} pass.${todo}${socket}`);
       } else if (from) agent.say("bad", `The tests for \`${id}\` couldn't run.`);
       publish();
+      then(Boolean(results && !results.failed));
     });
+  }
+
+  /**
+   * Where the student is in the Build view: each step's own tests, in order, in the sandbox, until the
+   * first that isn't green. A step already checked at the same version of its code isn't run again.
+   * @param {Record<string, unknown>} a
+   */
+  function buildCheck(a) {
+    const dir = ctx.state.repoDir;
+    const week = Number(a.week);
+    if (!dir || !Number.isInteger(week) || !weekIn(week)) return reject(409, "That week isn't in your work yet.");
+    if (checking) return ok;
+    if (codeRun) {
+      // Tests already running (the agent's turn just ended): check once they finish.
+      if (!checkQueued) {
+        checkQueued = true;
+        void codeRun.done.then(() => setTimeout(() => ((checkQueued = false), buildCheck(a)), 0));
+      }
+      return ok;
+    }
+    const tasks = agentTaskList(dir, week);
+    const steps = buildSteps(ctx, dir, week, tasks).filter((st) => st.found);
+    checking = true;
+    const next = (/** @type {number} */ i) => {
+      const st = steps[i];
+      if (!st) return void (checking = false);
+      if (st.committed) return next(i + 1);
+      if (st.testNote) return void (checking = false); // no test checks it: the student says when it's done
+      const task = tasks.find((t) => t.id === st.id && t.week === st.week) ?? tasks.find((t) => t.id === st.id);
+      if (!task) return void (checking = false);
+      const known = code[task.id];
+      if (known?.rev === task.rev && known.phase === "passed") return next(i + 1);
+      if (known?.rev === task.rev && known.phase === "failed") return void (checking = false);
+      runTaskTests(dir, task.week, task, "check", (green) => (green ? next(i + 1) : void (checking = false)));
+    };
+    next(0);
+    return ok;
   }
 
   /** The commit for one task, once its tests pass as the file is now: only that task's file. @param {Record<string, unknown>} a */
@@ -2609,6 +2659,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     }
     if (a.type === "code-save") return saveCode(a);
     if (a.type === "code-test") return testCode(a);
+    if (a.type === "build-check") return buildCheck(a);
     if (a.type === "code-commit") return commitCode(a);
     if (typeof a.type === "string" && a.type.startsWith("account-")) return accountAct(a);
     if (acct) return reject(409, "Finish changing the GitHub account first, or close it.");
@@ -4684,8 +4735,11 @@ export function buildSteps(ctx, dir, week, tasks) {
     const now = task ? (ctx.readText(join(dir, task.file)) ?? "") : "";
     const region = task ? findCodeRegions(now).find((r) => r.id === task.id) : undefined;
     const body = region ? now.split("\n").slice(region.start + 1, region.end).map((l) => l.trim()).join("\n") : "";
-    const committed = Boolean(task && !task.stubbed && region && inHead(task.file, task.id) === body);
-    return { n: n + 1, ...step, week: task?.week ?? step.week, file: task?.file ?? "", found: Boolean(task), stubbed: task?.stubbed ?? true, committed };
+    const head = task && region ? inHead(task.file, task.id) : undefined;
+    const committed = Boolean(task && !task.stubbed && region && head === body);
+    // Its code differs from the last commit (written, not committed yet).
+    const dirty = Boolean(task && region && head !== undefined && head !== body);
+    return { n: n + 1, ...step, week: task?.week ?? step.week, file: task?.file ?? "", found: Boolean(task), stubbed: task?.stubbed ?? true, committed, dirty, rev: task?.rev ?? "" };
   });
 }
 
@@ -5287,6 +5341,7 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .tab.on { color: var(--ink); background: var(--panel); border-color: var(--line); margin-bottom: -1px; }
 .tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .framebar { display: flex; }
+.bdoneline { margin: 0 0 4px; font-size: 13.5px; color: var(--green); }
 .wswitch { margin-bottom: 8px; }
 .wpills { display: flex; flex-wrap: wrap; gap: 6px; }
 .wpill { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 11px; font: 600 12.5px/1.2 "Inter", sans-serif; color: var(--ink); cursor: pointer; }
@@ -6514,13 +6569,20 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     // ── The Build list: the week's steps, one at a time (concept, one-click prompt, its result, Commit) ──
     /** @type {any[]} */
     let buildList = [];
-    const stepDone = (/** @type {any} */ st) => st.committed || Boolean(snap?.code?.[st.id]?.done);
+    // Done: committed as it is, or its tests pass with nothing left to commit.
+    const stepDone = (/** @type {any} */ st) => {
+      const r = snap?.code?.[st.id];
+      // (Its tests can pass with the region still the stub: the code went in elsewhere in the file.)
+      return st.committed || Boolean(r?.done) || Boolean(r?.phase === "passed" && r.passed > 0 && r.rev === st.rev && !st.dirty);
+    };
     /** @param {{ week: number, el: HTMLElement }} m */
     async function loadBuild(m) {
       const res = await fetch(`/api/build?week=${m.week}`, { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null);
       if (mounted !== m) return;
       buildList = res?.steps ?? [];
       paintBuild();
+      // Steps already green (written another way, or in one go with an earlier one) are skipped.
+      void act({ type: "build-check", week: m.week });
     }
     function currentBuildStep() {
       return buildList.find((st) => !stepDone(st)) ?? null;
@@ -6558,6 +6620,8 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       return `<div class="status ok"><span class="icon">✓</span><div><b>${r.passed ? `${esc(r.passed)} test${r.passed === 1 ? "" : "s"} pass.` : "Nothing fails."}</b>${todo ? `<div class="sub">${esc(todo)}</div>` : ""}</div></div>
         <div class="row"><button class="btn primary" data-build-commit="${esc(st.id)}" data-w="${esc(st.week)}">Commit it</button><span class="muted">It commits the whole file.</span></div>`;
     }
+    /** Its tests pass as the code is now (left to commit, if it isn't done): no Send. @param {any} st */
+    const greenNow = (st) => snap?.code?.[st.id]?.phase === "passed" && snap.code[st.id].rev === st.rev;
     /** @param {any} st */
     function stepCard(st) {
       return `<section class="bcard">
@@ -6565,7 +6629,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           <h2>${esc(st.title || st.id)}</h2>
           ${st.concept ? `<p class="lesson">${esc(st.concept).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")}</p>` : ""}
           ${st.prompt ? `<details class="bprompt"><summary>What it sends to the agent</summary><pre>${esc(st.prompt)}</pre></details>` : ""}
-          <div class="row">${st.prompt && st.found && !stepDone(st) ? `<button class="btn primary" data-build-send="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>Send to the agent</button>` : ""}${st.found && !stepDone(st) ? `<button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">Run its tests</button>` : ""}</div>
+          <div class="row">${st.prompt && st.found && !stepDone(st) && !greenNow(st) ? `<button class="btn primary" data-build-send="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>Send to the agent</button>` : ""}${st.found && !stepDone(st) ? `<button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">Run its tests</button>` : ""}</div>
           ${st.found ? buildResult(st) : `<p class="muted">This step's code isn't in your folder yet.</p>`}
           ${st.stuck ? `<p class="${snap?.code?.[st.id]?.phase === "failed" ? "stuck bad" : "muted"}"><b>Stuck?</b> ${esc(st.stuck).replace(/`([^`\n]+)`/g, "<code>$1</code>")}</p>` : ""}
           ${st.ask ? `<p class="muted"><b>Ask yourself:</b> ${esc(st.ask).replace(/`([^`\n]+)`/g, "<code>$1</code>")}</p>` : ""}
@@ -6602,7 +6666,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           ${finished.c.works ? `<p class="lesson">${esc(finished.c.works)}</p>` : ""}
           <div class="row">${finished.steps[0]?.found ? `<button class="btn" data-build-test="${esc(finished.steps[finished.steps.length - 1].id)}" data-w="${esc(finished.steps[finished.steps.length - 1].week)}">Run its tests again</button>` : ""}${finished.c.board ? `<button class="btn" data-do="tab" data-tab="board">See it on the board</button>` : ""}<button class="btn primary" data-build-seen="${esc(finished.c.id)}">${next ? `Next: ${esc(next.c.title || "the next part")}` : "Done"}</button></div></section>`;
       } else if (!st) card = `<section class="bcard bfinish"><h2>✓ Everything this week is built.</h2><p class="lesson">Push your work with <code>git push</code> (or run npm start again: it pushes for you).</p></section>`;
-      else card = stepCard(st);
+      else card = `${now.steps.filter(stepDone).map((x) => `<p class="bdoneline">✓ ${esc(x.title || x.id)}, done</p>`).join("")}${stepCard(st)}`;
       const notes = /** @type {HTMLElement | null} */ (document.querySelector("[data-bnotes]"));
       // Notes HTML is rendered by the studio from the student's own guide (escaped markdown).
       const notesHtml = now.c.notes || `<p class="muted">No notes for this part.</p>`;
