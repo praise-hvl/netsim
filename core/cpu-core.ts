@@ -140,7 +140,13 @@ function fetch(core: Core): StepResult {
   // @student week=5 part=class id=fetch "Ask memory for the 4 bytes at PC and wait for them (fault if PC is too close to the end)"
   // TODO(week 5, fetch): Ask memory for the 4 bytes at PC and wait for them (fault if PC is too close to the end)
   // Tests: tests/week-05/   Guide: docs/weeks/week-05.md
-  return todo("week 5: fetch", core);
+  if (core.pc + INSTRUCTION_SIZE > MEMORY_SIZE) {
+    return faultWith(core, `Instruction fetch at ${hex(core.pc)} ran off the end of memory`);
+  }
+  return {
+    core: moveTo(core, "WAIT_FETCH"),
+    effects: [{ kind: "read", address: core.pc, length: INSTRUCTION_SIZE }],
+  };
   // @end
 }
 
