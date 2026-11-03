@@ -7,12 +7,14 @@
  * teacher/ (Praise's run sheets, lesson pages and instructor curriculum) is committed to this private
  * repo as a backup, and never ships.
  * The one workflow that does ship is pages.yml: it only builds and publishes the student's board.
+ * mac/ is the Mac app's source: students get the signed DMG, never the source.
  */
 const STUDENT_WORKFLOWS = [".github/workflows/pages.yml"];
 
 export function instructorOnly(file: string): boolean {
   return (
     file.startsWith("teacher/") ||
+    file.startsWith("mac/") ||
     file.startsWith("course/") ||
     (file.startsWith(".github/") && !STUDENT_WORKFLOWS.includes(file)) ||
     file.startsWith("tests/studio/") ||
