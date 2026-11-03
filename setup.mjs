@@ -83,7 +83,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 17;
+export const STUDIO_VERSION = 18;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -5364,7 +5364,18 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .ctop .csub { color: #cfe8dc; font-size: 13px; }
 .cprog { display: grid; gap: 4px; min-width: 200px; font-size: 12.5px; text-align: right; }
 .ctop .bbar { background: rgba(255,255,255,.2); }
-.cgrid { --chat: 40%; display: grid; grid-template-columns: minmax(280px, var(--chat)) 10px minmax(0, 1fr); align-items: stretch; height: calc(100vh - 320px); min-height: 380px; }
+.cgrid { --chat: 40%; display: grid; grid-template-columns: minmax(280px, var(--chat)) 10px minmax(0, 1fr); align-items: stretch; min-height: 0; }
+/* The Build view fills the window: the rows above it take their own height, the chat and panel the rest
+   (so the step card and Send stay on screen); only the chat and the panel scroll. */
+.detail .body:has(.chatui) { padding: 14px 20px; overflow: hidden; }
+.detail .inner.week:has(.chatui) { height: 100%; min-height: 0; gap: 8px; }
+.inner.week:has(.chatui) .wswitch { margin-bottom: 0; }
+.inner.week:has(.chatui) .weekhead .eyebrow { margin-bottom: 4px; }
+.inner.week:has(.chatui) .weekhead .q { font-size: 22px; }
+.detail .inner.week:has(.chatui) > .banner { display: block; flex-wrap: nowrap; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 6px 12px; font-size: 13.5px; }
+.tabbody:has(> .chatui) { overflow: hidden; }
+.chatui { flex: 1; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
+.chatui .cpane iframe.doc, .chatui .cpane iframe.board { min-height: 0; height: 100%; }
 .ccol { min-width: 0; overflow-y: auto; padding-right: 6px; display: flex; flex-direction: column; }
 .ccol .agenttab { flex: 1; align-content: start; padding-bottom: 0; }
 .ccol .aglog { max-height: none; overflow: visible; }
@@ -5374,7 +5385,7 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .ctabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); padding: 6px 8px 0; }
 .ctab { border: 0; background: none; padding: 8px 10px; font: 600 13px/1 "Inter", sans-serif; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
 .cpane { flex: 1; overflow: auto; padding: 10px 12px; min-height: 0; }
-.cpane iframe.doc { min-height: 100%; height: calc(100vh - 360px); }
+.cpane iframe.doc { min-height: 100%; }
 .chatui:not([data-panel="notes"]) .cpane[data-pane="notes"], .chatui:not([data-panel="steps"]) .cpane[data-pane="steps"], .chatui:not([data-panel="files"]) .cpane[data-pane="files"], .chatui[data-panel="notes"] .cpane[data-pane="viz"], .chatui[data-panel="steps"] .cpane[data-pane="viz"], .chatui[data-panel="files"] .cpane[data-pane="viz"] { display: none; }
 .chatui:not([data-panel]) .cpane:not([data-pane="viz"]) { display: none; }
 .chatui[data-panel="viz"] .ctab[data-cpane-tab="viz"], .chatui:not([data-panel]) .ctab[data-cpane-tab="viz"], .chatui[data-panel="notes"] .ctab[data-cpane-tab="notes"], .chatui[data-panel="steps"] .ctab[data-cpane-tab="steps"], .chatui[data-panel="files"] .ctab[data-cpane-tab="files"] { color: var(--ink); border-bottom-color: var(--green); }
@@ -5386,15 +5397,23 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .ccol .ag.you .who, .ccol .ag.bot .who { display: none; }
 .ccol .ag.you .said { background: #e3f2ea; border-radius: 18px 18px 4px 18px; padding: 8px 14px; max-width: 85%; }
 .ccol .ag.bot .said { padding: 2px 0; }
-.ccol .agcomposer.pinned { position: sticky; bottom: 0; background: var(--panel); border: 2px solid var(--green); border-radius: 16px; padding: 8px 10px; margin-top: 10px; }
+/* The chat column: the conversation and the step card scroll; the message box has its own row below. */
+.ccol { overflow: hidden; }
+.ccol .agenttab { display: flex; flex-direction: column; gap: 0; min-height: 0; }
+.ccol .agscroll { flex: 1; min-height: 0; overflow-y: auto; display: grid; gap: 12px; align-content: start; padding-right: 4px; }
+.ccol .agcomposer.pinned { flex: none; background: var(--panel); border: 2px solid var(--green); border-radius: 16px; padding: 8px 10px; margin-top: 10px; }
 .ccol .agcomposer.pinned textarea { border: 0; padding: 4px; }
 .cdisclaim { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); text-align: center; }
 .build.guide .bcard { border: 1px solid var(--line); border-left: 3px solid var(--mint); box-shadow: none; border-radius: 10px; }
 @media (max-width: 900px) {
   .cgrid { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .detail .body:has(.chatui), .tabbody:has(> .chatui) { overflow: visible; }
+  .detail .inner.week:has(.chatui) { height: auto; }
+  .chatui { grid-template-rows: none; }
+  .chatui .cpane iframe.doc, .chatui .cpane iframe.board { min-height: 320px; height: 45vh; }
   .cdiv { display: none; }
   .cpanel { order: -1; max-height: 50vh; }
-  .ccol { overflow: visible; }
+  .ccol, .ccol .agscroll { overflow: visible; }
   .ctop { flex-direction: column; align-items: stretch; }
   .cprog { text-align: left; }
 }
@@ -6404,6 +6423,9 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     let mounted = null;
     let focusBox = false;
     let chatPanel = "viz"; // the right panel's tab in the Build view
+    let scrolledFor = ""; // the step the chat column last scrolled to
+    let followCard = true; // the chat stays on the step card until the student scrolls it
+    let actedOn = ""; // the step the student last committed or tested in the Build view
     /** @type {Set<any>} entries with deltas waiting for the next frame */
     const dirty = new Set();
     let painting = false;
@@ -6639,9 +6661,10 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const box = /** @type {HTMLElement | null} */ (mounted?.el.querySelector("[data-build]") ?? null);
       if (!box || !buildList.length) return;
       const all = components();
-      // The component being built: the first with a step left, unless one just finished whose finish
-      // screen hasn't been seen yet.
-      const finished = all.find((x) => x.steps.every(stepDone) && !seen(x.c.id) && x.c.id);
+      // The component being built: the first with a step left, unless the student just finished one here
+      // (committed or tested its last step in this view) and hasn't seen its finish screen yet. A part
+      // finished earlier, or found green by the studio's own check, opens straight on the next step.
+      const finished = all.find((x) => x.c.id && x.steps.every(stepDone) && !seen(x.c.id) && x.steps.some((y) => y.id === actedOn));
       const building = all.find((x) => x.steps.some((st) => !stepDone(st)));
       const now = finished ?? building ?? all[all.length - 1];
       const st = finished ? null : currentBuildStep();
@@ -6710,6 +6733,20 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         box.innerHTML = html;
         box.dataset.html = html;
       }
+      // The chat opens on the current step card, and moves to the next one when the step changes.
+      const at = `${mounted?.week}|${finished ? `finished:${finished.c.id}` : (st?.id ?? "all")}`;
+      if (scrolledFor !== at) {
+        scrolledFor = at;
+        followCard = true;
+      }
+      toCard();
+    }
+    /** Keep the step card in view as the chat above it loads and grows, until the student scrolls the chat themselves. */
+    function toCard() {
+      const scroller = /** @type {HTMLElement | null} */ (mounted?.el.querySelector("[data-agscroll]") ?? null);
+      const cardEl = scroller?.querySelector("[data-build] .bcard");
+      if (!scroller || !cardEl || !followCard) return;
+      scroller.scrollTop += cardEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 8;
     }
 
     /** @param {number} week @param {HTMLElement} el */
@@ -6718,19 +6755,27 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       mounted = { week, el, tasks: [] };
       const mine = mounted;
       const chat = week >= 4;
-      el.innerHTML = `${chat ? "" : `<div data-build></div>`}<div class="agbar"><span class="muted" data-agent-who></span></div>
+      el.innerHTML = `${chat ? `<div class="agscroll" data-agscroll>` : `<div data-build></div>`}<div class="agbar"><span class="muted" data-agent-who></span></div>
         <p class="agperms" data-agent-perms></p>
         <div data-agent-status></div>
         <div class="aglog" data-agent-log></div>
         <div data-agent-cards></div>
         <div class="agworking muted" data-agent-working hidden><i class="spin"></i> Codex is working…</div>
-        ${chat ? `<div data-build></div>` : ""}
+        ${chat ? `<div data-build></div></div>` : ""}
         <form class="agcomposer${chat ? " pinned" : ""}" data-agent-composer hidden>
           <label class="sub" ${week >= 4 ? "hidden" : ""}>Working on <select name="agenttask" data-agent-task><option value="">no particular task</option></select></label>
           <textarea name="agentmessage" rows="${week >= 4 ? 2 : 4}" placeholder="${week >= 4 ? "Ask the agent about this step…" : "Say how you want to approach it, then what you'd like Codex to do."}" spellcheck="true">${esc(draft)}</textarea>
           <div class="row"><button class="btn primary" type="submit" data-agent-send>Send <kbd>⌘↵</kbd></button><button class="btn" type="button" data-agent-stop hidden>Stop</button></div>
           ${week >= 4 ? `<p class="cdisclaim">The agent can make mistakes. Check its work with the tests.</p>` : ""}
         </form>`;
+      const scroller = /** @type {HTMLElement | null} */ (el.querySelector("[data-agscroll]"));
+      if (scroller) {
+        // The student's own scroll (wheel, touch, keys, the scrollbar) stops the follow until the step changes.
+        for (const ev of ["wheel", "touchmove", "keydown", "mousedown"]) scroller.addEventListener(ev, () => (followCard = false), { passive: true });
+        const grow = new ResizeObserver(() => toCard());
+        for (const child of scroller.children) grow.observe(child);
+        grow.observe(scroller);
+      }
       paintAll();
       paintState();
       void act({ type: "agent-open" });
@@ -6843,8 +6888,10 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           mounted?.el.querySelector("[data-agent-log]")?.scrollIntoView({ block: "start" });
         });
       } else if (el.dataset.buildTest) {
+        actedOn = el.dataset.buildTest;
         void ask({ type: "code-test", week: Number(el.dataset.w), id: el.dataset.buildTest }).then((/** @type {any} */ r) => r.ok || toast(r.error ?? "That didn't run."));
       } else if (el.dataset.buildCommit) {
+        actedOn = el.dataset.buildCommit;
         /** @type {HTMLButtonElement} */ (el).disabled = true;
         void ask({ type: "code-commit", week: Number(el.dataset.w), id: el.dataset.buildCommit }).then((/** @type {any} */ r) => {
           toast(r.ok ? (r.said ?? "Committed.") : (r.error ?? "That didn't go through."));
