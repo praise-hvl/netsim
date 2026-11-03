@@ -14,6 +14,10 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // The studio's code box, bundled (scripts/studio/build-editor.sh).
     "studio/editor.js",
+    // The Mac app's build output (mac/build.sh): Node and npm unpacked, and copies of the studio.
+    "mac/.build/**",
+    "mac/.cache/**",
+    "mac/dist/**",
   ]),
 ]);
 

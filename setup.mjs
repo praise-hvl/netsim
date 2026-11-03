@@ -19,7 +19,7 @@
 // @ts-check
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve, sep } from "node:path";
@@ -45,6 +45,21 @@ export const MAC_PICK_FOLDER = [
   "end tell",
   "end run",
 ];
+
+/**
+ * The program that shows the computer's folder picker: the Mac app's own (NETSIM_PICK_FOLDER, which
+ * prints the chosen folder; the app sets it), else osascript, PowerShell or zenity.
+ * @param {Platform} platform @param {string} initial @param {string} prompt
+ * @returns {[string, string[]]}
+ */
+export function pickFolderCommand(platform, initial, prompt, env = process.env) {
+  if (env.NETSIM_PICK_FOLDER) return [env.NETSIM_PICK_FOLDER, [initial, prompt]];
+  return platform === "mac"
+    ? ["osascript", [...MAC_PICK_FOLDER.flatMap((line) => ["-e", line]), initial, prompt]]
+    : platform === "windows"
+      ? ["powershell", ["-NoProfile", "-Command", "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = $args[1]; $d.SelectedPath = $args[0]; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }", initial, prompt]]
+      : ["zenity", ["--file-selection", "--directory", `--title=${prompt}`, `--filename=${initial.replace(/\/?$/, "/")}`]];
+}
 
 /** Where the board's server (Next.js, what `npm run dev` serves) shows the board. */
 export const BOARD_URL = "http://localhost:3005/board";
@@ -83,7 +98,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 18;
+export const STUDIO_VERSION = 19;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -202,7 +217,7 @@ const CODEX_FLAGS = ["-c", "check_for_update_on_startup=false"];
  *   fresh?: boolean,
  *   color: boolean,
  *   style: Style,
- *   capture: (argv: string[], cwd?: string) => RunResult | null,
+ *   capture: (argv: string[], cwd?: string, options?: { timeout?: number }) => RunResult | null,
  *   env?: Record<string, string | undefined>,
  *   execute: (argv: string[], cwd?: string) => number,
  *   stream?: (argv: string[], cwd: string | undefined, onData: (text: string) => void) => Running,
@@ -589,6 +604,94 @@ export function ghActiveAccount(ctx) {
 export function gitArgv(ctx, args) {
   return ghTokenVar(ctx) ? ["git", "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential", ...args] : ["git", ...args];
 }
+
+/**
+ * What the folder's own git config (which the agent can write) could make a network git command run
+ * or reach instead of GitHub: a rewritten address (url.*.insteadOf, a push URL), a program for the
+ * remote end (uploadpack/receivepack/proxy), a credential helper, an askpass or ssh command, or (for
+ * a push) a hooks folder: the reason the studio won't run it, or null.
+ * @param {Context} ctx
+ * @param {string} dir
+ * @param {{ push?: boolean }} [options]
+ */
+export function networkRefusal(ctx, dir, { push = false } = {}) {
+  const r = ctx.capture(["git", "config", "--list", "--show-scope"], dir, { timeout: 5000 });
+  if (!r || r.code !== 0) return null; // not a git folder yet: nothing of its own to read
+  const local = r.stdout.split("\n").filter((line) => /^(local|worktree)\t/.test(line)).map((line) => line.slice(line.indexOf("\t") + 1));
+  const risky = local.find((e) => /^(url\..*\.(insteadof|pushinsteadof)=|remote\.[^=]*\.(pushurl|uploadpack|receivepack|proxy|vcs)=|credential\.[^=]*helper=|core\.(askpass|sshcommand|gitproxy)=|[^=]*command=)/i.test(e) || (push && /^core\.hookspath=/i.test(e)));
+  if (risky) return `This folder's git settings (.git/config: ${risky.split("=")[0]}) could send git somewhere else or run a program, so the studio won't do it: check .git/config, or run it in the terminal.`;
+  if (push) {
+    // git pushes to every url origin has: exactly one, and it's GitHub's.
+    const urls = local.filter((e) => /^remote\.origin\.url=/i.test(e)).map((e) => e.split("=").slice(1).join("="));
+    if (urls.length > 1) return `origin has ${urls.length} addresses (${urls.join(", ")}), and git would push to all of them, so the studio won't push: keep only GitHub's (git remote set-url origin <it>).`;
+    const url = urls[0] ?? "";
+    const named = /^https:\/\/[^/@]+@github\.com\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/.exec(url);
+    if (named) return `origin has a user name in its address (${url}), so the studio won't push there. Take it out: git remote set-url origin https://github.com/${named[1]}/${named[2]}.git`;
+    if (!originKind(url)) return `origin isn't a GitHub address (${url || "none"}), so the studio won't push there: check it with git remote -v.`;
+  }
+  return null;
+}
+
+/**
+ * How the student's fork is reached: "https" (https://github.com/owner/repo), "ssh"
+ * (git@github.com:owner/repo or ssh://git@github.com/owner/repo), or null for anything else.
+ * @param {string} url
+ */
+export function originKind(url) {
+  if (/^https:\/\/github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+?(\.git)?\/?$/.test(url)) return "https";
+  if (/^(git@github\.com:|ssh:\/\/git@github\.com\/)[A-Za-z0-9-]+\/[A-Za-z0-9._-]+?(\.git)?\/?$/.test(url)) return "ssh";
+  return null;
+}
+
+/** The folder's origin address, as its own config has it ("" without one). @param {Context} ctx @param {string} dir */
+function originUrl(ctx, dir) {
+  return ctx.capture(["git", "config", "--local", "--get-all", "remote.origin.url"], dir, { timeout: 5000 })?.stdout.trim() ?? "";
+}
+
+/**
+ * Git talking to GitHub from outside the sandbox: https only (ssh too for a fork reached by ssh, with
+ * the system's ssh), no hooks, no fsmonitor, no askpass. The course's repository (upstream) is
+ * public: it's reached at its address, never through the folder's remote config, with no
+ * credentials. The student's fork (origin) signs in with gh's helper only. A local file:// copy is
+ * allowed only in a rehearsal or a test (NETSIM_FILE_REMOTES=1 in the studio's environment): pushing
+ * to one runs that repository's hooks.
+ * @param {Context} ctx
+ * @param {"upstream" | "origin"} remote
+ * @param {string[]} args  with the remote's name where git would take it
+ * @param {{ ssh?: boolean }} [options]  ssh: the fork is reached by ssh (originKind)
+ */
+export function networkGit(ctx, remote, args, { ssh = false } = {}) {
+  const none = process.platform === "win32" ? "NUL" : "/dev/null";
+  const file = process.env.NETSIM_FILE_REMOTES === "1" ? "always" : "never";
+  // Each protocol by name too: the folder's own protocol.ext.allow=always would beat a general "never".
+  const guard = ["-c", "protocol.allow=never", "-c", "protocol.ext.allow=never", "-c", `protocol.ssh.allow=${ssh && remote === "origin" ? "always" : "never"}`, "-c", "protocol.git.allow=never", "-c", "protocol.http.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${file}`, "-c", `core.hooksPath=${none}`, "-c", "core.fsmonitor=false", "-c", "core.askPass=", "-c", "core.sshCommand=ssh", "-c", "credential.helper="];
+  if (remote === "upstream") return ["git", ...guard, ...args.map((a) => (a === "upstream" ? STARTER_URL : a))];
+  return ["git", ...guard, "-c", "credential.helper=!gh auth git-credential", ...args];
+}
+
+/**
+ * A push to the student's fork, guarded (networkGit); when the folder's config could send it
+ * elsewhere or run a program, a command that only says why and fails.
+ * @param {Context} ctx
+ * @param {string[]} args
+ */
+function pushArgv(ctx, args) {
+  const dir = ctx.state.repoDir ?? null;
+  const why = dir ? networkRefusal(ctx, dir, { push: true }) : null;
+  return why ? refusedCommand(why) : networkGit(ctx, "origin", args, { ssh: dir !== null && originKind(originUrl(ctx, dir)) === "ssh" });
+}
+
+/** A command that only says why the studio won't run the real one, and fails. @param {string} why */
+const refusedCommand = (why) => [process.execPath, "-e", `console.error(${JSON.stringify(why)}); process.exit(1)`];
+
+/** The fetch of the course's weeks, guarded (networkGit, networkRefusal). @param {Context} ctx @param {string | null} dir */
+function fetchArgv(ctx, dir) {
+  const why = dir ? networkRefusal(ctx, dir) : null;
+  return why ? refusedCommand(why) : networkGit(ctx, "upstream", FETCH_UPSTREAM);
+}
+
+/** Fetching the course's weeks from upstream, by its address, into the refs `git fetch upstream` fills. */
+const FETCH_UPSTREAM = ["fetch", "-q", "--no-tags", "upstream", UPSTREAM_WEEKS];
 
 /**
  * Who the course folder's copy on GitHub (origin) belongs to, or null when there's no folder yet.
@@ -1043,7 +1146,7 @@ export function courseSteps() {
           // Safe to run every time: it only makes sure every released week (week-N tag) is fetched.
           { kind: "auto", command: { display: `git config --replace-all remote.upstream.fetch "${UPSTREAM_WEEKS}"`, argv: ["git", "config", "--replace-all", "remote.upstream.fetch", UPSTREAM_WEEKS], cwd: dir, what: "Makes upstream bring down every released week (week-1, week-2, …)." } },
           { kind: "auto", command: { display: "git config remote.upstream.tagOpt --no-tags", argv: ["git", "config", "remote.upstream.tagOpt", "--no-tags"], cwd: dir, what: "Keeps the course's week tags under upstream/, not mixed in with yours." } },
-          { kind: "auto", command: { display: "git fetch upstream", argv: gitArgv(ctx, ["fetch", "upstream"]), cwd: dir, what: "Gets the course's weeks from GitHub." } },
+          { kind: "auto", command: { display: "git fetch upstream", argv: fetchArgv(ctx, dir), cwd: dir, what: "Gets the course's weeks from GitHub." } },
         ];
         if (right) return automatic;
         const verb = url ? "set-url" : "add";
@@ -1100,12 +1203,12 @@ export function courseSteps() {
         const tracking = output(ctx, ["git", "rev-parse", "--abbrev-ref", "work@{upstream}"], repoDir(ctx));
         if (tracking !== "origin/work") return { done: false, found: "Your work branch isn't on GitHub yet." };
         // Ask GitHub too (when it answers): after an account switch, the new copy may not have it yet.
-        const remote = ctx.capture(gitArgv(ctx, ["ls-remote", "--heads", "origin", "work"]), repoDir(ctx));
+        const remote = networkRefusal(ctx, repoDir(ctx), { push: true }) ? null : ctx.capture(networkGit(ctx, "origin", ["ls-remote", "--heads", "origin", "work"], { ssh: originKind(originUrl(ctx, repoDir(ctx))) === "ssh" }), repoDir(ctx));
         if (remote?.code === 0 && !remote.stdout.includes("refs/heads/work")) return { done: false, found: `Your work branch isn't on ${ctx.state.login ?? "your"}'s copy on GitHub yet.` };
         return { done: true, found: "Your work branch is on GitHub, linked to origin/work." };
       },
       plan: (ctx) => [
-        cmd("git push -u origin work", gitArgv(ctx, ["push", "-u", "origin", "work"]), {
+        cmd("git push -u origin work", pushArgv(ctx, ["push", "-u", "origin", "work"]), {
           cwd: repoDir(ctx),
           what: "Sends your work branch to your fork, and remembers the link, so later a plain git push is enough.",
           words: [["push", "send commits to GitHub"], ["-u", "from now on, work goes to origin/work, so later a plain git push is enough"], ["origin", "your fork on GitHub"], ["work", "the branch to send"]],
@@ -1336,7 +1439,7 @@ function newestHolding(ctx, dir, waiting, tips) {
   // Comparing the weeks needs their commits: fetch the week tags if one isn't here yet (it only
   // moves upstream/week-N, never the student's work).
   const missing = (/** @type {number} */ n) => ctx.capture(["git", "cat-file", "-e", `${tips.get(n)}^{commit}`], dir)?.code !== 0;
-  if (waiting.length > 1 && !ctx.dryRun && waiting.some(missing)) ctx.capture(gitArgv(ctx, ["fetch", "-q", "upstream"]), dir);
+  if (waiting.length > 1 && !ctx.dryRun && waiting.some(missing) && !networkRefusal(ctx, dir)) ctx.capture(networkGit(ctx, "upstream", FETCH_UPSTREAM), dir);
   let toGet = waiting[0] ?? null;
   for (const n of waiting.slice(1)) {
     const holds = waiting.filter((m) => m < n).every((m) => ctx.capture(["git", "merge-base", "--is-ancestor", /** @type {string} */ (tips.get(m)), /** @type {string} */ (tips.get(n))], dir)?.code === 0);
@@ -1353,7 +1456,9 @@ function newestHolding(ctx, dir, waiting, tips) {
  * @returns {Map<number, string>}
  */
 function remoteWeeks(ctx, dir) {
-  const remote = output(ctx, ["git", "ls-remote", "--tags", "upstream", "week-*"], dir) ?? "";
+  // By itself, at start and in checks: at the course's address, whatever the folder's config says.
+  if (networkRefusal(ctx, dir)) return new Map();
+  const remote = output(ctx, networkGit(ctx, "upstream", ["ls-remote", "--tags", "upstream", "week-*"]), dir) ?? "";
   return new Map([...remote.matchAll(/^([0-9a-f]{40})\s+refs\/tags\/week-(\d+)$/gm)].map((m) => [Number(m[2]), m[1]]));
 }
 
@@ -1498,7 +1603,7 @@ export function weekSteps(week, { onWork = true } = {}) {
         if (latest && latest !== local) return { done: false, found: `The course updated week ${week} since you last fetched it.` };
         return { done: true, found: `Week ${week}'s files are on this laptop (${ref}).` };
       },
-      plan: (ctx) => [cmd("git fetch upstream", gitArgv(ctx, ["fetch", "upstream"]), { cwd: repoDir(ctx), what: "Downloads the course's new branches, including this week's.", words: [["fetch", "download what's new, without changing your files"], ["upstream", "the course's repository"]] })],
+      plan: (ctx) => [cmd("git fetch upstream", fetchArgv(ctx, repoDir(ctx)), { cwd: repoDir(ctx), what: "Downloads the course's new branches, including this week's.", words: [["fetch", "download what's new, without changing your files"], ["upstream", "the course's repository"]] })],
       hint: () => `If it worked but week ${week} still isn't here, it isn't published yet: check back before class.`,
     },
     {
@@ -1560,7 +1665,7 @@ export function weekSteps(week, { onWork = true } = {}) {
         const back = owner && !ghTokenVar(ctx) && ownerMismatch(ctx, ghActiveAccount(ctx)) && ghAccounts(ctx).some((a) => a.login.toLowerCase() === owner.toLowerCase()) ? owner : null;
         return [
           ...(back && isGithubUsername(back) ? [{ kind: /** @type {const} */ ("command"), command: { ...switchAccountCommand(back), label: `First: use ${back}, the account your copy belongs to` } }] : []),
-          cmd("git push", gitArgv(ctx, ["push"]), { cwd: repoDir(ctx), what: "Sends your work branch to your fork on GitHub.", words: [["push", "send commits to GitHub"]] }),
+          cmd("git push", pushArgv(ctx, ["push", "origin", "work"]), { cwd: repoDir(ctx), what: "Sends your work branch to your fork on GitHub.", words: [["push", "send commits to GitHub"]] }),
         ];
       },
       // Only here, and only when it's the wrong account, does "Get week N" offer a different one.
@@ -2575,7 +2680,13 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     // Once is enough: a second press would commit whatever else is in the file by then, under this task's name.
     if (code[task.id]?.done && code[task.id]?.rev === task.rev) return reject(409, "This task is already committed.");
     const message = `week ${week}: ${task.id}`;
-    const r = ctx.capture(["git", "commit", "-q", "-m", message, "--", task.file], dir);
+    // The commit runs nothing the folder's config names: the agent can write .git/config and
+    // .gitattributes, and this runs outside the sandbox. Hooks are off (a student's commit needs none:
+    // the course's only hook is the instructor copy's pre-push). A filter or fsmonitor in the folder's
+    // own config (the instructor copy's solutions filter is one) means it's committed in the terminal.
+    if (gitRunsPrograms(ctx, dir, { hooks: false })) return reject(409, "This folder's git settings run a program on commit (a filter in .git/config), so the studio won't commit here: commit it in the terminal with git commit.");
+    const noHooks = process.platform === "win32" ? "NUL" : "/dev/null";
+    const r = ctx.capture(["git", "-c", `core.hooksPath=${noHooks}`, "-c", "core.fsmonitor=false", "-c", "commit.gpgSign=false", "commit", "-q", "-m", message, "--", task.file], dir);
     const said = `${r?.stdout ?? ""}${r?.stderr ?? ""}`;
     const committed = r?.code === 0 ? `Committed: ${message}` : /nothing (added )?to commit|no changes added/i.test(said) ? "Nothing new to commit: it's already in a commit." : `The commit didn't work: ${said.trim().split("\n")[0]}`;
     code = { ...code, [task.id]: { ...(code[task.id] ?? { phase: "passed" }), rev: task.rev, committed, done: r?.code === 0 || /already in a commit/.test(committed) } };
@@ -2986,6 +3097,15 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     },
     /** The course folder, once there is one. */
     repoDir: () => ctx.state.repoDir ?? null,
+    /** The file viewer's tree: the course folder's files and their git status. */
+    files: () => {
+      const dir = ctx.state.repoDir;
+      return dir ? fileTree(ctx, dir) : { status: 409, error: "The course folder isn't set up yet." };
+    },
+    /** One file, read-only, for the viewer. @param {unknown} rel */
+    file: (rel) => (ctx.state.repoDir ? viewFile(ctx, ctx.state.repoDir, rel) : { status: 409, error: "The course folder isn't set up yet." }),
+    /** One file's uncommitted changes, for the viewer. @param {unknown} rel */
+    diff: (rel) => (ctx.state.repoDir ? viewDiff(ctx, ctx.state.repoDir, rel) : { status: 409, error: "The course folder isn't set up yet." }),
     /** Tests the studio started are running (a task's save, or the week's checks). */
     busy: () => Boolean(codeRun || checksRun || agent.busy()),
     /** The picker's list in the Agent tab, once the week is in the student's work. @param {number} week */
@@ -3540,7 +3660,8 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
   /** Changes to files that later run outside the sandbox (the studio, npm scripts, tests): say so, once for each new state. */
   function warnIfRunsLater() {
     const dir = repo();
-    const changed = dir ? (ctx.capture(["git", "status", "--porcelain", "--", "setup.mjs", "package.json", "vitest.config.ts", "studio", "tests"], dir)?.stdout ?? "").trimEnd() : "";
+    const r = dir ? quietGit(ctx, dir, ["status", "--porcelain", "--", "setup.mjs", "package.json", "vitest.config.ts", "studio", "tests"]) : null;
+    const changed = r?.refused ? "the folder's git settings (.git/config names programs to run)" : (r?.stdout ?? "").trimEnd();
     if (changed && changed !== runsLater) note("info", `These changed, and they run outside the sandbox the next time you use the studio, npm or the tests. Check them first (git diff): ${changed.split("\n").map((l) => l.slice(3)).join(", ").slice(0, 300)}`);
     runsLater = changed;
   }
@@ -4373,6 +4494,25 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
       res.writeHead(200, { ...secure, "content-type": "application/json" }).end(JSON.stringify(studio.agentSnapshot()));
       return;
     }
+    // The file viewer, read-only: the folder's files, one file's text, one file's uncommitted changes.
+    // All three are data (JSON), never HTML: the page escapes everything it shows.
+    if (req.method === "GET" && url.pathname === "/api/file/image") {
+      const dir = studio.repoDir();
+      const img = dir ? viewImage(dir, url.searchParams.get("path")) : null;
+      if (!img) {
+        res.writeHead(404, secure).end();
+        return;
+      }
+      // Shown in an <img> on the studio's page; opened on its own it's inert.
+      res.writeHead(200, { ...secure, "content-type": img.type, "content-security-policy": "default-src 'none'; sandbox" }).end(img.body);
+      return;
+    }
+    if (req.method === "GET" && (url.pathname === "/api/files" || url.pathname === "/api/file" || url.pathname === "/api/diff")) {
+      const out = url.pathname === "/api/files" ? studio.files() : url.pathname === "/api/file" ? studio.file(url.searchParams.get("path")) : studio.diff(url.searchParams.get("path"));
+      const { status = 200, ...body } = out;
+      res.writeHead(status, { ...secure, "content-type": "application/json" }).end(JSON.stringify(body));
+      return;
+    }
     // A week's tasks, for its Code tab.
     if (req.method === "GET" && url.pathname === "/api/code") {
       const tasks = studio.weekCode(Number(url.searchParams.get("week")));
@@ -4384,7 +4524,7 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
     // (pageCsp), at a read-only path of their own: the address with the cookie just goes there.
     const dir = studio.repoDir();
     const viewing = view !== null;
-    const file = req.method === "GET" && dir && (viewing || !["/events", "/api/act", "/api/code", "/api/agent", "/api/agent/tasks", "/api/build", "/editor.js"].includes(url.pathname)) ? courseFile(dir, viewing ? view[2] : url.pathname) : null;
+    const file = req.method === "GET" && dir && (viewing || !["/events", "/api/act", "/api/code", "/api/agent", "/api/agent/tasks", "/api/build", "/api/files", "/api/file", "/api/file/image", "/api/diff", "/editor.js"].includes(url.pathname)) ? courseFile(dir, viewing ? view[2] : url.pathname) : null;
     if (file && !viewing) {
       res.writeHead(302, { ...secure, location: `/view/${viewToken}${url.pathname}` }).end();
       return;
@@ -4553,7 +4693,8 @@ export function regionContext(lines, r) {
  * @param {string} dir
  */
 function regionFiles(ctx, dir) {
-  const listed = ctx.capture(["git", "ls-files", "--", "*.ts", "*.tsx", "*.asm"], dir);
+  // Often, by itself (each check): ls-files reads no file contents, so only the hooks/fsmonitor guard is needed.
+  const listed = quietGit(ctx, dir, ["ls-files", "--", "*.ts", "*.tsx", "*.asm"], { check: false, globs: true });
   if (!listed || listed.code !== 0) return [];
   return listed.stdout.split("\n").filter((f) => f && !f.startsWith("tests/") && !f.includes("node_modules/"));
 }
@@ -4579,6 +4720,380 @@ export function codeFilePath(dir, rel) {
   } catch {
     return null;
   }
+}
+
+// ── The file viewer (read-only): the course folder's files, their text and their uncommitted changes ──
+
+/** The most a file (or its diff) can be to be shown in the studio. */
+export const VIEW_MAX_BYTES = 512 * 1024;
+
+/** Git's empty tree: as the attributes source, no .gitattributes in the folder applies. */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+/** @type {WeakMap<object, boolean>} whether this context's git has --attr-source (2.40 and newer) */
+const attrSource = new WeakMap();
+
+/**
+ * Settings in the folder's own git config (which the agent can write) that make git run a program:
+ * a clean/smudge filter, a hooks folder, an fsmonitor, a textconv or any *.command.
+ * @param {Context} ctx
+ * @param {string} dir
+ * @param {{ hooks?: boolean }} [options]  hooks: false leaves out core.hooksPath (the caller turns hooks off)
+ */
+function gitRunsPrograms(ctx, dir, { hooks = true } = {}) {
+  const r = ctx.capture(["git", "config", "--list", "--show-scope"], dir, { timeout: 5000 });
+  if (!r || r.code !== 0) return true;
+  return r.stdout.split("\n").some((line) => {
+    const [scope, entry = ""] = line.split("\t");
+    if (!hooks && /^core\.hookspath=/i.test(entry)) return false;
+    return (scope === "local" || scope === "worktree") && /^(filter\.|core\.hookspath=|core\.fsmonitor=|[^=]*command=|[^=]*\.textconv=|diff\.external=)/i.test(entry);
+  });
+}
+
+/**
+ * Git, read-only, for what the studio runs by itself (the file viewer, the "runs later" check, the
+ * task lists): with nothing configured in the folder run outside the sandbox. It refuses (no git
+ * runs) when the folder's own config names a program (a filter, fsmonitor, textconv, *command…): the
+ * agent can write .git/config, .git/info/attributes and any attributes file, so no attributes source
+ * can be trusted with a filter defined. On top: no hooks (core.hooksPath to nothing, and
+ * --no-optional-locks, so status doesn't write the index), no fsmonitor, no attributes file, and on
+ * git 2.40+ attributes from the empty tree. Pathspecs are literal (":(glob)…" is just a name) unless
+ * the caller asks for globs. Callers still pass --no-ext-diff and --no-textconv to diff.
+ * @param {Context} ctx
+ * @param {string} dir
+ * @param {string[]} args
+ * @param {{ check?: boolean, globs?: boolean }} [options]  check: false skips the refusal, for a
+ *   command that never reads file contents (ls-files without -m/-o/-d); globs: pathspecs are patterns
+ * @returns {RunResult & { refused?: boolean } | null}
+ */
+export function quietGit(ctx, dir, args, { check = true, globs = false } = {}) {
+  if (!attrSource.has(ctx)) {
+    const v = /git version (\d+)\.(\d+)/.exec(ctx.capture(["git", "--version"], dir, { timeout: 5000 })?.stdout ?? "");
+    attrSource.set(ctx, Boolean(v && (Number(v[1]) > 2 || (Number(v[1]) === 2 && Number(v[2]) >= 40))));
+  }
+  const modern = attrSource.get(ctx);
+  if (check && gitRunsPrograms(ctx, dir)) return { code: 1, stdout: "", stderr: "", refused: true };
+  const none = process.platform === "win32" ? "NUL" : "/dev/null";
+  const argv = ["git", ...(modern ? [`--attr-source=${EMPTY_TREE}`] : []), "--no-optional-locks", ...(globs ? [] : ["--literal-pathspecs"]), "--no-pager", "-c", `core.hooksPath=${none}`, "-c", "core.fsmonitor=false", "-c", `core.attributesFile=${none}`, "-c", "core.quotepath=off",
+    // A repository inside the folder (a gitlink) has its own config and attributes: status and diff never look inside one.
+    ...(args[0] === "status" || args[0] === "diff" ? [args[0], "--ignore-submodules=all", ...args.slice(1)] : args)];
+  return ctx.capture(argv, dir, { timeout: 10_000 });
+}
+
+/** What the viewer says when an old git won't read a folder that asks it to run programs. */
+const OLD_GIT = "This folder's git settings (.git/config) name programs for git to run, so the studio won't read it here: open it in VS Code instead.";
+
+/**
+ * A path the viewer may name: relative, "/"-separated, no "..", ".", dot-parts (so no .git, .env or
+ * .codex), not under node_modules. Says nothing about whether it exists.
+ * @param {unknown} rel
+ * @returns {rel is string}
+ */
+export function viewablePath(rel) {
+  if (typeof rel !== "string" || !rel || rel.length > 1024 || rel.includes("\0") || rel.includes("\\") || rel.startsWith("/")) return false;
+  const parts = rel.split("/");
+  // Case-insensitively: on macOS and Windows NODE_MODULES is the same folder.
+  return parts.every((p) => p !== "" && p !== "." && p !== ".." && !p.startsWith(".") && p.toLowerCase() !== "node_modules");
+}
+
+/**
+ * A file in the course folder the studio may show (read-only): a viewable path, a regular file whose
+ * real place (after following every link) is inside the folder and is itself a viewable path. The
+ * absolute path, or null.
+ * @param {string} dir
+ * @param {unknown} rel
+ */
+export function viewableFile(dir, rel) {
+  if (!viewablePath(rel)) return null;
+  try {
+    // .native: the names as they are on disk (NODE_MODULES/x is node_modules/x on macOS).
+    const root = realpathSync.native(dir);
+    const file = realpathSync.native(join(root, rel));
+    if (!file.startsWith(root + sep) || !statSync(file).isFile()) return null;
+    return viewablePath(file.slice(root.length + 1).split(sep).join("/")) ? file : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A file's bytes, at most `cap` of them: opened without following a link (the path is already its
+ * real place, so a link swapped in since is refused) and without blocking on a FIFO; the handle
+ * must be a regular file. Its size, and the bytes unless it's bigger than the cap; null if it can't.
+ * @param {string} file  a path from viewableFile
+ * @param {number} cap
+ * @returns {{ size: number, bytes: Buffer | null } | null}
+ */
+function readCapped(file, cap) {
+  let fd;
+  try {
+    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+    const st = fstatSync(fd);
+    if (!st.isFile()) return null;
+    if (st.size > cap) return { size: st.size, bytes: null };
+    const bytes = Buffer.alloc(st.size);
+    let got = 0;
+    while (got < st.size) {
+      const n = readSync(fd, bytes, got, st.size - got, got);
+      if (!n) break;
+      got += n;
+    }
+    return { size: st.size, bytes: bytes.subarray(0, got) };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/** The images the viewer shows in place (no SVG: it can carry script). */
+const VIEW_IMAGES = /** @type {Record<string, string>} */ ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" });
+
+/**
+ * An image's bytes for the viewer, under the same rules as viewFile; null if it isn't one.
+ * @param {string} dir
+ * @param {unknown} rel
+ */
+export function viewImage(dir, rel) {
+  const file = viewableFile(dir, rel);
+  const type = typeof rel === "string" ? VIEW_IMAGES[/\.([a-z0-9]+)$/i.exec(rel)?.[1]?.toLowerCase() ?? ""] : undefined;
+  if (!file || !type) return null;
+  const read = readCapped(file, 16 * 1024 * 1024);
+  return read?.bytes ? { type, body: read.bytes } : null;
+}
+
+/** The highlighter's language for a file name. @param {string} rel */
+export function viewLang(rel) {
+  const ext = /\.([a-z0-9]+)$/i.exec(rel)?.[1]?.toLowerCase() ?? "";
+  if (VIEW_IMAGES[ext]) return "image";
+  return /** @type {Record<string, string>} */ ({ ts: "ts", tsx: "tsx", js: "js", mjs: "js", cjs: "js", jsx: "tsx", json: "json", md: "md", asm: "asm" })[ext] ?? "text";
+}
+
+/**
+ * Text from a file's bytes, or why it isn't shown: over the size cap, or binary (a NUL byte in its
+ * first 8 KB, or not valid UTF-8).
+ * @param {Buffer} bytes
+ * @returns {{ text: string } | { error: string, binary?: boolean, tooBig?: boolean }}
+ */
+function viewText(bytes) {
+  if (bytes.length > VIEW_MAX_BYTES) return { error: "This file is too big to show here: open it in VS Code.", tooBig: true };
+  if (bytes.subarray(0, 8192).includes(0)) return { error: "This is a binary file: it isn't shown here.", binary: true };
+  try {
+    return { text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
+  } catch {
+    return { error: "This is a binary file: it isn't shown here.", binary: true };
+  }
+}
+
+/**
+ * What git says about each changed file: "modified", "added", "untracked", "deleted", "renamed" or
+ * "conflict", by path. Paths the viewer can't name are left out.
+ * @param {Context} ctx
+ * @param {string} dir
+ * @param {string} [only]  one path
+ * @returns {Record<string, string>}
+ */
+function viewStatus(ctx, dir, only) {
+  const r = quietGit(ctx, dir, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", ...(only ? ["--", only] : [])]);
+  /** @type {Record<string, string>} */
+  const out = {};
+  if (!r || r.code !== 0) return out;
+  for (const entry of r.stdout.split("\0")) {
+    if (entry.length < 4) continue;
+    const xy = entry.slice(0, 2);
+    const path = entry.slice(3);
+    if (!viewablePath(path)) continue;
+    out[path] = xy === "??" ? "untracked" : /U|DD|AA/.test(xy) ? "conflict" : xy.includes("D") ? "deleted" : xy.includes("A") ? "added" : xy.includes("R") ? "renamed" : "modified";
+  }
+  return out;
+}
+
+/**
+ * The course folder's files for the viewer's tree: what git tracks plus new files it doesn't ignore
+ * (so node_modules, build output and anything in .gitignore never show), minus paths it can't name,
+ * each with its git status. At most 5000.
+ * @param {Context} ctx
+ * @param {string} dir
+ */
+export function fileTree(ctx, dir) {
+  const r = quietGit(ctx, dir, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
+  if (r?.refused) return { status: 409, error: OLD_GIT, files: [], truncated: false };
+  if (!r || r.code !== 0) return { status: 500, error: "git couldn't list this folder's files.", files: [], truncated: false };
+  const status = viewStatus(ctx, dir);
+  // Lines added and removed in each changed file, against the last commit (a binary file has none).
+  /** @type {Record<string, [number, number]>} */
+  const counts = {};
+  const num = quietGit(ctx, dir, ["diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "HEAD"]);
+  if (num?.code === 0) for (const entry of num.stdout.split("\0")) {
+    const m = /^(\d+)\t(\d+)\t(.+)$/s.exec(entry);
+    if (m) counts[m[3]] = [Number(m[1]), Number(m[2])];
+  }
+  const paths = [...new Set([...r.stdout.split("\0"), ...Object.keys(status)].filter(viewablePath))].sort();
+  return {
+    files: paths.slice(0, 5000).map((path) => ({ path, ...(status[path] ? { status: status[path] } : {}), ...(counts[path] ? { added: counts[path][0], removed: counts[path][1] } : {}) })),
+    truncated: paths.length > 5000,
+  };
+}
+
+/**
+ * One file for the viewer, read-only: its text (data, never HTML), its language and git status, or
+ * why it can't be shown.
+ * @param {Context} ctx
+ * @param {string} dir
+ * @param {unknown} rel
+ */
+export function viewFile(ctx, dir, rel) {
+  const file = viewableFile(dir, rel);
+  if (!file || typeof rel !== "string") return { status: 404, error: "That file can't be shown here." };
+  const image = viewLang(rel) === "image";
+  const read = readCapped(file, image ? 16 * 1024 * 1024 : VIEW_MAX_BYTES);
+  if (!read) return { status: 404, error: "That file can't be shown here." };
+  const git = viewStatus(ctx, dir, rel)[rel];
+  // An image is shown from /api/file/image: here, only what it is.
+  if (image) return { status: 200, path: rel, lang: "image", size: read.size, ...(git ? { git } : {}) };
+  if (!read.bytes) return { status: 200, path: rel, lang: viewLang(rel), size: read.size, ...(git ? { git } : {}), error: "This file is too big to show here: open it in VS Code.", tooBig: true };
+  const bytes = read.bytes;
+  return { status: 200, path: rel, lang: viewLang(rel), size: bytes.length, ...(git ? { git } : {}), ...viewText(bytes) };
+}
+
+/**
+ * A unified diff (git diff's output) as data: each hunk's header and lines, each line added, removed
+ * or context with its old and new line numbers. Nothing in it is interpreted.
+ * @param {string} text
+ */
+export function parseDiff(text) {
+  /** @type {{ header: string, lines: { kind: "add" | "del" | "ctx", old: number | null, new: number | null, text: string }[] }[]} */
+  const hunks = [];
+  let oldN = 0;
+  let newN = 0;
+  let hunk = null;
+  for (const line of text.split("\n")) {
+    const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(line);
+    if (h) {
+      oldN = Number(h[1]);
+      newN = Number(h[2]);
+      hunk = { header: line, lines: [] };
+      hunks.push(hunk);
+      continue;
+    }
+    if (!hunk) continue; // the file header (diff --git, index, ---, +++)
+    if (line.startsWith("+")) hunk.lines.push({ kind: "add", old: null, new: newN++, text: line.slice(1) });
+    else if (line.startsWith("-")) hunk.lines.push({ kind: "del", old: oldN++, new: null, text: line.slice(1) });
+    else if (line.startsWith(" ")) hunk.lines.push({ kind: "ctx", old: oldN++, new: newN++, text: line.slice(1) });
+    // "\ No newline at end of file", and the empty string after the last newline: not lines of the file
+  }
+  return hunks;
+}
+
+/**
+ * A file's uncommitted changes, as data: against the last commit (staged and unstaged together); a
+ * new file git doesn't track shows as all added; a deleted one as all removed.
+ * @param {Context} ctx
+ * @param {string} dir
+ * @param {unknown} rel
+ */
+export function viewDiff(ctx, dir, rel) {
+  if (!viewablePath(rel)) return { status: 404, error: "That file can't be shown here." };
+  if (quietGit(ctx, dir, ["--version"])?.refused) return { status: 409, path: rel, error: OLD_GIT };
+  const git = viewStatus(ctx, dir, rel)[rel];
+  if (!git) return { status: 200, path: rel, hunks: [] }; // nothing uncommitted
+  if (git === "untracked") {
+    const file = viewFile(ctx, dir, rel);
+    if (!("text" in file) || typeof file.text !== "string") return { status: file.status, path: rel, git, error: file.error ?? "That file can't be shown here.", ...(file.binary ? { binary: true } : {}) };
+    const lines = file.text.split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    return { status: 200, path: rel, git, hunks: [{ header: `@@ -0,0 +1,${lines.length} @@`, lines: lines.map((text, i) => ({ kind: "add", old: null, new: i + 1, text })) }] };
+  }
+  // Still in the folder: the same rules as reading it (a link out of the folder isn't diffed either).
+  if (git !== "deleted" && !viewableFile(dir, rel)) return { status: 404, error: "That file can't be shown here." };
+  const r = quietGit(ctx, dir, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "HEAD", "--", rel]);
+  if (r?.refused) return { status: 409, path: rel, error: OLD_GIT };
+  if (!r || r.code !== 0) return { status: 200, path: rel, git, error: "Its changes couldn't be read." };
+  if (r.stdout.length > VIEW_MAX_BYTES) return { status: 200, path: rel, git, error: "The changes are too big to show here: see them with git diff.", tooBig: true };
+  if (/^Binary files .* differ$/m.test(r.stdout) && !/^@@ /m.test(r.stdout)) return { status: 200, path: rel, git, binary: true, error: "A binary file changed: it isn't shown here.", hunks: [] };
+  return { status: 200, path: rel, git, hunks: parseDiff(r.stdout) };
+}
+
+/**
+ * Source text as highlighted HTML, for the file viewer. Escape-first: every piece of the text is
+ * escaped before it's wrapped, and the only markup added is <span class="hl-…"> with fixed names,
+ * so nothing in the file becomes markup. A token that spans lines is closed and reopened at each
+ * newline, so the result splits into lines on "\n". Self-contained: it also runs in the page.
+ * @param {string} text
+ * @param {string} lang  ts, tsx, js, json, md, asm, or anything else for plain
+ * @returns {string}
+ */
+export function highlightSource(text, lang) {
+  const esc = (/** @type {string} */ t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const wrap = (/** @type {string} */ cls, /** @type {string} */ t) => (cls ? t.split("\n").map((part) => (part ? `<span class="hl-${cls}">${esc(part)}</span>` : "")).join("\n") : esc(t));
+  const js = new Set("abstract as async await break case catch class const continue debugger declare default delete do else enum export extends false finally for from function get if implements import in instanceof interface keyof let namespace new null of private protected public readonly return satisfies set static super switch this throw true try type typeof undefined var void while with yield".split(" "));
+  /** @type {Record<string, [string, RegExp][]>} */
+  const rules = {
+    js: [
+      ["", /\s+/y],
+      ["comment", /\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$)/y],
+      ["string", /"(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?|`(?:\\[\s\S]|[^`\\])*`?/y],
+      ["number", /\b(?:0[xX][\da-fA-F_]+|0[bB][01_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)n?\b/y],
+      ["word", /[A-Za-z_$][\w$]*/y],
+    ],
+    json: [
+      ["", /\s+/y],
+      ["key", /"(?:\\.|[^"\\\n])*"(?=\s*:)/y],
+      ["string", /"(?:\\.|[^"\\\n])*"?/y],
+      ["number", /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y],
+      ["keyword", /\b(?:true|false|null)\b/y],
+    ],
+    md: [
+      ["comment", /<!--[\s\S]*?(?:-->|$)/y],
+      ["heading", /^#{1,6} [^\n]*/my],
+      ["fence", /^ {0,3}```[^\n]*/my],
+      ["code", /`[^`\n]+`/y],
+      ["strong", /\*\*[^*\n]+\*\*/y],
+      ["link", /\[[^\]\n]*\]\([^)\n]*\)/y],
+      ["bullet", /^[ \t]*(?:[-*+]|\d+\.)(?= )/my],
+      ["", /[^<#`*[\n \t\d-]+|[\s\S]/y],
+    ],
+    asm: [
+      ["", /[ \t]+|\n/y],
+      ["comment", /;[^\n]*/y],
+      ["label", /^[ \t]*[A-Za-z_.][\w.]*:/my],
+      ["keyword", /\.[A-Za-z]+\b/y],
+      ["register", /\b[Rr]\d+\b/y],
+      ["number", /\b(?:0[xX][\da-fA-F]+|0[bB][01]+|\d+)\b/y],
+      ["word", /[A-Za-z_][\w]*/y],
+    ],
+  };
+  const set = rules[lang === "ts" || lang === "tsx" ? "js" : lang];
+  if (!set || text.length > 400_000) return esc(text);
+  let out = "";
+  let i = 0;
+  let lineStart = true; // asm: the first word on a line is its mnemonic
+  while (i < text.length) {
+    let hit = false;
+    for (const [cls, re] of set) {
+      re.lastIndex = i;
+      const m = re.exec(text);
+      if (!m || !m[0]) continue;
+      const t = m[0];
+      let c = cls;
+      if (c === "word") {
+        if (lang === "asm") c = lineStart ? "keyword" : "";
+        else c = js.has(t) ? "keyword" : /^[A-Z]/.test(t) ? "type" : "";
+      }
+      if (cls === "label") lineStart = true;
+      else if (t.includes("\n")) lineStart = true;
+      else if (cls !== "") lineStart = false;
+      out += wrap(c, t);
+      i += t.length;
+      hit = true;
+      break;
+    }
+    if (!hit) {
+      if (text[i] === "\n") lineStart = true;
+      out += esc(text[i]);
+      i++;
+    }
+  }
+  return out;
 }
 
 /**
@@ -4790,7 +5305,7 @@ export function weekCode(ctx, dir, week) {
   const rawNeeds = hints.$tests;
   /** @type {Record<string, string[]> | null} */
   const needs = rawNeeds && typeof rawNeeds === "object" && !Array.isArray(rawNeeds) ? /** @type {Record<string, string[]>} */ (rawNeeds) : null;
-  const tests = ctx.capture(["git", "ls-files", "--", `tests/week-${pad2(week)}/`], dir)?.stdout.split("\n").filter((f) => /\.test\.tsx?$/.test(f)) ?? [];
+  const tests = quietGit(ctx, dir, ["ls-files", "--", `tests/week-${pad2(week)}/`], { check: false })?.stdout.split("\n").filter((f) => /\.test\.tsx?$/.test(f)) ?? [];
   const tasks = [];
   for (const file of regionFiles(ctx, dir)) {
     const text = ctx.readText(join(dir, file));
@@ -5341,6 +5856,9 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .tab.on { color: var(--ink); background: var(--panel); border-color: var(--line); margin-bottom: -1px; }
 .tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .framebar { display: flex; }
+.bchips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 3px 10px; font: 600 12px/1.3 "JetBrains Mono", monospace; color: var(--ink); cursor: pointer; }
+.chip:hover { border-color: var(--mint); }
 .bdoneline { margin: 0 0 4px; font-size: 13.5px; color: var(--green); }
 .wswitch { margin-bottom: 8px; }
 .wpills { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -5350,6 +5868,57 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .wpill:disabled { opacity: .4; cursor: default; }
 .wselect { display: none; font: inherit; padding: 4px 6px; max-width: 100%; }
 @media (max-width: 700px) { .wpills { display: none; } .wselect { display: block; } }
+/* The Files tab: a read-only viewer. A tree, and the file or its uncommitted changes beside it. */
+.cpane.fvpane { padding: 8px; display: flex; flex-direction: column; }
+.chatui:not([data-panel="files"]) .cpane.fvpane { display: none; }
+.fvhost { flex: 1; min-height: 0; display: flex; }
+.fv { flex: 1; display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: 0; min-width: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.fv.narrow { grid-template-columns: 160px minmax(0, 1fr); }
+.ftree { border-right: 1px solid var(--line); background: var(--well); display: flex; flex-direction: column; min-height: 0; }
+.ftree .fth { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); }
+.ftree .fth button { flex: 1; border: 1px solid var(--line); background: var(--panel); border-radius: 7px; font: 600 12px/1.2 "Inter", sans-serif; padding: 4px 6px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.ftree .fth button.on { background: var(--green); border-color: var(--green); color: #fff; }
+.ftree ul { list-style: none; margin: 0; padding: 6px 0; overflow: auto; flex: 1; min-height: 0; font: 12px/1.25 "JetBrains Mono", monospace; }
+.ftree li { padding: 0 8px; }
+.ftree .fvrow .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ftree .fvrow { display: flex; gap: 5px; align-items: center; width: 100%; padding: 3.5px 0; border: 0; background: none; font: inherit; color: var(--ink); text-align: left; cursor: pointer; white-space: nowrap; overflow: hidden; }
+.ftree li.dir .fvrow { color: var(--muted); }
+.ftree li.on { background: #dcf3e8; }
+.ftree li.on .fvrow { color: var(--mint-ink); font-weight: 700; }
+.ftree li.gone .fvrow { text-decoration: line-through; color: var(--muted); }
+.ftree .cnt { margin-left: auto; font-size: 10.5px; }
+.ftree .mk { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); flex: none; margin-left: auto; }
+.ftree .mk.new { background: var(--mint); }
+.ftree .cnt + .mk { margin-left: 4px; }
+.plus { color: #1b7650; font-weight: 700; } .minus { color: #c4051a; font-weight: 700; }
+.fvempty { padding: 14px; }
+.fview { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
+.fvh { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--line); font-size: 12.5px; flex-wrap: wrap; }
+.fvh .path { font: 600 12.5px/1.3 "JetBrains Mono", monospace; overflow-wrap: anywhere; }
+.fvh .ro { color: var(--muted); }
+.fvh .sp { margin-left: auto; }
+.mseg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.mseg button { border: 0; background: var(--panel); padding: 3px 9px; font: 600 12px/1.3 "Inter", sans-serif; color: var(--muted); cursor: pointer; }
+.mseg button.on { background: var(--green); color: #fff; }
+.btn.sm { padding: 4px 10px; font-size: 12.5px; }
+.fvb { overflow: auto; min-height: 0; }
+.src { margin: 0; padding: 6px 0; font: 12.5px/1.55 "JetBrains Mono", ui-monospace, monospace; white-space: pre; tab-size: 2; min-width: max-content; }
+.src > span { display: block; padding-right: 12px; }
+.src .ln { display: inline-block; width: 3.4em; padding-right: 10px; text-align: right; color: #9aa59f; user-select: none; }
+.src .sg { display: inline-block; width: 1.4em; color: var(--muted); user-select: none; }
+.src .rg { background: #fff8dc; box-shadow: inset 3px 0 0 var(--yellow); }
+.src .add { background: #e3f6ec; } .src .add .sg { color: #1b7650; }
+.src .del { background: #ffe9ec; } .src .del .sg { color: #c4051a; }
+.src .hunk { background: var(--well); color: var(--muted); }
+.hl-keyword { color: #8a3ffc; font-weight: 600; } .hl-string, .hl-code { color: #1b7650; } .hl-number { color: #c4051a; } .hl-comment { color: #7a857f; font-style: italic; }
+.hl-type, .hl-key, .hl-register { color: #0b62c9; } .hl-label, .hl-heading { color: #0b62c9; font-weight: 700; } .hl-strong, .hl-bullet, .hl-fence { color: #b25e00; font-weight: 600; } .hl-link { color: var(--mint-ink); }
+.imgview { padding: 14px; display: grid; place-items: center; }
+.imgview img { max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.mdview { padding: 12px 16px; }
+.fvfoot { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-top: 1px solid var(--line); background: #e3f6ec; font-size: 12.5px; color: var(--mint-ink); white-space: nowrap; }
+.fvfoot .sub { color: inherit; opacity: .8; }
+.fvfoot .btn { margin-left: auto; }
+@media (max-width: 900px) { .chatui[data-panel="files"] .cpanel { max-height: none; } .fv, .fv.narrow { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 200px) minmax(360px, 1fr); } .ftree { border-right: 0; border-bottom: 1px solid var(--line); } .cpane.fvpane { min-height: 60vh; } }
 .cpane[data-pane="lesson"] { display: flex; flex-direction: column; gap: 6px; }
 .chatui:not([data-panel="lesson"]) .cpane[data-pane="lesson"] { display: none; }
 .chatui[data-panel="lesson"] .cpane[data-pane="viz"] { display: none; }
@@ -6414,6 +6983,240 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
    * applies its numbered events, and if it misses one it asks for the snapshot again. Refreshing the
    * page only redraws: nothing is ever sent again from here.
    */
+  // The Build view's Files tab: the course folder's files, read-only. A tree (All files / Changed),
+  // and the file: highlighted code with its line numbers (the student's regions marked), Markdown
+  // rendered or as source, images in place, and a file's uncommitted changes as a unified diff.
+  // Everything shown is escaped (highlightSource,
+  // chatMarkdown); the studio sends it as data. Editing stays in the Code tab.
+  const filesTab = (() => {
+    /** @type {{ el: HTMLElement } | null} */
+    let mounted = null;
+    /** @type {{ path: string, status?: string, added?: number, removed?: number }[]} */
+    let files = [];
+    let filter = "all";
+    /** @type {Set<string>} */
+    const openDirs = new Set();
+    let selected = "";
+    /** @type {any} */
+    let file = null; // what /api/file said about the selected file
+    /** @type {any} */
+    let diff = null; // what /api/diff said
+    let mode = ""; // "file" or "diff"; "" = the diff when it has changes
+    let mdMode = "rendered";
+    let loaded = false;
+    /** The current step, from the Build view, for the "Commit it" under its diff. @type {() => any} */
+    let stepNow = () => null;
+    const get = (/** @type {string} */ url) => fetch(url, { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null);
+    const changed = () => files.filter((f) => f.status);
+    const LANGS = /** @type {Record<string, string>} */ ({ ts: "TypeScript", tsx: "TypeScript (TSX)", js: "JavaScript", json: "JSON", md: "Markdown", asm: "Assembly", text: "Text", image: "Image" });
+    const STATUS = /** @type {Record<string, string>} */ ({ modified: "uncommitted", added: "new, staged", untracked: "new", deleted: "deleted", renamed: "renamed", conflict: "conflict" });
+
+    async function refresh() {
+      if (!mounted) return;
+      const m = mounted;
+      const res = await get("/api/files");
+      if (mounted !== m) return;
+      files = res?.files ?? [];
+      loaded = true;
+      // First look: open on the current step's file if it changed, else the first changed file.
+      if (!selected) {
+        const step = stepNow();
+        const pick = files.find((f) => f.status && step?.file === f.path) ?? changed()[0];
+        if (pick) selected = pick.path;
+      }
+      for (const f of changed()) for (const d of parents(f.path)) openDirs.add(d);
+      for (const d of parents(selected)) openDirs.add(d);
+      if (selected) await load(selected);
+      else paint();
+    }
+    /** The folders a path is in, outermost first. @param {string} path */
+    function parents(path) {
+      const parts = path.split("/").slice(0, -1);
+      return parts.map((_, i) => parts.slice(0, i + 1).join("/"));
+    }
+    /** @param {string} path */
+    async function load(path) {
+      const m = mounted;
+      const entry = files.find((f) => f.path === path);
+      const [f, d] = await Promise.all([entry?.status === "deleted" ? Promise.resolve(null) : get(`/api/file?path=${encodeURIComponent(path)}`), entry?.status ? get(`/api/diff?path=${encodeURIComponent(path)}`) : Promise.resolve(null)]);
+      if (mounted !== m || selected !== path) return;
+      file = f;
+      diff = d;
+      paint();
+    }
+
+    function treeHtml() {
+      const shown = filter === "changed" ? changed() : files;
+      /** @type {Map<string, { dirs: Set<string>, files: typeof files }>} */
+      const byDir = new Map();
+      const node = (/** @type {string} */ d) => byDir.get(d) ?? (byDir.set(d, { dirs: new Set(), files: [] }), /** @type {any} */ (byDir.get(d)));
+      for (const f of shown) {
+        const ps = parents(f.path);
+        ps.forEach((p, i) => node(i ? ps[i - 1] : "").dirs.add(p));
+        node(ps.at(-1) ?? "").files.push(f);
+      }
+      const dirty = new Set(changed().flatMap((f) => parents(f.path)));
+      /** @param {string} d @param {number} depth @returns {string} */
+      const walk = (d, depth) => {
+        const n = byDir.get(d);
+        if (!n) return "";
+        const pad = `style="padding-left:${8 + depth * 13}px"`;
+        const dirs = [...n.dirs].sort().map((p) => {
+          const open = filter === "changed" || openDirs.has(p);
+          return `<li class="dir" ${pad}><button class="fvrow" data-fv-dir="${esc(p)}" aria-expanded="${open}">${open ? "▾" : "▸"} <span class="nm">${esc(p.split("/").pop())}/</span>${dirty.has(p) ? `<span class="mk" title="changes inside"></span>` : ""}</button></li>${open ? walk(p, depth + 1) : ""}`;
+        });
+        const fs = n.files.map((f) => {
+          const name = f.path.split("/").pop() ?? f.path;
+          const counts = f.added !== undefined || f.removed !== undefined ? `<span class="cnt">${f.added ? `<span class="plus">+${esc(f.added)}</span>` : ""} ${f.removed ? `<span class="minus">−${esc(f.removed)}</span>` : ""}</span>` : "";
+          return `<li class="${f.path === selected ? "on" : ""} ${f.status === "deleted" ? "gone" : ""}" ${pad}><button class="fvrow" data-fv-file="${esc(f.path)}" title="${esc(f.path)}${f.status ? ` · ${esc(STATUS[f.status] ?? f.status)}` : ""}">${/\.(png|jpe?g|gif|webp)$/i.test(name) ? "▣" : "·"} <span class="nm">${esc(name)}</span>${counts}${f.status ? `<span class="mk ${f.status === "untracked" || f.status === "added" ? "new" : ""}"></span>` : ""}</button></li>`;
+        });
+        return dirs.join("") + fs.join("");
+      };
+      const body = shown.length ? `<ul>${walk("", 0)}</ul>` : `<p class="muted fvempty">${filter === "changed" ? "Nothing uncommitted: every change is committed." : loaded ? "No files." : "Loading…"}</p>`;
+      return `<aside class="ftree"><div class="fth"><button class="${filter === "all" ? "on" : ""}" data-fv-filter="all">All files</button><button class="${filter === "changed" ? "on" : ""}" data-fv-filter="changed">Changed · ${esc(changed().length)}</button></div>${body}</aside>`;
+    }
+
+    /** Line numbers beside highlighted text; the lines of a student region marked. @param {string} text @param {string} lang */
+    function sourceHtml(text, lang) {
+      const lines = highlightSource(text.replace(/\n$/, ""), lang).split("\n");
+      const raw = text.split("\n");
+      let inRegion = false;
+      return `<pre class="src">${lines
+        .map((l, i) => {
+          if (/@student\b/.test(raw[i] ?? "")) inRegion = true;
+          const row = `<span class="${inRegion ? "rg" : ""}"><span class="ln">${i + 1}</span>${l || " "}</span>`;
+          if (/@end\b/.test(raw[i] ?? "")) inRegion = false;
+          return row;
+        })
+        .join("")}</pre>`;
+    }
+    /** @param {string} lang */
+    /** The file's uncommitted changes, unified: old and new line numbers, a sign, the line. @param {string} lang */
+    function diffHtml(lang) {
+      const hl = (/** @type {string} */ t) => highlightSource(t, lang) || " ";
+      if (diff?.error) return `<p class="muted fvempty">${esc(diff.error)}</p>`;
+      if (!diff?.hunks?.length) return `<p class="muted fvempty">No uncommitted changes in this file.</p>`;
+      return `<pre class="src diff">${diff.hunks
+        .map((/** @type {any} */ h) => `<span class="hunk"><span class="ln"></span><span class="ln"></span><span class="sg"></span>${esc(h.header)}</span>${h.lines.map((/** @type {any} */ x) => `<span class="${x.kind}"><span class="ln">${esc(x.old ?? "")}</span><span class="ln">${esc(x.new ?? "")}</span><span class="sg">${x.kind === "add" ? "+" : x.kind === "del" ? "−" : ""}</span>${hl(x.text)}</span>`).join("")}`)
+        .join("")}</pre>`;
+    }
+
+    function viewerHtml(wide) {
+      if (!selected) return `<div class="fview"><p class="muted fvempty">Pick a file on the left. Files with uncommitted changes have a yellow dot.</p></div>`;
+      const entry = files.find((f) => f.path === selected);
+      const lang = file?.lang ?? diff?.lang ?? "text";
+      const hasDiff = Boolean(entry?.status);
+      const showing = entry?.status === "deleted" ? "diff" : hasDiff ? mode || "diff" : "file";
+      const seg = (/** @type {string} */ attr, /** @type {[string, string][]} */ opts, /** @type {string} */ on) => `<span class="mseg">${opts.map(([v, label]) => `<button class="${v === on ? "on" : ""}" ${attr}="${v}">${label}</button>`).join("")}</span>`;
+      // A new file git doesn't track has no line counts in the tree: its diff is all added lines.
+      if (entry?.status === "untracked" && entry.added === undefined && diff?.hunks) entry.added = diff.hunks.reduce((/** @type {number} */ n, /** @type {any} */ h) => n + h.lines.length, 0);
+      const counts = entry && (entry.added || entry.removed) ? `${entry.added ? `<span class="plus">+${esc(entry.added)}</span>` : ""}${entry.removed ? `<span class="minus">−${esc(entry.removed)}</span>` : ""}` : "";
+      const lines = typeof file?.text === "string" ? file.text.replace(/\n$/, "").split("\n").length : 0;
+      const editable = /\.(tsx?|asm)$/.test(selected) && /@student\b/.test(file?.text ?? "");
+      let tools = `${counts}${entry?.status ? `<span class="pill now">${esc(STATUS[entry.status] ?? entry.status)}</span>` : ""}<span class="sp"></span>`;
+      if (showing === "file") tools = `<span class="ro">${esc(LANGS[lang] ?? "Text")}${lines ? ` · ${esc(lines)} line${lines === 1 ? "" : "s"}` : ""}${editable ? " · your regions are marked" : " · read only"}</span>${tools}`;
+      if (hasDiff && entry?.status !== "deleted") tools += seg("data-fv-mode", [["diff", "Diff"], ["file", "File"]], showing);
+      if (showing === "file" && lang === "md" && typeof file?.text === "string") tools += seg("data-fv-md", [["rendered", "Rendered"], ["source", "Source"]], mdMode);
+      if (showing === "file" && editable) tools += `<button class="btn sm ghost" data-do="tab" data-tab="code">✎ Edit in the Code tab</button>`;
+      let body;
+      if (showing === "diff") body = diffHtml(lang);
+      else if (!file) body = `<p class="muted fvempty">Loading…</p>`;
+      else if (file.error) body = `<p class="muted fvempty">${esc(file.error)}</p>`;
+      else if (lang === "image") body = `<div class="imgview"><img src="/api/file/image?path=${encodeURIComponent(selected)}" alt="${esc(selected)}"></div>`;
+      else if (lang === "md" && mdMode === "rendered") body = `<div class="mdview md">${chatMarkdown((file.text ?? "").replace(/<!--[\s\S]*?(?:-->|$)/g, ""))}</div>`; // the guide's marks are for the studio
+      else body = sourceHtml(file.text ?? "", lang);
+      // The step's change, green: commit it from here.
+      const step = stepNow();
+      const r = step ? snap?.code?.[step.id] : null;
+      const green = showing === "diff" && step && step.file === selected && r?.phase === "passed" && r.rev === step.rev && !r.done;
+      const foot = green ? `<div class="fvfoot">✓ Step ${esc(step.n)} is green${wide ? `<span class="sub">· the change you commit</span>` : ""}<button class="btn primary sm" data-build-commit="${esc(step.id)}" data-w="${esc(step.week)}">✓ Commit it</button></div>` : "";
+      return `<div class="fview"><div class="fvh"><span class="path">${esc(selected)}</span>${tools}</div><div class="fvb">${body}</div>${foot}</div>`;
+    }
+
+    function paint() {
+      if (!mounted) return;
+      const wide = mounted.el.clientWidth >= 760;
+      const html = `<div class="fv ${wide ? "wide" : "narrow"}">${treeHtml()}${viewerHtml(wide)}</div>`;
+      if (mounted.el.dataset.html === html) return;
+      // Keep where the reader was scrolled to in the file.
+      const was = /** @type {HTMLElement | null} */ (mounted.el.querySelector(".fvb"));
+      const top = was?.scrollTop ?? 0;
+      const tree = /** @type {HTMLElement | null} */ (mounted.el.querySelector(".ftree ul"));
+      const treeTop = tree?.scrollTop ?? 0;
+      mounted.el.innerHTML = html;
+      mounted.el.dataset.html = html;
+      const now = /** @type {HTMLElement | null} */ (mounted.el.querySelector(".fvb"));
+      const at = `${selected}|${mode}|${mdMode}`;
+      if (now && mounted.el.dataset.at === at) now.scrollTop = top;
+      const treeNow = /** @type {HTMLElement | null} */ (mounted.el.querySelector(".ftree ul"));
+      if (treeNow) treeNow.scrollTop = treeTop;
+      mounted.el.dataset.at = `${selected}|${mode}|${mdMode}`;
+    }
+
+    document.addEventListener("click", (e) => {
+      const el = /** @type {HTMLElement} */ (e.target).closest("[data-fv-file],[data-fv-dir],[data-fv-filter],[data-fv-mode],[data-fv-md],[data-open-file]");
+      if (!(el instanceof HTMLElement)) return;
+      if (el.dataset.openFile) {
+        // A path in the chat: the Files tab, on that file.
+        const ui = /** @type {HTMLElement | null} */ (document.querySelector("[data-chatui]"));
+        if (ui) ui.dataset.panel = "files";
+        open(el.dataset.openFile);
+        return;
+      }
+      if (!mounted || !mounted.el.contains(el)) return;
+      if (el.dataset.fvFile) open(el.dataset.fvFile);
+      else if (el.dataset.fvDir) {
+        if (openDirs.has(el.dataset.fvDir)) openDirs.delete(el.dataset.fvDir);
+        else openDirs.add(el.dataset.fvDir);
+        paint();
+      } else if (el.dataset.fvFilter) {
+        filter = el.dataset.fvFilter;
+        paint();
+      } else if (el.dataset.fvMode) {
+        mode = el.dataset.fvMode;
+        paint();
+      } else if (el.dataset.fvMd) {
+        mdMode = el.dataset.fvMd;
+        paint();
+      }
+    });
+    /** @param {string} path */
+    function open(path) {
+      if (selected !== path) {
+        selected = path;
+        file = null;
+        diff = null;
+        mode = "";
+        for (const d of parents(path)) openDirs.add(d);
+      }
+      paint();
+      void (files.some((f) => f.path === path) ? load(path) : refresh());
+    }
+    // Split or unified follows the panel's width as it's dragged.
+    const resized = new ResizeObserver(() => paint());
+
+    return {
+      /** After each render: mount the viewer when its pane is on the page. @param {() => any} step  the Build view's current step */
+      sync(step) {
+        stepNow = step;
+        const el = /** @type {HTMLElement | null} */ (document.querySelector("[data-bfiles]"));
+        if (!el) {
+          if (mounted) resized.disconnect();
+          mounted = null;
+          return;
+        }
+        if (mounted?.el === el) return paint();
+        mounted = { el };
+        el.dataset.html = "";
+        resized.disconnect();
+        resized.observe(el);
+        void refresh();
+      },
+      /** The folder may have changed (an agent turn ended, a commit, a save): read it again. */
+      refresh: () => void refresh(),
+    };
+  })();
+
   const agentTab = (() => {
     /** @type {any} */
     let state = null;
@@ -6442,7 +7245,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         return `<details class="ag ran" data-entry="${esc(e.id)}"><summary><span class="what">Ran</span> <code>${esc(plainCommand(e.command))}</code> <em>${status}</em></summary><pre class="log" data-field="output">${esc(e.output)}</pre></details>`;
       }
       if (e.kind === "file") {
-        const list = (e.changes ?? []).map((/** @type {any} */ c) => `<div><code>${esc(c.path)}</code>${c.movePath ? ` moves to <code>${esc(c.movePath)}</code>` : ""} <em>${esc(c.kind)}</em></div>`).join("");
+        const list = (e.changes ?? []).map((/** @type {any} */ c) => `<div><button class="linkbtn mono" data-open-file="${esc(c.path)}" title="Open it in the Files tab">${esc(c.path)}</button>${c.movePath ? ` moves to <code>${esc(c.movePath)}</code>` : ""} <em>${esc(c.kind)}</em></div>`).join("");
         const diffs = (e.changes ?? []).map((/** @type {any} */ c) => c.diff).filter(Boolean).join("\n");
         return `<details class="ag ran" data-entry="${esc(e.id)}"><summary><span class="what">${e.status === "declined" ? "Declined change" : e.status === "failed" ? "Failed change" : "Changed"}</span> ${list || "files"}</summary>${diffs ? `<pre class="log">${esc(diffs)}</pre>` : ""}</details>`;
       }
@@ -6602,6 +7405,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const res = await fetch(`/api/build?week=${m.week}`, { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null);
       if (mounted !== m) return;
       buildList = res?.steps ?? [];
+      filesTab.refresh(); // the folder may have changed with it
       paintBuild();
       // Steps already green (written another way, or in one go with an earlier one) are skipped.
       void act({ type: "build-check", week: m.week });
@@ -6653,7 +7457,8 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           ${st.prompt ? `<details class="bprompt"><summary>What it sends to the agent</summary><pre>${esc(st.prompt)}</pre></details>` : ""}
           <div class="row">${st.prompt && st.found && !stepDone(st) && !greenNow(st) ? `<button class="btn primary" data-build-send="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>Send to the agent</button>` : ""}${st.found && !stepDone(st) ? `<button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">Run its tests</button>` : ""}</div>
           ${st.found ? buildResult(st) : `<p class="muted">This step's code isn't in your folder yet.</p>`}
-          ${st.stuck ? `<p class="${snap?.code?.[st.id]?.phase === "failed" ? "stuck bad" : "muted"}"><b>Stuck?</b> ${esc(st.stuck).replace(/`([^`\n]+)`/g, "<code>$1</code>")}</p>` : ""}
+          ${st.stuck ? `<p class="${snap?.code?.[st.id]?.phase === "failed" ? "stuck bad" : "muted"}"><b>Stuck?</b> ${esc(st.stuck).replace(/`([^`\n]+)`/g, "<code>$1</code>")}</p>${snap?.code?.[st.id]?.phase === "failed" ? `<div class="row"><button class="btn" data-build-hint="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>➤ Send this hint</button></div>` : ""}` : ""}
+          ${st.found && st.file ? `<div class="bchips"><button class="chip" data-open-file="${esc(st.file)}" title="Open it in the Files tab">✎ ${esc(st.file)}</button></div>` : ""}
           ${st.ask ? `<p class="muted"><b>Ask yourself:</b> ${esc(st.ask).replace(/`([^`\n]+)`/g, "<code>$1</code>")}</p>` : ""}
         </section>`;
     }
@@ -6718,13 +7523,6 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         if (list && list.dataset.html !== listHtml) {
           list.innerHTML = listHtml;
           list.dataset.html = listHtml;
-        }
-        const files = /** @type {HTMLElement | null} */ (ui.querySelector("[data-bfiles]"));
-        const touched = [...new Set((state?.entries ?? []).filter((x) => x.kind === "file").flatMap((x) => (x.changes ?? []).map((/** @type {any} */ c) => `${c.path}`)))];
-        const filesHtml = touched.length ? `<ul>${touched.map((f) => `<li><code>${esc(f)}</code></li>`).join("")}</ul>` : `<p class="muted">Files Codex changes show here.</p>`;
-        if (files && files.dataset.html !== filesHtml) {
-          files.innerHTML = filesHtml;
-          files.dataset.html = filesHtml;
         }
         ui.dataset.panel ||= chatPanel;
       }
@@ -6861,7 +7659,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       }
     });
     document.addEventListener("click", (e) => {
-      const el = /** @type {HTMLElement} */ (e.target).closest("[data-cpane-tab],[data-md-copy],[data-agent-answer],[data-agent-stop],[data-agent-login],[data-agent-open],[data-agent-recheck],[data-agent-commit],[data-agent-test],[data-build-send],[data-build-test],[data-build-commit],[data-build-seen],[data-agent-more]");
+      const el = /** @type {HTMLElement} */ (e.target).closest("[data-cpane-tab],[data-md-copy],[data-agent-answer],[data-agent-stop],[data-agent-login],[data-agent-open],[data-agent-recheck],[data-agent-commit],[data-agent-test],[data-build-send],[data-build-hint],[data-build-test],[data-build-commit],[data-build-seen],[data-agent-more]");
       if (!(el instanceof HTMLElement)) return;
       if (el.dataset.mdCopy !== undefined) {
         const code = el.closest(".mdcode")?.querySelector("code")?.textContent ?? "";
@@ -6879,6 +7677,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         });
       } else if (el.dataset.agentRecheck !== undefined) {
         void act({ type: "agent-recheck" });
+      } else if (el.dataset.buildHint !== undefined) {
+        // The step's Stuck? line, to the agent, for the same task.
+        const st = buildList[Number(el.dataset.buildHint)];
+        if (!st || !mounted) return;
+        /** @type {HTMLButtonElement} */ (el).disabled = true;
+        void ask({ type: "agent-send", week: mounted.week, task: st.id, text: `The step's tests fail. The guide's hint: ${st.stuck}\nFix it in the same region only, then run the step's tests again.`, guided: true, clientId: clientId() }).then((/** @type {any} */ r) => r.ok || toast(r.error ?? "It didn't send."));
       } else if (el.dataset.buildSend !== undefined) {
         const st = buildList[Number(el.dataset.buildSend)];
         if (!st || !mounted) return;
@@ -6930,6 +7734,8 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
 
     return {
       onEvent,
+      /** The Build view's current step (its file, its id, its rev), or null. */
+      currentStep: () => (mounted && buildList.length ? currentBuildStep() : null),
       /** After each render: mount the tab when it's shown. */
       sync() {
         const el = /** @type {HTMLElement | null} */ (document.querySelector("[data-agenttab]"));
@@ -7011,7 +7817,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
             <div class="cpane md" data-pane="notes"><div data-bnotes><p class="muted">The notes for the part you're building show here.</p></div></div>
             <div class="cpane" data-pane="steps"><div data-bsteplist></div></div>
             ${g.page ? `<div class="cpane" data-pane="lesson">${framed(`/week/${g.week}`, `Week ${g.week} lesson page`, "the lesson")}</div>` : ""}
-            <div class="cpane" data-pane="files"><div data-bfiles><p class="muted">Files Codex changes show here.</p></div></div>
+            <div class="cpane fvpane" data-pane="files"><div class="fvhost" data-bfiles></div></div>
           </aside>
         </div></div>`;
     else if (tab === "agent") body = `<div class="agenttab" data-agenttab="${esc(g.week)}"></div>`;
@@ -7135,6 +7941,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     paintOutput();
     codeTab.sync();
     agentTab.sync();
+    filesTab.sync(() => agentTab.currentStep());
     const input = focused ? /** @type {HTMLInputElement | null} */ (document.querySelector(`input[name="${focused}"]`)) : null;
     if (input) {
       // Put the cursor back at the end (email fields have no setSelectionRange, so reset the value instead).
@@ -7315,7 +8122,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
  * @param {string} token
  */
 export function studioPage(token) {
-  const shared = [pasteAllowed, lineStart, lineKey, linePaste, lineComplete, enterAction, cleanOutput, lastLine, corePhase, describeTick, machinePlayer, chatMarkdown, plainCommand].map((f) => f.toString()).join("\n");
+  const shared = [pasteAllowed, lineStart, lineKey, linePaste, lineComplete, enterAction, cleanOutput, lastLine, corePhase, describeTick, machinePlayer, chatMarkdown, plainCommand, highlightSource].map((f) => f.toString()).join("\n");
   // JSON inside a <script>: escape < so no string in it can close the script tag.
   const js = (/** @type {unknown} */ value) => JSON.stringify(value).replace(/</g, "\\u003c");
   const data = `const MACHINE_TRACE = ${js(MACHINE_TRACE)};\nconst SKETCHES = ${js(SKETCHES)};`;
@@ -7430,9 +8237,9 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
     fresh,
     color,
     style: makeStyle(color),
-    capture: (argv, cwd) => {
+    capture: (argv, cwd, options = {}) => {
       // stdin closed: a program that waits for input (codex does, without a terminal) mustn't hang the check.
-      const r = spawnSync(argv[0], argv.slice(1), { cwd, env, encoding: "utf8", shell: shell(argv), timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
+      const r = spawnSync(argv[0], argv.slice(1), { cwd, env, encoding: "utf8", shell: shell(argv), timeout: options.timeout ?? 30_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
       if (r.error && /** @type {NodeJS.ErrnoException} */ (r.error).code === "ENOENT") return null;
       return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
     },
@@ -7457,13 +8264,7 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
     pickFolder: (initial, prompt) =>
       new Promise((done) => {
         if (process.env.NETSIM_STUDIO_NO_OPEN === "1") return done(null);
-        /** @type {[string, string[]]} */
-        const [command, args] =
-          platform === "mac"
-            ? ["osascript", [...MAC_PICK_FOLDER.flatMap((line) => ["-e", line]), initial, prompt]]
-            : platform === "windows"
-              ? ["powershell", ["-NoProfile", "-Command", "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = $args[1]; $d.SelectedPath = $args[0]; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }", initial, prompt]]
-              : ["zenity", ["--file-selection", "--directory", `--title=${prompt}`, `--filename=${initial.replace(/\/?$/, "/")}`]];
+        const [command, args] = pickFolderCommand(platform, initial, prompt);
         let out = "";
         const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"] });
         child.stdout.setEncoding("utf8").on("data", (d) => (out += d));

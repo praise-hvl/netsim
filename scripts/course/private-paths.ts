@@ -3,7 +3,8 @@
 // and the private backup (npm run private) all use this one list.
 
 /** Folders and files that stay with the instructor: in Praise's copy, never in a commit. */
-export const PRIVATE_DIRS = ["teacher/", "course/", "tests/studio/", "scripts/studio/", "solutions/", "private/", "archive/"] as const;
+/** mac/: the Mac app's source (students get the signed DMG, never the source). */
+export const PRIVATE_DIRS = ["teacher/", "course/", "tests/studio/", "scripts/studio/", "solutions/", "private/", "archive/", "mac/"] as const;
 export const PRIVATE_FILES = ["scripts/make-week-branches.ts", "programs/bundle.ts"] as const;
 /** The only workflows the public repo has: the student's Pages deploy and the course's own check. */
 export const PUBLIC_WORKFLOWS = [".github/workflows/pages.yml", ".github/workflows/course.yml"] as const;
