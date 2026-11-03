@@ -154,7 +154,16 @@ function awaitInstruction(core: Core, reply: MemReply | null): StepResult {
   // @student week=5 part=class id=await-instruction "Bytes arrived -> DECODE with them in IR; fault -> FAULT; nothing yet -> count a stall"
   // TODO(week 5, await-instruction): Bytes arrived -> DECODE with them in IR; fault -> FAULT; nothing yet -> count a stall
   // Tests: tests/week-05/   Guide: docs/weeks/week-05.md
-  return todo("week 5: await-instruction", core, reply);
+  if (reply?.type === "memData") {
+    return { core: moveTo(core, "DECODE", { ir: [...reply.bytes] }), effects: [] };
+  }
+  if (reply?.type === "memFault") {
+    return faultWith(core, reply.message);
+  }
+  return {
+    core: moveTo(core, "WAIT_FETCH", { stalls: core.stalls + 1 }),
+    effects: [],
+  };
   // @end
 }
 
