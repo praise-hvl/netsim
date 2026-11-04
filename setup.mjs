@@ -22,7 +22,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -98,7 +98,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 19;
+export const STUDIO_VERSION = 21;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -234,7 +234,9 @@ const CODEX_FLAGS = ["-c", "check_for_update_on_startup=false"];
  *   mtime?: (path: string) => number | null,
  *   readText: (path: string) => string | null,
  *   save?: () => void,
- *   state: { madeFolder?: string, movedOld?: string, login?: string, seenLogin?: string, parent?: string, repoDir?: string, chatgpt?: string, doctorOk?: boolean, refused?: { dir: string, why: string }, codexVersion?: string, agentThreads?: Record<string, string>, dryDone?: Record<string, boolean>, dryFound?: Record<string, string> },
+ *   ghPath?: string,
+ *   ghMissing?: boolean,
+ *   state: { madeFolder?: string, movedOld?: string, login?: string, seenLogin?: string, parent?: string, repoDir?: string, chatgpt?: string, doctorOk?: boolean, doctorOkAs?: string, refused?: { dir: string, why: string }, codexVersion?: string, agentThreads?: Record<string, string>, dryDone?: Record<string, boolean>, dryFound?: Record<string, string> },
  * }} Context
  */
 
@@ -578,9 +580,12 @@ export function ghTokenVar(ctx) {
 const tokenLogins = new Map();
 
 /**
- * The account gh (and so git) uses now. With a token in this terminal, that's the token's account
- * (asked of GitHub once); otherwise gh's own setting, read without going to GitHub, so the studio
- * can show it at any time.
+ * The account the studio acts as on GitHub. With a token in this terminal, that's the token's
+ * account (asked of GitHub once). Otherwise it's the account chosen for the course (state.login),
+ * which can be any account gh knows: the studio never changes gh's own account in use (no
+ * `gh auth switch`), it gives that account's token to its own gh and git commands (accountEnv).
+ * Before an account is chosen, it's gh's own (read without going to GitHub, so it can be shown at
+ * any time).
  * @param {Context} ctx
  */
 export function ghActiveAccount(ctx) {
@@ -591,8 +596,119 @@ export function ghActiveAccount(ctx) {
     const login = tokenLogins.get(token);
     return isGithubUsername(login) ? login : null;
   }
+  if (isGithubUsername(ctx.state.login)) return ctx.state.login;
+  return ghOwnAccount(ctx);
+}
+
+/**
+ * gh's own account in use on this laptop (what `gh auth switch` sets), or null. Read without going
+ * to GitHub. The studio reads it; it never changes it.
+ * @param {Context} ctx
+ */
+export function ghOwnAccount(ctx) {
   const user = output(ctx, ["gh", "config", "get", "-h", "github.com", "user"]);
   return isGithubUsername(user) ? user : null;
+}
+
+/** Same GitHub login? (GitHub's are case-insensitive.) @param {string | null | undefined} a @param {string | null | undefined} b */
+const sameLogin = (a, b) => Boolean(a && b && a.toLowerCase() === b.toLowerCase());
+
+/**
+ * The course's account isn't signed in to gh on this laptop any more (it was signed out), so no
+ * command can act as it: the plain words for that, or "" when it's fine. Only for an account that
+ * isn't gh's own in use; a token in this terminal decides by itself.
+ * @param {Context} ctx
+ */
+export function chosenSignedOut(ctx) {
+  const login = ctx.state.login;
+  if (ghTokenVar(ctx) || !isGithubUsername(login) || ctx.dryRun) return "";
+  // gh not signed in to anything (or not saying): step 5's own "not signed in" covers it.
+  const own = ghOwnAccount(ctx);
+  if (!own || sameLogin(own, login)) return "";
+  if (ghAccounts(ctx).some((a) => sameLogin(a.login, login))) return "";
+  return `${login}, the account this course uses, isn't signed in to GitHub on this laptop any more. Sign in as ${login} again (gh auth login below adds it back), or use a different account.`;
+}
+
+/** The variables gh reads a github.com token from. */
+const TOKEN_VARS = ["GH_TOKEN", "GITHUB_TOKEN"];
+/** Every token variable gh reads (GitHub Enterprise's too): none of them reaches anything but gh and git. */
+const ALL_TOKEN_VARS = [...TOKEN_VARS, "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
+
+/**
+ * What a command is, for its GitHub token: "account" when it acts on GitHub as the student (gh,
+ * apart from gh auth; git with gh as its credential helper, which networkGit gives every push and
+ * fetch to the student's fork), "gh" for gh auth (gh's own sign-ins), else "other" (npm, node,
+ * vitest, codex, the board, git on its own: they never get a GitHub token).
+ * @param {string[]} argv
+ * @returns {"account" | "gh" | "other"}
+ */
+export function tokenKind(argv) {
+  const program = (argv[0] ?? "").split(/[\\/]/).pop()?.replace(/\.(exe|cmd)$/i, "").toLowerCase() ?? "";
+  if (program === "gh") return argv[1] === "auth" || argv[1] === "--version" ? "gh" : "account";
+  if (program === "git" && argv.some(isGhHelper)) return "account";
+  return "other";
+}
+
+/** A token gh and GitHub refuse: for the course's account when it was signed out, so nothing acts as another account instead. */
+export const SIGNED_OUT_TOKEN = "netsim-account-signed-out";
+
+/**
+ * The environment for one command the studio runs. Never a GitHub token for anything but gh and
+ * git talking to GitHub as the student: npm, vitest, codex and the board get none, even when this
+ * terminal has one. With a token in this terminal, gh and git keep it (it picks the account). Else,
+ * when the course's account isn't gh's own in use, the account commands get that account's token,
+ * asked of gh as the command starts (token()), in their environment only: never on a command line,
+ * in a file, a log or the page.
+ * @param {string[]} argv
+ * @param {Record<string, string | undefined>} env  the studio's own
+ * @param {() => string | null | undefined} token  undefined: gh's own account is the course's (nothing to add); null: the course's account has no token on this laptop; else its token
+ * @returns {Record<string, string | undefined>}
+ */
+export function accountEnv(argv, env, token) {
+  const kind = tokenKind(argv);
+  const terminal = TOKEN_VARS.some((k) => env[k]);
+  if (kind === "other") {
+    if (!ALL_TOKEN_VARS.some((k) => env[k])) return env;
+    const clean = { ...env };
+    for (const k of ALL_TOKEN_VARS) delete clean[k];
+    return clean;
+  }
+  if (terminal || kind === "gh") return env;
+  const t = token();
+  if (t === undefined) return env;
+  return { ...env, GH_TOKEN: t || SIGNED_OUT_TOKEN };
+}
+
+/**
+ * The environment of one command the studio runs: accountEnv, and for everything that isn't gh or
+ * git talking to GitHub, the course's account's name (NETSIM_GITHUB_ACCOUNT, never a token) so the
+ * doctor checks the account the studio pushes as. Not with a token in this terminal: that token
+ * picks the account, and the doctor sees it the same way.
+ * @param {string[]} argv
+ * @param {Record<string, string | undefined>} env
+ * @param {string | undefined} login  state.login
+ * @param {() => string | null | undefined} token
+ */
+export function commandEnv(argv, env, login, token) {
+  const out = accountEnv(argv, env, token);
+  const terminal = TOKEN_VARS.some((k) => env[k]);
+  return tokenKind(argv) === "other" && !terminal && isGithubUsername(login) ? { ...out, NETSIM_GITHUB_ACCOUNT: login } : out;
+}
+
+/**
+ * The course's account's token, for accountEnv, asked of gh when a command starts: undefined when
+ * there's no chosen account or it's gh's own in use (gh needs nothing more), null when gh has no
+ * token for it (signed out).
+ * @param {(argv: string[]) => RunResult | null} capture  runs gh with no token in its environment
+ * @param {string | undefined} login  the course's account (state.login)
+ */
+export function chosenToken(capture, login) {
+  if (!isGithubUsername(login)) return undefined;
+  const own = capture(["gh", "config", "get", "-h", "github.com", "user"]);
+  if (own && own.code === 0 && sameLogin(own.stdout.trim(), login)) return undefined;
+  const r = capture(["gh", "auth", "token", "-h", "github.com", "--user", login]);
+  const token = r && r.code === 0 ? r.stdout.trim() : "";
+  return /^[A-Za-z0-9_.-]+$/.test(token) ? token : null;
 }
 
 /**
@@ -602,14 +718,52 @@ export function ghActiveAccount(ctx) {
  * @param {string[]} args
  */
 export function gitArgv(ctx, args) {
-  return ghTokenVar(ctx) ? ["git", "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential", ...args] : ["git", ...args];
+  return ghTokenVar(ctx) ? ["git", "-c", "credential.helper=", "-c", ghHelper(ctx), ...args] : ["git", ...args];
+}
+
+/**
+ * git's credential helper setting for gh: the gh the studio resolved (ctx.ghPath, an absolute path
+ * outside the course folder), else plain gh. git runs a "!" helper through a shell: the path is
+ * single-quoted.
+ * @param {Context} ctx
+ */
+export function ghHelper(ctx) {
+  const gh = ctx.ghPath;
+  return `credential.helper=!${gh ? `'${gh.replace(/'/g, "'\\''")}'` : "gh"} auth git-credential`;
+}
+
+/** Is this git -c setting gh as the credential helper (ghHelper)? @param {string} arg */
+const isGhHelper = (arg) => /^credential\.helper=!(?:gh|'[^']*[\\/]gh(?:\.exe)?') auth git-credential$/.test(arg);
+
+/**
+ * The gh to run: the first gh on PATH that's an absolute folder outside the course folder and any
+ * node_modules (a course folder the agent can write could otherwise put its own gh first), or null.
+ * @param {string | undefined} pathVar  PATH
+ * @param {string[]} courseDirs  the course folder(s): never a gh from inside them
+ * @param {(path: string) => boolean} isFile
+ * @param {Platform} platform
+ */
+export function resolveGh(pathVar, courseDirs, isFile, platform) {
+  const sep = platform === "windows" ? ";" : ":";
+  const names = platform === "windows" ? ["gh.exe"] : ["gh"];
+  const inside = (/** @type {string} */ dir, /** @type {string} */ root) => {
+    const rel = relative(resolve(root), resolve(dir));
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  };
+  for (const dir of (pathVar ?? "").split(sep)) {
+    if (!dir || !isAbsolute(dir) || /(^|[\\/])node_modules([\\/]|$)/.test(dir)) continue;
+    if (courseDirs.some((root) => root && inside(dir, root))) continue;
+    for (const name of names) if (isFile(join(dir, name))) return join(dir, name);
+  }
+  return null;
 }
 
 /**
  * What the folder's own git config (which the agent can write) could make a network git command run
  * or reach instead of GitHub: a rewritten address (url.*.insteadOf, a push URL), a program for the
- * remote end (uploadpack/receivepack/proxy), a credential helper, an askpass or ssh command, or (for
- * a push) a hooks folder: the reason the studio won't run it, or null.
+ * remote end (uploadpack/receivepack/proxy), a credential helper, an askpass or ssh command, any
+ * http.* setting (a proxy, sslVerify=false or an extra header would let something in the middle see
+ * the sign-in), or (for a push) a hooks folder: the reason the studio won't run it, or null.
  * @param {Context} ctx
  * @param {string} dir
  * @param {{ push?: boolean }} [options]
@@ -618,7 +772,7 @@ export function networkRefusal(ctx, dir, { push = false } = {}) {
   const r = ctx.capture(["git", "config", "--list", "--show-scope"], dir, { timeout: 5000 });
   if (!r || r.code !== 0) return null; // not a git folder yet: nothing of its own to read
   const local = r.stdout.split("\n").filter((line) => /^(local|worktree)\t/.test(line)).map((line) => line.slice(line.indexOf("\t") + 1));
-  const risky = local.find((e) => /^(url\..*\.(insteadof|pushinsteadof)=|remote\.[^=]*\.(pushurl|uploadpack|receivepack|proxy|vcs)=|credential\.[^=]*helper=|core\.(askpass|sshcommand|gitproxy)=|[^=]*command=)/i.test(e) || (push && /^core\.hookspath=/i.test(e)));
+  const risky = local.find((e) => /^(url\..*\.(insteadof|pushinsteadof)=|remote\.[^=]*\.(pushurl|uploadpack|receivepack|proxy|vcs)=|credential\.[^=]*helper=|core\.(askpass|sshcommand|gitproxy)=|http\.|[^=]*command=)/i.test(e) || (push && /^core\.hookspath=/i.test(e)));
   if (risky) return `This folder's git settings (.git/config: ${risky.split("=")[0]}) could send git somewhere else or run a program, so the studio won't do it: check .git/config, or run it in the terminal.`;
   if (push) {
     // git pushes to every url origin has: exactly one, and it's GitHub's.
@@ -661,12 +815,14 @@ function originUrl(ctx, dir) {
  * @param {{ ssh?: boolean }} [options]  ssh: the fork is reached by ssh (originKind)
  */
 export function networkGit(ctx, remote, args, { ssh = false } = {}) {
+  // No gh outside the course folder: nothing signs in to the fork (a bare gh could be the folder's own).
+  if (remote === "origin" && ctx.ghMissing) return refusedCommand(GH_MISSING);
   const none = process.platform === "win32" ? "NUL" : "/dev/null";
   const file = process.env.NETSIM_FILE_REMOTES === "1" ? "always" : "never";
   // Each protocol by name too: the folder's own protocol.ext.allow=always would beat a general "never".
-  const guard = ["-c", "protocol.allow=never", "-c", "protocol.ext.allow=never", "-c", `protocol.ssh.allow=${ssh && remote === "origin" ? "always" : "never"}`, "-c", "protocol.git.allow=never", "-c", "protocol.http.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${file}`, "-c", `core.hooksPath=${none}`, "-c", "core.fsmonitor=false", "-c", "core.askPass=", "-c", "core.sshCommand=ssh", "-c", "credential.helper="];
+  const guard = ["-c", "protocol.allow=never", "-c", "protocol.ext.allow=never", "-c", `protocol.ssh.allow=${ssh && remote === "origin" ? "always" : "never"}`, "-c", "protocol.git.allow=never", "-c", "protocol.http.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${file}`, "-c", `core.hooksPath=${none}`, "-c", "core.fsmonitor=false", "-c", "core.askPass=", "-c", "core.sshCommand=ssh", "-c", "credential.helper=", "-c", "http.sslVerify=true", "-c", "http.proxy=", "-c", "http.extraHeader="];
   if (remote === "upstream") return ["git", ...guard, ...args.map((a) => (a === "upstream" ? STARTER_URL : a))];
-  return ["git", ...guard, "-c", "credential.helper=!gh auth git-credential", ...args];
+  return ["git", ...guard, "-c", ghHelper(ctx), ...args];
 }
 
 /**
@@ -677,9 +833,12 @@ export function networkGit(ctx, remote, args, { ssh = false } = {}) {
  */
 function pushArgv(ctx, args) {
   const dir = ctx.state.repoDir ?? null;
-  const why = dir ? networkRefusal(ctx, dir, { push: true }) : null;
+  const why = ctx.ghMissing ? GH_MISSING : dir ? networkRefusal(ctx, dir, { push: true }) : null;
   return why ? refusedCommand(why) : networkGit(ctx, "origin", args, { ssh: dir !== null && originKind(originUrl(ctx, dir)) === "ssh" });
 }
+
+/** What a push says when no gh was found outside the course folder (a gh from inside it is never run). */
+export const GH_MISSING = "GitHub's CLI wasn't found outside the course folder, so the studio won't push: install gh (brew install gh), or check that it's on your PATH.";
 
 /** A command that only says why the studio won't run the real one, and fails. @param {string} why */
 const refusedCommand = (why) => [process.execPath, "-e", `console.error(${JSON.stringify(why)}); process.exit(1)`];
@@ -715,30 +874,27 @@ export function ownerMismatch(ctx, login) {
   return `Your copy belongs to ${owner}; you're now ${login}.`;
 }
 
-/**
- * Switch gh (and so git) to another account it already knows.
- * @param {string} login  checked with isGithubUsername by the caller
- * @returns {Command}
- */
-export function switchAccountCommand(login) {
-  return {
-    display: `gh auth switch --user ${login}`,
-    argv: ["gh", "auth", "switch", "-h", "github.com", "--user", login],
-    what: `Makes ${login} the account gh and git use on this laptop. Nothing is signed out: you can switch back the same way.`,
-    words: [["auth", "sign-in (authentication)"], ["switch", "use another account gh already knows"], ["--user", "which account"]],
-  };
-}
-
-/** Sign in to one more GitHub account; gh then uses it. @returns {Command} */
+/** Sign in to one more GitHub account (the course then uses it). @returns {Command} */
 export function addAccountCommand() {
   return {
     display: "gh auth login",
     argv: ["gh", "auth", "login", "--web", "-h", "github.com", "-p", "https"],
-    what: "Signs in to another GitHub account, next to the ones gh already knows, and makes it the one in use. The studio shows a one-time code and opens github.com: sign in there with the other account, paste the code and approve.",
+    what: "Signs in to another GitHub account, next to the ones gh already knows, and the course uses it. gh also makes it its own account in use on this laptop (what gh and git use in a terminal). The studio shows a one-time code and opens github.com: sign in there with the other account, paste the code and approve.",
     words: [["auth", "sign-in (authentication)"], ["login", "sign in (to one more account)"]],
     waitFor: "browser",
     openUrl: true,
   };
+}
+
+/**
+ * The agent's environment (codex app-server, and every command it runs in its sandbox): never a
+ * GitHub token, even when this terminal has one. The agent doesn't push or talk to GitHub.
+ * @param {Record<string, string | undefined>} env
+ */
+export function agentEnv(env) {
+  const out = { ...env, NO_COLOR: "1" };
+  for (const k of ALL_TOKEN_VARS) delete out[k];
+  return out;
 }
 
 /**
@@ -971,6 +1127,9 @@ export function courseSteps() {
       why: "Your copy of the course and everything you send to GitHub belong to this account.",
       example: "You're signed in to GitHub as your-github-name.",
       check: async (ctx) => {
+        // The course's account was signed out of gh: say so, rather than act as another account.
+        const gone = chosenSignedOut(ctx);
+        if (gone) return { done: false, found: gone };
         const login = ghLogin(ctx);
         const token = ghTokenVar(ctx);
         if (!login) return { done: false, found: token ? `This terminal's ${token} doesn't sign in to GitHub (an old or wrong token?).` : "You're not signed in to GitHub yet." };
@@ -983,8 +1142,8 @@ export function courseSteps() {
       confirm: (ctx, yes) => {
         if (yes && ctx.state.seenLogin) ctx.state.login = ctx.state.seenLogin;
       },
-      // Signed in: this is where the student changes which account the course uses.
-      accountChange: (ctx) => !ghTokenVar(ctx) && ghActiveAccount(ctx) !== null,
+      // Signed in to gh: this is where the student changes which account the course uses.
+      accountChange: (ctx) => !ghTokenVar(ctx) && ghOwnAccount(ctx) !== null,
       // A dry run still asks the account question, about a pretend login.
       pretend: (ctx) => {
         ctx.state.seenLogin = ctx.state.login ?? "your-github-name";
@@ -1203,7 +1362,7 @@ export function courseSteps() {
         const tracking = output(ctx, ["git", "rev-parse", "--abbrev-ref", "work@{upstream}"], repoDir(ctx));
         if (tracking !== "origin/work") return { done: false, found: "Your work branch isn't on GitHub yet." };
         // Ask GitHub too (when it answers): after an account switch, the new copy may not have it yet.
-        const remote = networkRefusal(ctx, repoDir(ctx), { push: true }) ? null : ctx.capture(networkGit(ctx, "origin", ["ls-remote", "--heads", "origin", "work"], { ssh: originKind(originUrl(ctx, repoDir(ctx))) === "ssh" }), repoDir(ctx));
+        const remote = ctx.ghMissing || networkRefusal(ctx, repoDir(ctx), { push: true }) ? null : ctx.capture(networkGit(ctx, "origin", ["ls-remote", "--heads", "origin", "work"], { ssh: originKind(originUrl(ctx, repoDir(ctx))) === "ssh" }), repoDir(ctx));
         if (remote?.code === 0 && !remote.stdout.includes("refs/heads/work")) return { done: false, found: `Your work branch isn't on ${ctx.state.login ?? "your"}'s copy on GitHub yet.` };
         return { done: true, found: "Your work branch is on GitHub, linked to origin/work." };
       },
@@ -1659,15 +1818,8 @@ export function weekSteps(week, { onWork = true } = {}) {
         const ahead = output(ctx, ["git", "rev-list", "--count", "origin/work..work"], repoDir(ctx));
         return { done: ahead === "0", found: ahead === "0" ? "Your fork on GitHub has it too." : `GitHub doesn't have ${ahead ?? "your latest"} of your commits yet.` };
       },
-      plan: (ctx) => {
-        const owner = cloneOwner(ctx);
-        // Signed in as someone else, and gh knows the copy's owner: switch to it first.
-        const back = owner && !ghTokenVar(ctx) && ownerMismatch(ctx, ghActiveAccount(ctx)) && ghAccounts(ctx).some((a) => a.login.toLowerCase() === owner.toLowerCase()) ? owner : null;
-        return [
-          ...(back && isGithubUsername(back) ? [{ kind: /** @type {const} */ ("command"), command: { ...switchAccountCommand(back), label: `First: use ${back}, the account your copy belongs to` } }] : []),
-          cmd("git push", pushArgv(ctx, ["push", "origin", "work"]), { cwd: repoDir(ctx), what: "Sends your work branch to your fork on GitHub.", words: [["push", "send commits to GitHub"]] }),
-        ];
-      },
+      // The wrong account: "Use a different account" in this step picks the copy's owner (no command).
+      plan: (ctx) => [cmd("git push", pushArgv(ctx, ["push", "origin", "work"]), { cwd: repoDir(ctx), what: "Sends your work branch to your fork on GitHub.", words: [["push", "send commits to GitHub"]] })],
       // Only here, and only when it's the wrong account, does "Get week N" offer a different one.
       accountChange: (ctx) => !ghTokenVar(ctx) && Boolean(ownerMismatch(ctx, ghActiveAccount(ctx))),
       hint: (ctx) =>
@@ -2132,13 +2284,16 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     active = ctx.dryRun ? (ctx.state.login ?? active) : ghActiveAccount(ctx);
   };
   /**
-   * "Use a different account", while it's open: the accounts gh knows, then the one command the
-   * student picked. Only an account gh listed (or "add") can become a command.
+   * "Use a different account", while it's open: the accounts gh knows (picking one just records it
+   * for the course), or "add", the one command (gh auth login). Only an account gh listed can be picked.
    * @type {null | { phase: "choose" | "ready" | "running" | "failed", accounts: { login: string, active: boolean }[], choice: string,
-   *   command: Command | null, attempt: number, error: string, code: string, url: string, before: string | null }}
+   *   command: Command | null, attempt: number, error: string, code: string, url: string, before: string | null, beforeOwn: string | null }}
    */
   let acct = null;
   let acctRun = 0; // which account command is running (an older one's ending is ignored)
+  /** Steps an account change marked to do again: checked again after the next change. @type {Set<number>} */
+  const unmarkedByAccount = new Set();
+  // The account the doctor last passed with lives in state.doctorOkAs (state.doctorOk is dropped on a change; it comes back, after a restart too, for that account).
   let notice = ""; // what changed after a switch, shown in the step
   let keepNotice = false;
   let canChange = false; // the current step offers "Use a different account"
@@ -2206,6 +2361,8 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
         notice,
         panel: acct && {
           phase: acct.phase,
+          // The fork is reached by ssh: its key decides who pushes, not the account picked here.
+          ssh: Boolean(ctx.state.repoDir) && originKind(originUrl(ctx, /** @type {string} */ (ctx.state.repoDir))) === "ssh",
           others: acct.accounts.filter((x) => !x.active && x.login !== active).map((x) => x.login),
           choice: acct.choice,
           action: acct.command ? describe({ kind: "command", command: acct.command }) : null,
@@ -2583,6 +2740,10 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
    */
   function runTaskTests(dir, week, task, from = "", then = () => {}) {
     const id = task.id;
+    // Committed as it is now (pressed here, or found in the last commit, e.g. after a restart): a fresh run
+    // doesn't undo that, or offer the commit again.
+    const before = code[id];
+    const wasCommitted = Boolean((before?.done && before?.rev === task.rev) || regionCommitted(ctx, dir, task));
     // "check": the Build view checking where the student is, quietly, in the sandbox (nobody pressed anything).
     const quiet = from === "check";
     const sandboxed = from === "sandbox" || quiet;
@@ -2613,7 +2774,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
           return then(false);
         }
         code = { ...code, [id]: { phase: "error", error: `The tests couldn't run:\n${cleanOutput(text).slice(-1500)}` } };
-      } else code = { ...code, [id]: { phase: results.failed ? "failed" : "passed", rev: task.rev, ...results } };
+      } else code = { ...code, [id]: { phase: results.failed ? "failed" : "passed", rev: task.rev, ...results, ...(wasCommitted && !results.failed ? { done: true, ...(before?.committed ? { committed: before.committed } : {}) } : {}) } };
       if (quiet) {
         publish();
         return then(Boolean(results && !results.failed && results.passed > 0));
@@ -2623,6 +2784,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
         const socket = results.blocked ? ` ${results.blocked} more open a local socket, so they need Run its tests.` : "";
         if (results.failed) agent.say("bad", `\`${id}\`: ${results.failed} of its tests fail. First: ${results.failures[0]?.test ?? ""}: ${String(results.failures[0]?.message ?? "").split("\n")[0].slice(0, 300)}`);
         else if (results.blocked && !results.passed) agent.testOffer(week, id, `\`${id}\`: its tests open a local socket, so they can't run in the sandbox.${todo}`);
+        else if (wasCommitted) agent.say("info", `\`${id}\`: ${results.passed} test${results.passed === 1 ? "" : "s"} pass. It's already committed.${todo}`);
         else agent.commitOffer(week, id, `\`${id}\`: ${results.passed} test${results.passed === 1 ? "" : "s"} pass.${todo}${socket}`);
       } else if (from) agent.say("bad", `The tests for \`${id}\` couldn't run.`);
       publish();
@@ -2665,6 +2827,51 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     };
     next(0);
     return ok;
+  }
+
+  let pushing = false;
+  /**
+   * The Build view's Push: the work branch to the student's fork, the way the week's push step does
+   * it (pushArgv: GitHub only, gh's sign-in, nothing the folder's config names; else it says why).
+   */
+  async function pushWork() {
+    const dir = ctx.state.repoDir;
+    if (!dir || !ctx.stream) return reject(409, "The course folder isn't set up yet.");
+    if (pushing) return reject(409, "It's already pushing.");
+    pushing = true;
+    try {
+      let out = "";
+      const run = ctx.stream(pushArgv(ctx, ["push", "origin", "work"]), dir, (t) => (out = (out + t).slice(-8000)));
+      const exit = await run.done;
+      if (exit === 0) return { ...ok, said: /up-to-date/i.test(out) ? "Nothing new to push: GitHub has all your commits." : "Pushed: your work is on GitHub." };
+      const last = cleanOutput(out).trim().split("\n").filter(Boolean).slice(-2).join(" ");
+      return reject(409, pushFailure(last));
+    } finally {
+      pushing = false;
+    }
+  }
+
+  /**
+   * What a failed push means, in a sentence, with git's own last line under it.
+   * @param {string} said  git's last line(s)
+   */
+  function pushFailure(said) {
+    const why = /couldn't push|won't push|isn't a GitHub address|has \d+ addresses|user name in its address|wasn't found outside the course folder/.test(said)
+      ? "" // already the studio's own sentence
+      : /not allowed|could not resolve host|unable to access|network|timed out|connection/i.test(said)
+        ? "The push didn't reach GitHub: check the Wi-Fi, then press Push again."
+        : /rejected|non-fast-forward|fetch first/i.test(said)
+          ? "GitHub has commits this laptop doesn't: get them first (npm start does it), then press Push again."
+          : /authentication|permission|403|denied/i.test(said)
+            ? "GitHub didn't accept the sign-in: check the account in the studio's setup steps, then press Push again."
+            : "The push didn't go through.";
+    return why ? (said ? `${why}\n${said}` : why) : said;
+  }
+
+  /** Commits on work that origin/work doesn't have (as last fetched or pushed), or 0. @param {string} dir */
+  function unpushed(dir) {
+    const r = quietGit(ctx, dir, ["rev-list", "--count", "refs/remotes/origin/work..refs/heads/work"], { check: false });
+    return r?.code === 0 ? Number(r.stdout.trim()) || 0 : 0;
   }
 
   /** The commit for one task, once its tests pass as the file is now: only that task's file. @param {Record<string, unknown>} a */
@@ -2772,12 +2979,17 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     if (a.type === "code-test") return testCode(a);
     if (a.type === "build-check") return buildCheck(a);
     if (a.type === "code-commit") return commitCode(a);
+    if (a.type === "work-push") return pushWork();
     if (typeof a.type === "string" && a.type.startsWith("account-")) return accountAct(a);
     if (acct) return reject(409, "Finish changing the GitHub account first, or close it.");
     // Going back to an earlier step works from anywhere, the finish screen included.
     if (a.type === "back") {
       const to = Number(a.to);
       if (!Number.isInteger(to) || to < 1 || to > Math.min(current, steps.length)) return reject(409, "You can only go back to an earlier step.");
+      // The student chose that step: it stays there (a returning student's setup, all done, would
+      // otherwise tick itself off again straight to the week, and step 5's account change with it).
+      autoSetup = false;
+      vouched.clear();
       void enter(to - 1);
       return ok;
     }
@@ -2918,8 +3130,9 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
   }
 
   /**
-   * "Use a different account": open it, pick one of gh's accounts (or add one), type its command,
-   * run it. Afterwards every step that depends on the account is checked again.
+   * "Use a different account": open it, then pick one of gh's accounts (the course uses it from now
+   * on, nothing runs: gh's own account in use never changes) or add one (gh auth login, typed and
+   * run). Afterwards every step that depends on the account is checked again.
    * @param {{ type?: unknown, choice?: unknown, typed?: unknown }} a
    */
   async function accountAct(a) {
@@ -2928,10 +3141,10 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
         if (acct) return ok;
         if (!canChange) return reject(409, "The account can only be changed in the step that signs you in.");
         if (child) return reject(409, "Wait for the command that's running to finish, then change the account.");
-        const accounts = ctx.dryRun && ctx.fresh ? [] : ghAccounts(ctx);
-        const using = accounts.find((x) => x.active);
-        if (using && !ctx.dryRun) active = using.login;
-        acct = { phase: "choose", accounts, choice: "", command: null, attempt: 0, error: "", code: "", url: "", before: null };
+        if (!ctx.dryRun) refreshActive();
+        // "In use" is the course's account, which needn't be gh's own (the studio never switches gh's).
+        const accounts = (ctx.dryRun && ctx.fresh ? [] : ghAccounts(ctx)).map((x) => ({ ...x, active: ctx.dryRun ? x.active : sameLogin(x.login, active) }));
+        acct = { phase: "choose", accounts, choice: "", command: null, attempt: 0, error: "", code: "", url: "", before: null, beforeOwn: null };
         publish();
         return ok;
       }
@@ -2948,15 +3161,17 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
       }
       case "account-pick": {
         if (!acct || acct.phase === "running") return reject(409, "There's nothing to choose right now.");
-        /** @type {Command} */
-        let command;
-        if (a.choice === "add") command = addAccountCommand();
-        else {
+        if (a.choice !== "add") {
+          // An account gh already knows: the course uses it from now on. Nothing runs, and gh's own
+          // account in use stays as it is (its token goes to the studio's own commands only).
           const pick = acct.accounts.find((x) => !x.active && x.login === a.choice);
           if (!pick || !isGithubUsername(pick.login)) return reject(400, "gh doesn't know that account on this laptop.");
-          command = switchAccountCommand(pick.login);
+          if (child) return reject(409, "Wait for the command that's running to finish, then change the account.");
+          acct = { ...acct, choice: pick.login, before: active };
+          await finishAccount(pick.login);
+          return ok;
         }
-        acct = { ...acct, phase: "ready", choice: String(a.choice), command, attempt: acct.attempt + 1, error: "" };
+        acct = { ...acct, phase: "ready", choice: "add", command: addAccountCommand(), attempt: acct.attempt + 1, error: "" };
         publish();
         return ok;
       }
@@ -2973,10 +3188,10 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
         return ok;
       }
       case "account-recheck": {
-        // Back from signing in to another account in the browser: done once gh uses a new one.
+        // Back from signing in to another account in the browser: done once gh has a new one in use.
         if (!acct || acct.phase !== "running" || acct.command?.waitFor !== "browser" || ctx.dryRun) return ok;
-        const now = ghActiveAccount(ctx);
-        if (now && now !== acct.before) {
+        const now = ghOwnAccount(ctx);
+        if (now && now !== acct.beforeOwn) {
           acctRun++;
           child?.kill();
           child = null;
@@ -2993,7 +3208,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
   async function runAccount(command) {
     if (!acct) return;
     const mine = ++acctRun;
-    acct = { ...acct, phase: "running", code: "", url: "", before: active };
+    acct = { ...acct, phase: "running", code: "", url: "", before: active, beforeOwn: ctx.dryRun ? null : ghOwnAccount(ctx) };
     out = "";
     outputId++;
     for (const l of listeners) l("output", { id: outputId, text: "", reset: true });
@@ -3025,27 +3240,42 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     await finishAccount();
   }
 
-  /** The switch (or sign-in) worked: use the new account, and check again what depends on it. */
-  async function finishAccount() {
+  /**
+   * An account was picked (or one more signed in to): the course uses it from now on, and what
+   * depends on it is checked again.
+   * @param {string} [picked]  an account gh knew; none: the one just signed in to (gh has it in use now)
+   */
+  async function finishAccount(picked) {
     const choice = acct?.choice ?? "";
-    const wasUsing = acct?.before ?? active; // the account gh used before this switch
+    const wasUsing = acct?.before ?? active; // the account the studio used before
     const wasCourse = ctx.state.login ?? wasUsing; // the account the course was set up with
     acct = null;
-    const now = ctx.dryRun ? (isGithubUsername(choice) ? choice : wasUsing) : ghActiveAccount(ctx);
+    const now = ctx.dryRun ? (isGithubUsername(choice) ? choice : wasUsing) : (picked ?? ghOwnAccount(ctx));
     active = now;
     const changed = Boolean(now && (now !== wasUsing || now !== wasCourse));
     if (now) ctx.state.login = now; // the student chose this account: it's the course account now
-    if (now && now !== wasCourse) delete ctx.state.doctorOk; // the doctor checks you can push: run it again
+    // The doctor checks you can push: with another account, run it again. Back to the account it
+    // passed with (in this studio), its pass holds again.
+    if (now && now !== wasCourse) {
+      if (ctx.state.doctorOk && isGithubUsername(wasCourse)) ctx.state.doctorOkAs = wasCourse;
+      delete ctx.state.doctorOk;
+      if (sameLogin(now, ctx.state.doctorOkAs)) ctx.state.doctorOk = true;
+    }
     if (!ctx.dryRun) ctx.save?.();
-    // Check again every other step already done that depends on the account. This step is checked
+    // Check again every other step already done that depends on the account, and every one an
+    // earlier change unmarked (back to the first account, they hold again). This step is checked
     // again by entering it (it updates in place); the others are done again when the student gets there.
     /** @type {number[]} */
     const again = [];
     for (let i = 0; i < steps.length; i++) {
-      if (i === current || marks[i] !== "done" || !ACCOUNT_STEPS.has(steps[i].id)) continue;
+      if (i === current || !ACCOUNT_STEPS.has(steps[i].id) || !(marks[i] === "done" || unmarkedByAccount.has(i))) continue;
       const r = await checkStep(steps[i], ctx);
       found[i] = r.found;
-      if (!r.done) {
+      if (r.done) {
+        marks[i] = "done";
+        unmarkedByAccount.delete(i);
+      } else {
+        if (marks[i] === "done") unmarkedByAccount.add(i);
         marks[i] = "pending";
         again.push(i + 1);
       }
@@ -3120,6 +3350,8 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
       if (!dir || !weekIn(week)) return null;
       return buildSteps(ctx, dir, week, agentTaskList(dir, week));
     },
+    /** Commits on work not on GitHub yet, for the Build view's Push. */
+    unpushed: () => (ctx.state.repoDir ? unpushed(ctx.state.repoDir) : 0),
     /** The Agent tab's state: a snapshot; numbered "agent" events follow it. */
     agentSnapshot: () => agent.snapshot(),
     /** Ends what the studio started and waits, boundedly, for its Codex to go. */
@@ -3227,7 +3459,7 @@ export function codexTransport(ctx, cwd) {
   const windows = ctx.platform === "windows";
   // Fixed arguments only: nothing the student types ever goes on this command line, so the Windows
   // shim's shell sees nothing of theirs. Their words go over stdio.
-  const child = spawn("codex", [...CODEX_FLAGS, "app-server"], { cwd, env: { ...process.env, NO_COLOR: "1" }, stdio: ["pipe", "pipe", "pipe"], shell: windows, detached: !windows, windowsHide: true });
+  const child = spawn("codex", [...CODEX_FLAGS, "app-server"], { cwd, env: agentEnv(process.env), stdio: ["pipe", "pipe", "pipe"], shell: windows, detached: !windows, windowsHide: true });
   /** @type {(message: any) => void} */
   let message = () => {};
   /** @type {(line: string) => void} */
@@ -4480,7 +4712,7 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
     // The Build tab's steps.
     if (req.method === "GET" && url.pathname === "/api/build") {
       const steps = studio.buildSteps(Number(url.searchParams.get("week")));
-      res.writeHead(steps ? 200 : 409, { ...secure, "content-type": "application/json" }).end(JSON.stringify({ steps: steps ?? [] }));
+      res.writeHead(steps ? 200 : 409, { ...secure, "content-type": "application/json" }).end(JSON.stringify({ steps: steps ?? [], ahead: steps ? studio.unpushed() : 0 }));
       return;
     }
     // The tasks the Agent tab can work on.
@@ -5162,7 +5394,7 @@ export function buildSteps(ctx, dir, week, tasks) {
   const found = [];
   let section = "";
   let heading = "";
-  /** @type {{ id: string, title: string, intro: string, works: string, check: string, board: boolean, notes: string }} */
+  /** @type {{ id: string, title: string, intro: string, works: string, check: string, board: boolean, notes: string, notesText?: string }} */
   let component = { id: "", title: "", intro: "", works: "", check: "", board: false, notes: "" };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -5197,7 +5429,7 @@ export function buildSteps(ctx, dir, week, tasks) {
       }
       // Its title: "### Component · title" (or "## Component N · title") just above the mark.
       const above = /^Component\b/i.test(heading) ? heading : section.replace(/^##\s+/, "");
-      component = { id: comp[1], title: above.replace(/^Component\s*(\d+\s*)?·\s*/i, "").trim(), intro: intro.join(" ").replace(/\s+/g, " ").trim(), works, check, board, notes: notes.length ? renderMarkdown(notes.join("\n"), { strict: true }) : "" };
+      component = { id: comp[1], title: above.replace(/^Component\s*(\d+\s*)?·\s*/i, "").trim(), intro: intro.join(" ").replace(/\s+/g, " ").trim(), works, check, board, notes: notes.length ? renderMarkdown(notes.join("\n"), { strict: true }) : "", notesText: notes.join("\n").trim() };
       continue;
     }
     if (/^### /.test(line)) heading = line.slice(4).trim();
@@ -5437,6 +5669,22 @@ export function readableFailure(message) {
  *   that also needs a task still a stub waits for it. Tests it doesn't list fall back to the guesses.
  * @param {boolean} [sandboxed]  run in Codex's sandbox: a test stopped by "listen EPERM" says nothing about the code (counted as blocked)
  */
+/**
+ * Whether a task's code is in the last commit exactly as it is in the folder now (lines compared trimmed,
+ * as the Build view does). A stub, or a region missing on either side, isn't.
+ * @param {Context} ctx @param {string} dir @param {{ id: string, file: string, stubbed?: boolean }} task
+ */
+export function regionCommitted(ctx, dir, task) {
+  if (task.stubbed || !task.file) return false;
+  const body = (/** @type {string} */ text) => {
+    const region = findCodeRegions(text).find((r) => r.id === task.id);
+    return region ? text.split("\n").slice(region.start + 1, region.end).map((l) => l.trim()).join("\n") : undefined;
+  };
+  const now = body(ctx.readText(join(dir, task.file)) ?? "");
+  const head = output(ctx, ["git", "show", `HEAD:${task.file}`], dir);
+  return now !== undefined && head != null && body(head) === now;
+}
+
 export function taskResults(json, task, stubs = [], needs = null, sandboxed = false) {
   const me = typeof task === "string" ? { id: task, file: "" } : task;
   const stubbed = new Set(stubs.map((s) => s.id));
@@ -5461,6 +5709,8 @@ export function taskResults(json, task, stubs = [], needs = null, sandboxed = fa
   }
   let passed = 0;
   let blocked = 0;
+  /** @type {string[]} the tests that passed, by name (at most 50) */
+  const passedTests = [];
   /** @type {Set<string>} */
   const waiting = new Set();
   /** @type {{ test: string, message: string, own?: boolean }[]} */
@@ -5492,7 +5742,10 @@ export function taskResults(json, task, stubs = [], needs = null, sandboxed = fa
           continue;
         }
       }
-      if (t.status === "passed") passed++;
+      if (t.status === "passed") {
+        passed++;
+        if (passedTests.length < 50) passedTests.push(t.fullName ?? t.title ?? name);
+      }
       else if (t.status === "failed") {
         const message = readableFailure((t.failureMessages ?? []).join("\n"));
         if (sandboxed && /listen EPERM/.test(message)) {
@@ -5512,7 +5765,7 @@ export function taskResults(json, task, stubs = [], needs = null, sandboxed = fa
   }
   // This task's own failures first: the test is named after its function, or the error came from its file.
   failures.sort((a, b) => Number(Boolean(b.own)) - Number(Boolean(a.own)));
-  return { passed, failed: failures.length, failures: failures.slice(0, 5), waiting: [...waiting], ...(blocked ? { blocked } : {}) };
+  return { passed, failed: failures.length, failures: failures.slice(0, 5), waiting: [...waiting], ...(blocked ? { blocked } : {}), ...(passedTests.length ? { passedTests } : {}) };
 }
 
 // ── The page (HTML, CSS and the browser code, all in this file) ────────────
@@ -5856,6 +6109,96 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .tab.on { color: var(--ink); background: var(--panel); border-color: var(--line); margin-bottom: -1px; }
 .tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .framebar { display: flex; }
+/* Design A's top bar: back to the course, the part, Codex's state, progress, Push. */
+.ctop .cback { background: none; border: 0; color: #cfe8dc; font: 600 13px/1 "Inter", sans-serif; cursor: pointer; padding: 4px 2px; white-space: nowrap; }
+.ctop .cback:hover { color: #fff; }
+.ctop .csep { width: 1px; height: 22px; background: #ffffff33; }
+.ctop .cname { flex: 1; min-width: 0; }
+.ctop .cright { display: flex; align-items: center; gap: 14px; }
+.cstatus { font-size: 12.5px; color: #cfe8dc; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.cstatus::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #8fb3a1; }
+.cstatus.ok::before { background: var(--mint); } .cstatus.work::before { background: var(--yellow); } .cstatus.bad::before { background: #ff6b7a; }
+.ctop .cpush { background: #ffffff1a; border-color: #ffffff40; color: #fff; }
+.ctop .cpush:hover { background: #ffffff2e; }
+.work.showcourse:has(.chatui) { grid-template-columns: 330px minmax(0, 1fr) !important; }
+.work.showcourse:has(.chatui) .steps { display: flex; }
+/* The agent's commands, one row per run. */
+.ag.rangroup { font-size: 13px; color: var(--muted); }
+.ag.rangroup > summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; }
+.ag.rangroup > summary::after { content: "⌄"; }
+.ag.rangroup[open] > summary::after { content: "⌃"; }
+.ag.rangroup .rgbody { margin: 6px 0 0 6px; padding-left: 12px; border-left: 2px solid var(--line); display: grid; gap: 4px; }
+/* A change Codex made: the file, +N −M, the first changed lines. */
+.ag.files { display: grid; gap: 8px; }
+.dcard { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.dch { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 13px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.dch .ic { color: var(--muted); }
+.dch .btn { margin-left: auto; }
+.minidiff { margin: 0; padding: 6px 0; font: 12px/1.6 "JetBrains Mono", ui-monospace, monospace; white-space: pre; overflow: hidden; }
+.minidiff > span { display: block; padding: 0 12px; overflow: hidden; text-overflow: ellipsis; }
+.minidiff .sg { display: inline-block; width: 1.3em; color: var(--muted); user-select: none; }
+.minidiff .a { background: color-mix(in srgb, var(--mint) 18%, transparent); } .minidiff .a .sg { color: var(--mint-ink); }
+.minidiff .d { background: color-mix(in srgb, var(--red) 13%, transparent); } .minidiff .d .sg { color: var(--red-ink); }
+.minidiff .x { color: var(--muted); }
+.pill.bad { background: #ffe1e4; color: var(--red-ink); }
+/* The studio's verdict on a step's tests. */
+.tcard { border: 1px solid var(--line); border-left: 3px solid var(--mint); border-radius: 10px; padding: 10px 12px; display: grid; gap: 6px; background: var(--panel); }
+.tcard.bad { border-left-color: var(--red); }
+.tcard .tch { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.tcard.ok .tch b { color: var(--mint-ink); } .tcard.bad .tch b { color: var(--red-ink); }
+.tcard ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font: 12.5px/1.45 "JetBrains Mono", ui-monospace, monospace; }
+.tcard li { display: flex; gap: 8px; align-items: baseline; }
+.tcard li.ok > span { color: var(--mint-ink); } .tcard li.bad > span { color: var(--red-ink); }
+.tcard li.more summary { cursor: pointer; color: var(--muted); }
+.tcard li .sub { font-family: "Inter", sans-serif; }
+/* The composer's tools. */
+.agcomposer .row .sp { flex: 1; }
+.filepick { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 6px; display: grid; gap: 4px; max-height: 240px; }
+.filepick input { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--well); color: var(--ink); }
+.filepick ul { list-style: none; margin: 0; padding: 0; overflow: auto; }
+.filepick li button { width: 100%; text-align: left; background: none; border: 0; padding: 3px 6px; border-radius: 6px; cursor: pointer; display: flex; gap: 6px; align-items: center; color: var(--ink); }
+.filepick li button:hover { background: var(--well); }
+.filepick .mk { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); }
+/* Dark: the Build view follows the Mac's appearance (the rest of the studio stays light for now). */
+@media (prefers-color-scheme: dark) {
+  body:has(.chatui) {
+    --ink: #e8efeb; --muted: #9aa8a0; --line: #26312b; --panel: #121a16; --well: #0b110e;
+    --mint-ink: #6fd3a7; --red-ink: #ff6b7a; --green: #0e1f17; color-scheme: dark;
+  }
+  body:has(.chatui) .ccol .ag.you .said { background: #1d3a2c; color: var(--ink); }
+  body:has(.chatui) .crow.now, body:has(.chatui) .ftree li.on { background: #133325; }
+  body:has(.chatui) .src .rg { background: #2e2810; }
+  body:has(.chatui) .src .add, body:has(.chatui) .fvfoot { background: #133325; }
+  body:has(.chatui) .src .del, body:has(.chatui) .pill.bad { background: #3a1419; }
+  body:has(.chatui) .status.ok { background: #133325; border-color: #1f5a3f; }
+  body:has(.chatui) .status.bad, body:has(.chatui) .stuck.bad { background: #3a1419; border-color: #6a2630; }
+  body:has(.chatui) .status.run, body:has(.chatui) .status.wait { background: #2e2810; border-color: #6b5a1a; }
+  body:has(.chatui) .btn { background: var(--panel); color: var(--ink); border-color: var(--line); }
+  body:has(.chatui) .btn.primary { background: var(--mint); color: #0b1a13; border-color: var(--mint); }
+  body:has(.chatui) .hl-keyword { color: #c9a7ff; } body:has(.chatui) .hl-string, body:has(.chatui) .hl-code { color: #8fe0b8; } body:has(.chatui) .hl-number { color: #ff9aa6; } body:has(.chatui) .hl-comment { color: #7fa893; }
+  body:has(.chatui) .hl-type, body:has(.chatui) .hl-key, body:has(.chatui) .hl-register, body:has(.chatui) .hl-label, body:has(.chatui) .hl-heading { color: #7fb6ff; } body:has(.chatui) .hl-strong, body:has(.chatui) .hl-bullet, body:has(.chatui) .hl-fence { color: #ffcb12; }
+  body:has(.chatui) code { color: var(--ink); }
+  /* Text that's dark green on light (--green is the dark chrome here): mint, readable on the dark panel. */
+  body:has(.chatui) .bfinish h2, body:has(.chatui) .bdoneline, body:has(.chatui) .bcomp.done, body:has(.chatui) .bstep.done .n { color: var(--mint-ink); }
+  body:has(.chatui) .wpill.on { background: var(--mint); border-color: var(--mint); color: #0b1a13; }
+  body:has(.chatui) .tab.on { background: var(--panel); }
+  body:has(.chatui) textarea, body:has(.chatui) select, body:has(.chatui) input { background: var(--well); color: var(--ink); border-color: var(--line); }
+}
+/* A short screen (a MacBook at 720-860 px of window): the rows above the chat and the message box
+   give up their room, so the conversation keeps a usable height. The top bar already names the part. */
+@media (min-width: 901px) and (max-height: 860px) {
+  .detail .body:has(.chatui) { padding: 8px 14px; }
+  .detail .inner.week:has(.chatui) { gap: 6px; }
+  .inner.week:has(.chatui) .weekhead { display: none; }
+  .inner.week:has(.chatui) .wpill { padding: 2px 9px; font-size: 12px; }
+  .inner.week:has(.chatui) .tab { padding: 6px 12px; }
+  .chatui { gap: 6px; }
+  .ctop { padding: 6px 12px; }
+  .ccol .agcomposer.pinned { padding: 6px 8px; margin-top: 6px; }
+  .ccol .agcomposer.pinned textarea { min-height: 0; height: 2.6em; }
+  .ccol .agcomposer.pinned .row { margin-top: 2px; }
+  .ccol .cdisclaim { display: none; }
+}
 .bchips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 3px 10px; font: 600 12px/1.3 "JetBrains Mono", monospace; color: var(--ink); cursor: pointer; }
 .chip:hover { border-color: var(--mint); }
@@ -5890,7 +6233,7 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .ftree .mk { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); flex: none; margin-left: auto; }
 .ftree .mk.new { background: var(--mint); }
 .ftree .cnt + .mk { margin-left: 4px; }
-.plus { color: #1b7650; font-weight: 700; } .minus { color: #c4051a; font-weight: 700; }
+.plus { color: var(--mint-ink); font-weight: 700; } .minus { color: var(--red-ink); font-weight: 700; }
 .fvempty { padding: 14px; }
 .fview { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
 .fvh { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--line); font-size: 12.5px; flex-wrap: wrap; }
@@ -5969,7 +6312,9 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 /* The chat column: the conversation and the step card scroll; the message box has its own row below. */
 .ccol { overflow: hidden; }
 .ccol .agenttab { display: flex; flex-direction: column; gap: 0; min-height: 0; }
-.ccol .agscroll { flex: 1; min-height: 0; overflow-y: auto; display: grid; gap: 12px; align-content: start; padding-right: 4px; }
+.ccol .agscroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px; }
+/* Each part keeps its full height and the column scrolls (a grid here shrank the conversation to its minimum, under the step card). */
+.ccol .agscroll > * { flex: none; }
 .ccol .agcomposer.pinned { flex: none; background: var(--panel); border: 2px solid var(--green); border-radius: 16px; padding: 8px 10px; margin-top: 10px; }
 .ccol .agcomposer.pinned textarea { border: 0; padding: 4px; }
 .cdisclaim { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); text-align: center; }
@@ -6187,7 +6532,9 @@ form.fields input:focus { outline: 3px solid var(--mint); }
 .diagram svg { width: 100%; height: auto; display: block; max-width: 720px; }
 .finish h1 { font-size: 40px; }
 .finish ol { display: grid; gap: 12px; padding-left: 22px; margin: 0; font-size: 15.5px; }
-.toast { position: fixed; bottom: 16px; right: 16px; background: var(--ink); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 14px; max-width: 420px; }
+.toastsub { margin-top: 4px; font: 12px/1.4 "JetBrains Mono", ui-monospace, monospace; opacity: .75; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* A fixed dark box with white text in both themes (var(--ink) turns pale in the dark one). */
+.toast { position: fixed; bottom: 16px; right: 16px; background: #16201b; color: #fff; border: 1px solid #3a4a41; padding: 10px 14px; border-radius: 8px; font-size: 14px; max-width: 420px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
 
 .machine { display: grid; gap: 16px; grid-template-columns: minmax(0, 1.7fr) minmax(260px, 1fr); align-items: start; }
 @media (max-width: 1150px) { .machine { grid-template-columns: 1fr; } }
@@ -6306,12 +6653,20 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       return { ok: false, error: "The studio stopped. Run npm start again to reopen it." };
     }
   }
+  /** A message at the corner. A second line (git's own words, say) shows smaller under the first; all of it as text. */
   function toast(/** @type {string} */ text) {
     const t = document.createElement("div");
     t.className = "toast";
-    t.textContent = text;
+    const [first, ...rest] = String(text).split("\n");
+    t.textContent = first;
+    if (rest.length) {
+      const sub = document.createElement("div");
+      sub.className = "toastsub";
+      sub.textContent = rest.join("\n");
+      t.append(sub);
+    }
     document.body.append(t);
-    setTimeout(() => t.remove(), 4000);
+    setTimeout(() => t.remove(), rest.length ? 9000 : 6000);
   }
 
   const events = new EventSource(`/events?t=${encodeURIComponent(TOKEN)}`);
@@ -6436,7 +6791,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
 
   /**
    * "Use a different account", inside the step that offers it: a link, which opens in place into
-   * the accounts gh knows (each one a command to type) and "Add another account".
+   * the accounts gh knows (one click picks one) and "Add another account" (a command to type).
    */
   function accountInline() {
     const snap = present();
@@ -6453,6 +6808,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         : `<p class="note">gh doesn't know any other account on this laptop yet.</p>`;
       return box(`<div class="accounts">
           ${login ? `<div class="account now"><span class="who">${esc(login)}</span><span class="muted">in use now</span></div>` : ""}
+          ${p.ssh ? `<p class="note">Your fork is reached by SSH, so this laptop's SSH key decides who pushes: picking an account here doesn't change that.</p>` : ""}
           ${others}
           <div class="account"><span>An account gh doesn't know yet</span><button class="btn ghost" data-do="acct-pick" data-choice="add">Add another account</button></div>
         </div>
@@ -7229,11 +7585,77 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     let scrolledFor = ""; // the step the chat column last scrolled to
     let followCard = true; // the chat stays on the step card until the student scrolls it
     let actedOn = ""; // the step the student last committed or tested in the Build view
+    let ahead = 0; // commits on work that GitHub doesn't have yet
     /** @type {Set<any>} entries with deltas waiting for the next frame */
     const dirty = new Set();
     let painting = false;
     const clientId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const md = (/** @type {string} */ text) => esc(text).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+
+    /** A file's language for the highlighter, from its name. @param {string} path */
+    const langOf = (path) => ({ ts: "ts", tsx: "tsx", js: "js", mjs: "js", json: "json", md: "md", asm: "asm" })[/\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase() ?? ""] ?? "text";
+    /**
+     * One change Codex made, as a card: the file, +N −M, the first changed lines (unified, escaped and
+     * highlighted) and Open in Files. A new file's "diff" can be its whole text: all added.
+     * @param {any} c @param {string} status
+     */
+    function diffCard(c, status) {
+      const text = String(c.diff ?? "");
+      const lines = text.split("\n");
+      const unified = lines.some((l) => l.startsWith("@@"));
+      /** @type {{ kind: "a" | "d" | "x", text: string }[]} */
+      const rows = [];
+      if (unified) {
+        let inHunk = false;
+        for (const l of lines) {
+          if (l.startsWith("@@")) {
+            inHunk = true;
+            rows.push({ kind: "x", text: l });
+          } else if (!inHunk) continue;
+          else if (l.startsWith("+")) rows.push({ kind: "a", text: l.slice(1) });
+          else if (l.startsWith("-")) rows.push({ kind: "d", text: l.slice(1) });
+        }
+      } else for (const l of lines.filter((x, i) => x || i < lines.length - 1)) rows.push({ kind: "a", text: l });
+      const added = rows.filter((r) => r.kind === "a").length;
+      const removed = rows.filter((r) => r.kind === "d").length;
+      const changed = rows.filter((r) => r.kind !== "x");
+      const shown = rows.slice(0, 7);
+      const more = changed.length - shown.filter((r) => r.kind !== "x").length;
+      const lang = langOf(String(c.path ?? ""));
+      const sign = { a: "+", d: "−", x: "" };
+      const mini = shown.length ? `<pre class="minidiff">${shown.map((r) => `<span class="${r.kind}"><span class="sg">${sign[r.kind]}</span>${r.kind === "x" ? esc(r.text) : highlightSource(r.text, lang) || " "}</span>`).join("")}${more > 0 ? `<span class="x">… ${esc(more)} more changed line${more === 1 ? "" : "s"}</span>` : ""}</pre>` : "";
+      const label = status === "declined" ? `<span class="pill">declined</span>` : status === "failed" ? `<span class="pill bad">didn't apply</span>` : "";
+      return `<div class="dcard"><div class="dch"><span class="ic">✎</span><code>${esc(c.path)}</code>${c.movePath ? ` → <code>${esc(c.movePath)}</code>` : ""}${added ? `<span class="plus">+${esc(added)}</span>` : ""}${removed ? `<span class="minus">−${esc(removed)}</span>` : ""}${label}<button class="btn sm ghost" data-open-file="${esc(c.movePath || c.path)}">Open in Files</button></div>${mini}</div>`;
+    }
+    /** A run of the agent's commands as one row: "✓ N steps completed", opened to the list. @param {any[]} list */
+    function ranGroupHtml(list) {
+      const running = list.some((x) => x.status === "inProgress");
+      const failed = list.filter((x) => x.status === "completed" && x.exitCode).length;
+      const n = list.length;
+      const head = running ? `<i class="spin"></i> ${esc(n)} step${n === 1 ? "" : "s"}, one running…` : `✓ ${esc(n)} step${n === 1 ? "" : "s"} completed${failed ? ` · ${esc(failed)} exited with an error` : ""}`;
+      return `<details class="ag rangroup" data-group="${esc(list[0].id)}"><summary>${head}</summary><div class="rgbody">${list.map(entryHtml).join("")}</div></details>`;
+    }
+    /** The chat's entries, with each run of commands grouped (build weeks). @param {any[]} entries */
+    function logHtml(entries) {
+      if (!grouped()) return entries.map(entryHtml).join("");
+      let out = "";
+      /** @type {any[]} */
+      let run = [];
+      const flush = () => {
+        if (run.length) out += ranGroupHtml(run);
+        run = [];
+      };
+      for (const e of entries) {
+        if (e.kind === "command") run.push(e);
+        else {
+          flush();
+          out += entryHtml(e);
+        }
+      }
+      flush();
+      return out;
+    }
+    const grouped = () => Boolean(mounted && mounted.week >= 4);
 
     /** @param {any} e */
     function entryHtml(e) {
@@ -7244,6 +7666,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         const status = e.status === "completed" ? (e.exitCode ? `exit ${esc(e.exitCode)}` : "done") : e.status === "inProgress" ? "running…" : esc(e.status);
         return `<details class="ag ran" data-entry="${esc(e.id)}"><summary><span class="what">Ran</span> <code>${esc(plainCommand(e.command))}</code> <em>${status}</em></summary><pre class="log" data-field="output">${esc(e.output)}</pre></details>`;
       }
+      if (e.kind === "file" && grouped() && (e.changes ?? []).length) return `<div class="ag files" data-entry="${esc(e.id)}">${(e.changes ?? []).map((/** @type {any} */ c) => diffCard(c, e.status)).join("")}</div>`;
       if (e.kind === "file") {
         const list = (e.changes ?? []).map((/** @type {any} */ c) => `<div><button class="linkbtn mono" data-open-file="${esc(c.path)}" title="Open it in the Files tab">${esc(c.path)}</button>${c.movePath ? ` moves to <code>${esc(c.movePath)}</code>` : ""} <em>${esc(c.kind)}</em></div>`).join("");
         const diffs = (e.changes ?? []).map((/** @type {any} */ c) => c.diff).filter(Boolean).join("\n");
@@ -7308,6 +7731,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       stop.textContent = s?.turn?.status === "stopping" ? "Stopping…" : "Stop";
       const line = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-working]"));
       line.hidden = !busy;
+      const pill = /** @type {HTMLElement | null} */ (document.querySelector("[data-cstatus]"));
+      if (pill) {
+        const [cls, text] = busy ? ["work", "Codex is working"] : ready ? ["ok", "Codex ready"] : s?.phase === "signed-out" || s?.phase === "signing-in" ? ["bad", "Codex isn't signed in"] : s?.phase === "failed" || s?.phase === "missing" || s?.phase === "too-old" || s?.phase === "unavailable" ? ["bad", "Codex needs a fix"] : ["", "Starting Codex…"];
+        pill.className = `cstatus ${cls}`;
+        pill.textContent = text;
+      }
       const who = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-who]"));
       who.textContent = ready ? `Codex ${s.version}${s.account?.email ? ` · ${s.account.email}` : ""}` : "";
       /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-perms]")).textContent = s?.permissions ?? "";
@@ -7317,6 +7746,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     function paintEntry(entry) {
       const log = mounted?.el.querySelector("[data-agent-log]");
       if (!log) return;
+      if (grouped() && entry.kind === "command") return paintCommand(log, entry);
       const html = entryHtml(entry);
       const old = log.querySelector(`[data-entry="${CSS.escape(entry.id)}"]`);
       if (!html) return;
@@ -7329,10 +7759,33 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       if (nearEnd) log.scrollTop = log.scrollHeight;
     }
 
+    /** A command in a build week: into the run of commands it belongs to, whose summary is redrawn. @param {Element} log @param {any} entry */
+    function paintCommand(log, entry) {
+      const nearEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+      const all = /** @type {any[]} */ (state?.entries ?? []);
+      const at = all.findIndex((x) => x.id === entry.id);
+      // Its run: the commands around it with nothing else in between.
+      let from = at;
+      while (from > 0 && all[from - 1].kind === "command") from--;
+      let to = at;
+      while (to < all.length - 1 && all[to + 1].kind === "command") to++;
+      const run = at < 0 ? [entry] : all.slice(from, to + 1);
+      const old = log.querySelector(`[data-group="${CSS.escape(run[0].id)}"]`) ?? log.querySelector(`[data-entry="${CSS.escape(entry.id)}"]`)?.closest("[data-group]");
+      const open = old instanceof HTMLDetailsElement && old.open;
+      const openRows = old ? [...old.querySelectorAll("details[data-entry][open]")].map((d) => d.getAttribute("data-entry")) : [];
+      const html = ranGroupHtml(run);
+      if (old) old.outerHTML = html;
+      else log.insertAdjacentHTML("beforeend", html);
+      const now = log.querySelector(`[data-group="${CSS.escape(run[0].id)}"]`);
+      if (open) now?.setAttribute("open", "");
+      for (const id of openRows) if (id) now?.querySelector(`[data-entry="${CSS.escape(id)}"]`)?.setAttribute("open", "");
+      if (nearEnd) log.scrollTop = log.scrollHeight;
+    }
+
     function paintAll() {
       if (!mounted || !state) return;
       const log = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-log]"));
-      log.innerHTML = (state.entries ?? []).map(entryHtml).join("");
+      log.innerHTML = logHtml(state.entries ?? []);
       log.scrollTop = log.scrollHeight;
       paintState();
     }
@@ -7405,6 +7858,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const res = await fetch(`/api/build?week=${m.week}`, { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null);
       if (mounted !== m) return;
       buildList = res?.steps ?? [];
+      ahead = Number(res?.ahead) || 0;
       filesTab.refresh(); // the folder may have changed with it
       paintBuild();
       // Steps already green (written another way, or in one go with an earlier one) are skipped.
@@ -7414,6 +7868,11 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       return buildList.find((st) => !stepDone(st)) ?? null;
     }
     /** The components, in order, each with its steps. */
+    /** A step's number within its component, as the top bar counts: [n, of]. @param {any} st */
+    function stepOf(st) {
+      const part = components().find((x) => x.steps.includes(st));
+      return part ? [part.steps.indexOf(st) + 1, part.steps.length] : [st.n, buildList.length];
+    }
     function components() {
       /** @type {{ c: any, steps: any[] }[]} */
       const out = [];
@@ -7441,21 +7900,40 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       if (!r) return st.stubbed ? `<p class="muted">Press Send to the agent. Read what Codex changes; the studio checks it when Codex finishes.</p>` : `<p class="muted">Written, not checked yet: press Run its tests.</p>`;
       if (r.phase === "running") return `<div class="status run"><i class="spin"></i><div><b>Checking ${esc(st.id)}…</b></div></div>`;
       if (r.phase === "error") return `<div class="status bad"><span class="icon">!</span><div><b>The tests couldn't run.</b></div></div>`;
-      if (r.phase === "failed") return `<div class="status bad"><span class="icon">!</span><div><b>${esc(r.failed)} of its tests fail.</b><div class="sub">${esc(r.failures?.[0]?.test ?? "")}: ${esc(String(r.failures?.[0]?.message ?? "").split("\n")[0])}</div><div class="sub">Tell Codex what you see (Ask the agent something else, below), or press Run its tests after a change.</div></div></div>`;
-      const todo = r.waiting?.length ? ` Waiting on: ${r.waiting.join(", ")}.` : "";
-      return `<div class="status ok"><span class="icon">✓</span><div><b>${r.passed ? `${esc(r.passed)} test${r.passed === 1 ? "" : "s"} pass.` : "Nothing fails."}</b>${todo ? `<div class="sub">${esc(todo)}</div>` : ""}</div></div>
-        <div class="row"><button class="btn primary" data-build-commit="${esc(st.id)}" data-w="${esc(st.week)}">Commit it</button><span class="muted">It commits the whole file.</span></div>`;
+      if (r.phase === "failed")
+        return `${testsCard(st, r)}<div class="row"><span class="muted">Commit it unlocks when the tests pass.</span><button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">↻ Run again</button></div>`;
+      return `${testsCard(st, r)}
+        <div class="row"><button class="btn primary" data-build-commit="${esc(st.id)}" data-w="${esc(st.week)}">✓ Commit it</button><span class="muted">It commits the whole file.</span><button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">↻ Run again</button></div>`;
+    }
+    /**
+     * The studio's verdict on a step's tests, as a card: which pass and which fail, by name, the
+     * first failure's message. All of it from the test run, escaped.
+     * @param {any} st @param {any} r
+     */
+    function testsCard(st, r) {
+      const names = /** @type {string[]} */ (r.passedTests ?? []);
+      const failures = /** @type {any[]} */ (r.failures ?? []);
+      const total = (r.passed ?? 0) + (r.failed ?? 0);
+      const ok = (/** @type {string} */ n) => `<li class="ok"><span>✓</span>${esc(n)}</li>`;
+      const passedList = names.length ? `${names.slice(0, 3).map(ok).join("")}${names.length > 3 || r.passed > names.length ? `<li class="more"><details><summary>+ ${esc(r.passed - Math.min(3, names.length))} more</summary><ul>${names.slice(3).map(ok).join("")}</ul></details></li>` : ""}` : r.passed ? `<li class="ok"><span>✓</span>${esc(r.passed)} pass</li>` : "";
+      const failedList = failures.map((f) => `<li class="bad"><span>✗</span><div>${esc(f.test)}<div class="sub">${esc(String(f.message ?? "").split("\n")[0].slice(0, 240))}</div></div></li>`).join("");
+      const more = r.failed > failures.length ? `<li class="bad more"><span>✗</span>${esc(r.failed - failures.length)} more</li>` : "";
+      const todo = r.waiting?.length ? `<div class="sub">Waiting on: ${esc(r.waiting.join(", "))}.</div>` : "";
+      const blocked = r.blocked ? `<div class="sub">${esc(r.blocked)} more open a local socket: press Run again to check them outside the sandbox.</div>` : "";
+      const head = r.phase === "failed" ? `✗ ${esc(r.failed)} of Step ${esc(stepOf(st)[0])}'s tests fail` : r.passed ? `✓ Step ${esc(stepOf(st)[0])}'s tests pass` : "✓ Nothing fails";
+      const sub = total ? `${r.phase === "failed" ? `${esc(r.passed)} of ${esc(total)} pass` : `${esc(r.passed)} of ${esc(total)}`} · checked by the studio` : "checked by the studio";
+      return `<div class="tcard ${r.phase === "failed" ? "bad" : "ok"}"><div class="tch"><b>${head}</b><span class="sub">${sub}</span></div><ul>${failedList}${more}${passedList}</ul>${todo}${blocked}</div>`;
     }
     /** Its tests pass as the code is now (left to commit, if it isn't done): no Send. @param {any} st */
     const greenNow = (st) => snap?.code?.[st.id]?.phase === "passed" && snap.code[st.id].rev === st.rev;
     /** @param {any} st */
     function stepCard(st) {
       return `<section class="bcard">
-          <p class="eyebrow">Step ${esc(st.n)} · ${esc(String(st.id).toUpperCase())}${st.week !== mounted?.week ? ` · from week ${esc(st.week)}` : ""} · <code>${esc(st.id)}</code>${st.file ? ` in <code>${esc(st.file)}</code>` : ""}</p>
+          <p class="eyebrow">Step ${esc(stepOf(st)[0])} of ${esc(stepOf(st)[1])} · ${esc(String(st.id).toUpperCase())}${st.week !== mounted?.week ? ` · from week ${esc(st.week)}` : ""} · <code>${esc(st.id)}</code>${st.file ? ` in <code>${esc(st.file)}</code>` : ""}</p>
           <h2>${esc(st.title || st.id)}</h2>
           ${st.concept ? `<p class="lesson">${esc(st.concept).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")}</p>` : ""}
           ${st.prompt ? `<details class="bprompt"><summary>What it sends to the agent</summary><pre>${esc(st.prompt)}</pre></details>` : ""}
-          <div class="row">${st.prompt && st.found && !stepDone(st) && !greenNow(st) ? `<button class="btn primary" data-build-send="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>Send to the agent</button>` : ""}${st.found && !stepDone(st) ? `<button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">Run its tests</button>` : ""}</div>
+          <div class="row">${st.prompt && st.found && !stepDone(st) && !greenNow(st) ? `<button class="btn primary" data-build-send="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>Send to the agent</button>` : ""}${st.found && !stepDone(st) && !["passed", "failed"].includes(snap?.code?.[st.id]?.phase) ? `<button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">Run its tests</button>` : ""}</div>
           ${st.found ? buildResult(st) : `<p class="muted">This step's code isn't in your folder yet.</p>`}
           ${st.stuck ? `<p class="${snap?.code?.[st.id]?.phase === "failed" ? "stuck bad" : "muted"}"><b>Stuck?</b> ${esc(st.stuck).replace(/`([^`\n]+)`/g, "<code>$1</code>")}</p>${snap?.code?.[st.id]?.phase === "failed" ? `<div class="row"><button class="btn" data-build-hint="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>➤ Send this hint</button></div>` : ""}` : ""}
           ${st.found && st.file ? `<div class="bchips"><button class="chip" data-open-file="${esc(st.file)}" title="Open it in the Files tab">✎ ${esc(st.file)}</button></div>` : ""}
@@ -7493,7 +7971,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         card = `<section class="bcard bfinish"><h2>✓ ${esc(finished.c.title)} works.</h2>
           ${finished.c.works ? `<p class="lesson">${esc(finished.c.works)}</p>` : ""}
           <div class="row">${finished.steps[0]?.found ? `<button class="btn" data-build-test="${esc(finished.steps[finished.steps.length - 1].id)}" data-w="${esc(finished.steps[finished.steps.length - 1].week)}">Run its tests again</button>` : ""}${finished.c.board ? `<button class="btn" data-do="tab" data-tab="board">See it on the board</button>` : ""}<button class="btn primary" data-build-seen="${esc(finished.c.id)}">${next ? `Next: ${esc(next.c.title || "the next part")}` : "Done"}</button></div></section>`;
-      } else if (!st) card = `<section class="bcard bfinish"><h2>✓ Everything this week is built.</h2><p class="lesson">Push your work with <code>git push</code> (or run npm start again: it pushes for you).</p></section>`;
+      } else if (!st) card = `<section class="bcard bfinish"><h2>✓ Everything this week is built.</h2><p class="lesson">Press Push (top right) to send your work to GitHub.</p></section>`;
       else card = `${now.steps.filter(stepDone).map((x) => `<p class="bdoneline">✓ ${esc(x.title || x.id)}, done</p>`).join("")}${stepCard(st)}`;
       const notes = /** @type {HTMLElement | null} */ (document.querySelector("[data-bnotes]"));
       // Notes HTML is rendered by the studio from the student's own guide (escaped markdown).
@@ -7511,6 +7989,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           if (x && x.textContent !== text) x.textContent = text;
         };
         set("[data-ctitle]", now.c.title || "This week's build");
+        set("[data-cahead]", ahead ? ` · ${ahead}` : "");
         set("[data-csub]", ` · Component ${ci + 1} of ${all.length}${st ? ` · step ${now.steps.indexOf(st) + 1} of ${now.steps.length}` : ""}`);
         set("[data-cpct]", `${pct}% of steps done · ${totalDone} of ${buildList.length}`);
         const bar = /** @type {HTMLElement | null} */ (ui.querySelector("[data-cbar]"));
@@ -7518,7 +7997,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         set('[data-ccount="steps"]', ` (${buildList.length})`);
         const list = /** @type {HTMLElement | null} */ (ui.querySelector("[data-bsteplist]"));
         const listHtml = all
-          .map((x) => `<h4>${esc(x.c.title || "This week's build")}</h4>${x.steps.map((y) => `<div class="crow ${stepDone(y) ? "done" : y === st ? "now" : "locked"}"><span>${stepDone(y) ? "✓" : y === st ? "▸" : "🔒"}</span><div><b>${esc(y.n)}. ${esc(y.title || y.id)}</b><div class="muted">${esc(y.test || y.testNote || "")}</div></div></div>`).join("")}`)
+          .map((x) => `<h4>${esc(x.c.title || "This week's build")}</h4>${x.steps.map((y) => `<div class="crow ${stepDone(y) ? "done" : y === st ? "now" : "locked"}"><span>${stepDone(y) ? "✓" : y === st ? "▸" : "🔒"}</span><div><b>${esc(x.steps.indexOf(y) + 1)}. ${esc(y.title || y.id)}</b><div class="muted">${esc(y.test || y.testNote || "")}</div></div></div>`).join("")}`)
           .join("");
         if (list && list.dataset.html !== listHtml) {
           list.innerHTML = listHtml;
@@ -7563,7 +8042,8 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         <form class="agcomposer${chat ? " pinned" : ""}" data-agent-composer hidden>
           <label class="sub" ${week >= 4 ? "hidden" : ""}>Working on <select name="agenttask" data-agent-task><option value="">no particular task</option></select></label>
           <textarea name="agentmessage" rows="${week >= 4 ? 2 : 4}" placeholder="${week >= 4 ? "Ask the agent about this step…" : "Say how you want to approach it, then what you'd like Codex to do."}" spellcheck="true">${esc(draft)}</textarea>
-          <div class="row"><button class="btn primary" type="submit" data-agent-send>Send <kbd>⌘↵</kbd></button><button class="btn" type="button" data-agent-stop hidden>Stop</button></div>
+          <div class="row">${week >= 4 ? `<button class="btn sm ghost" type="button" data-composer-file title="Name a file from your folder in the message">＋ File</button><button class="btn sm ghost" type="button" data-composer-notes title="Add this part's design notes to the message">＃ Design notes</button><span class="sp"></span>` : ""}<button class="btn primary" type="submit" data-agent-send>Send <kbd>⌘↵</kbd></button><button class="btn" type="button" data-agent-stop hidden>Stop</button></div>
+          ${week >= 4 ? `<div class="filepick" data-filepick hidden><input type="search" placeholder="Find a file…" data-filepick-q aria-label="Find a file"><ul data-filepick-list></ul></div>` : ""}
           ${week >= 4 ? `<p class="cdisclaim">The agent can make mistakes. Check its work with the tests.</p>` : ""}
         </form>`;
       const scroller = /** @type {HTMLElement | null} */ (el.querySelector("[data-agscroll]"));
@@ -7596,6 +8076,48 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         }
       }
     }
+
+    /** Text into the message box at the cursor, the box opened and focused. @param {string} text */
+    function insertInBox(text) {
+      const box = /** @type {HTMLTextAreaElement | null} */ (mounted?.el.querySelector("textarea[name=agentmessage]") ?? null);
+      if (!box) return;
+      const at = box.selectionStart ?? box.value.length;
+      const before = box.value.slice(0, at);
+      const pad = before && !/\s$/.test(before) ? " " : "";
+      box.value = `${before}${pad}${text}${box.value.slice(box.selectionEnd ?? at)}`;
+      draft = box.value;
+      box.focus();
+      const end = before.length + pad.length + text.length;
+      box.setSelectionRange(end, end);
+    }
+    /** @type {{ path: string, status?: string }[]} */
+    let pickFiles = [];
+    /** The composer's file list: changed files first, filtered as the student types. */
+    async function openFilePick() {
+      const pick = /** @type {HTMLElement | null} */ (mounted?.el.querySelector("[data-filepick]") ?? null);
+      if (!pick) return;
+      if (!pick.hidden) return void (pick.hidden = true);
+      pick.hidden = false;
+      const q = /** @type {HTMLInputElement} */ (pick.querySelector("[data-filepick-q]"));
+      q.value = "";
+      q.focus();
+      paintFilePick();
+      const res = await fetch("/api/files", { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null);
+      pickFiles = (res?.files ?? []).slice().sort((/** @type {any} */ a, /** @type {any} */ b) => Number(Boolean(b.status)) - Number(Boolean(a.status)));
+      paintFilePick();
+    }
+    function paintFilePick() {
+      const pick = /** @type {HTMLElement | null} */ (mounted?.el.querySelector("[data-filepick]") ?? null);
+      if (!pick) return;
+      const q = /** @type {HTMLInputElement} */ (pick.querySelector("[data-filepick-q]")).value.trim().toLowerCase();
+      const list = pickFiles.filter((f) => !q || f.path.toLowerCase().includes(q)).slice(0, 40);
+      /** @type {HTMLElement} */ (pick.querySelector("[data-filepick-list]")).innerHTML = list.length
+        ? list.map((f) => `<li><button type="button" data-pick-file="${esc(f.path)}">${f.status ? `<span class="mk"></span>` : ""}<code>${esc(f.path)}</code></button></li>`).join("")
+        : `<li class="muted">${pickFiles.length ? "No file matches." : "Loading…"}</li>`;
+    }
+    document.addEventListener("input", (e) => {
+      if (/** @type {HTMLElement} */ (e.target).matches?.("[data-filepick-q]")) paintFilePick();
+    });
 
     async function submit() {
       if (!mounted) return;
@@ -7659,7 +8181,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       }
     });
     document.addEventListener("click", (e) => {
-      const el = /** @type {HTMLElement} */ (e.target).closest("[data-cpane-tab],[data-md-copy],[data-agent-answer],[data-agent-stop],[data-agent-login],[data-agent-open],[data-agent-recheck],[data-agent-commit],[data-agent-test],[data-build-send],[data-build-hint],[data-build-test],[data-build-commit],[data-build-seen],[data-agent-more]");
+      const el = /** @type {HTMLElement} */ (e.target).closest("[data-cpane-tab],[data-build-push],[data-course-toggle],[data-composer-file],[data-composer-notes],[data-pick-file],[data-md-copy],[data-agent-answer],[data-agent-stop],[data-agent-login],[data-agent-open],[data-agent-recheck],[data-agent-commit],[data-agent-test],[data-build-send],[data-build-hint],[data-build-test],[data-build-commit],[data-build-seen],[data-agent-more]");
       if (!(el instanceof HTMLElement)) return;
       if (el.dataset.mdCopy !== undefined) {
         const code = el.closest(".mdcode")?.querySelector("code")?.textContent ?? "";
@@ -7677,6 +8199,28 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         });
       } else if (el.dataset.agentRecheck !== undefined) {
         void act({ type: "agent-recheck" });
+      } else if (el.dataset.buildPush !== undefined) {
+        /** @type {HTMLButtonElement} */ (el).disabled = true;
+        void ask({ type: "work-push" }).then((/** @type {any} */ r) => {
+          /** @type {HTMLButtonElement} */ (el).disabled = false;
+          toast(r.ok ? (r.said ?? "Pushed.") : (r.error ?? "The push didn't go through."));
+          if (r.ok && mounted) void loadBuild(mounted);
+        });
+      } else if (el.dataset.courseToggle !== undefined) {
+        document.querySelector(".work")?.classList.toggle("showcourse");
+      } else if (el.dataset.composerFile !== undefined) {
+        void openFilePick();
+      } else if (el.dataset.pickFile) {
+        insertInBox(`\`${el.dataset.pickFile}\``);
+        const pick = /** @type {HTMLElement | null} */ (mounted?.el.querySelector("[data-filepick]") ?? null);
+        if (pick) pick.hidden = true;
+      } else if (el.dataset.composerNotes !== undefined) {
+        const st = currentBuildStep();
+        const title = st?.component?.title || "this part";
+        // The notes as written in the guide (Markdown, tables intact), whether or not their tab is open.
+        const notes = String(st?.component?.notesText ?? "").trim().slice(0, 4000);
+        if (!notes) toast("This part has no design notes.");
+        else insertInBox(`Design notes for ${title}:\n${notes}\n`);
       } else if (el.dataset.buildHint !== undefined) {
         // The step's Stuck? line, to the agent, for the same task.
         const st = buildList[Number(el.dataset.buildHint)];
@@ -7735,7 +8279,10 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     return {
       onEvent,
       /** The Build view's current step (its file, its id, its rev), or null. */
-      currentStep: () => (mounted && buildList.length ? currentBuildStep() : null),
+      currentStep: () => {
+        const st = mounted && buildList.length ? currentBuildStep() : null;
+        return st ? { ...st, n: stepOf(st)[0] } : null; // numbered within its component, as the top bar
+      },
       /** After each render: mount the tab when it's shown. */
       sync() {
         const el = /** @type {HTMLElement | null} */ (document.querySelector("[data-agenttab]"));
@@ -7807,7 +8354,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     // tabs only show and hide its panes, so the chat never moves.
     else if (tab === "agent" && building)
       body = `<div class="chatui" data-chatui>
-        <div class="ctop"><div><b data-ctitle>This week's build</b><span class="csub" data-csub></span></div><div class="cprog"><span data-cpct></span><div class="bbar"><i data-cbar style="width:0%"></i></div></div></div>
+        <div class="ctop"><button class="cback" data-course-toggle title="Show or hide the course list">← Week ${esc(g.week)}</button><span class="csep"></span><div class="cname"><b data-ctitle>This week's build</b><span class="csub" data-csub></span></div><div class="cright"><span class="cstatus" data-cstatus>Codex…</span><div class="cprog"><span data-cpct></span><div class="bbar"><i data-cbar style="width:0%"></i></div></div><button class="btn sm cpush" data-build-push title="Send your commits to your fork on GitHub (git push)">Push<span data-cahead></span></button></div></div>
         <div class="cgrid" data-cgrid>
           <div class="ccol"><div class="agenttab" data-agenttab="${esc(g.week)}"></div></div>
           <div class="cdiv" data-cdiv title="Drag to resize"></div>
@@ -8222,10 +8769,43 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
   }
   // GIT_MERGE_AUTOEDIT: a merge never opens an editor for its message (there's no terminal to type in).
   const env = { ...process.env, NO_COLOR: "1", GH_NO_UPDATE_NOTIFIER: "1", GIT_TERMINAL_PROMPT: "0", GIT_MERGE_AUTOEDIT: "no", HOMEBREW_NO_ENV_HINTS: "1" };
+  /** The environment with no GitHub token (for anything that isn't gh or git talking to GitHub). */
+  const plain = accountEnv(["node"], env, () => undefined);
+  /** gh, resolved once found: an absolute path, never from the course folder or a node_modules. @type {string | null} */
+  let ghFound = null;
+  const ghPath = () => {
+    if (!ghFound) {
+      const isFile = (/** @type {string} */ p) => {
+        try {
+          return statSync(p).isFile();
+        } catch {
+          return false;
+        }
+      };
+      ghFound = resolveGh(process.env.PATH, [process.cwd(), state.repoDir ?? ""], isFile, platform);
+    }
+    return ghFound;
+  };
+  /** The argv as run: gh is the resolved one; with none found, gh isn't run at all (null). @param {string[]} argv */
+  const real = (argv) => {
+    if (argv[0] !== "gh") return argv;
+    const gh = ghPath();
+    return gh ? [gh, ...argv.slice(1)] : null;
+  };
+  /** gh, run to ask it something about its own accounts (never with a token). @param {string[]} argv */
+  const askGh = (argv) => {
+    const run = real(argv);
+    if (!run) return null;
+    const r = spawnSync(run[0], run.slice(1), { env: plain, encoding: "utf8", shell: shell(argv), timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
+    return r.error ? null : { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: "" };
+  };
+  /** One command's environment (commandEnv): the course's account's token only where it's needed, asked for now. @param {string[]} argv */
+  // No gh outside the course folder: no command gets a token.
+  const envFor = (argv) => commandEnv(argv, env, state.login, () => (ghPath() ? chosenToken(askGh, state.login) : undefined));
   /** @param {string} program @param {string[]} args */
   const detached = (program, args) => {
     try {
-      spawn(program, args, { stdio: "ignore", detached: true }).unref();
+      spawn(program, args, { stdio: "ignore", detached: true, env: plain }).unref();
     } catch {
       // No browser opener: the terminal shows the link.
     }
@@ -8239,14 +8819,20 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
     style: makeStyle(color),
     capture: (argv, cwd, options = {}) => {
       // stdin closed: a program that waits for input (codex does, without a terminal) mustn't hang the check.
-      const r = spawnSync(argv[0], argv.slice(1), { cwd, env, encoding: "utf8", shell: shell(argv), timeout: options.timeout ?? 30_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+      const run = real(argv);
+      if (!run) return null; // as if gh weren't installed
+      const r = spawnSync(run[0], run.slice(1), { cwd, env: envFor(argv), encoding: "utf8", shell: shell(argv), timeout: options.timeout ?? 30_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
       if (r.error && /** @type {NodeJS.ErrnoException} */ (r.error).code === "ENOENT") return null;
       return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
     },
-    execute: (argv, cwd) => spawnSync(argv[0], argv.slice(1), { cwd, env: { ...env, NO_COLOR: process.env.NO_COLOR ?? "" }, stdio: "inherit", shell: shell(argv) }).status ?? 1,
+    execute: (argv, cwd) => {
+      const run = real(argv) ?? refusedCommand(GH_MISSING);
+      return spawnSync(run[0], run.slice(1), { cwd, env: { ...envFor(argv), NO_COLOR: process.env.NO_COLOR ?? "" }, stdio: "inherit", shell: shell(argv) }).status ?? 1;
+    },
     stream: (argv, cwd, onData) => {
       if (dryRun) return dryRunStream(argv, cwd, onData);
-      const child = spawn(argv[0], argv.slice(1), { cwd, shell: shell(argv), env, stdio: ["ignore", "pipe", "pipe"] });
+      const run = real(argv) ?? refusedCommand(GH_MISSING);
+      const child = spawn(run[0], run.slice(1), { cwd, shell: shell(argv), env: envFor(argv), stdio: ["ignore", "pipe", "pipe"] });
       child.stdout.setEncoding("utf8").on("data", onData);
       child.stderr.setEncoding("utf8").on("data", onData);
       return {
@@ -8266,7 +8852,7 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
         if (process.env.NETSIM_STUDIO_NO_OPEN === "1") return done(null);
         const [command, args] = pickFolderCommand(platform, initial, prompt);
         let out = "";
-        const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"] });
+        const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"], env: plain });
         child.stdout.setEncoding("utf8").on("data", (d) => (out += d));
         child.on("error", () => done(null));
         child.on("close", () => done(out.trim().replace(/(.)\/$/, "$1") || null));
@@ -8324,14 +8910,20 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
         mkdirSync(dirname(STATE_FILE), { recursive: true });
         // doctorOk too: the doctor passing can't be checked again without running it, so the next
         // run (and the next week) needs it.
-        const { login, parent, repoDir, chatgpt, codexVersion, doctorOk, agentThreads } = state;
-        writeFileSync(STATE_FILE, JSON.stringify({ login, parent, repoDir, chatgpt, codexVersion, doctorOk, agentThreads }, null, 2));
+        const { login, parent, repoDir, chatgpt, codexVersion, doctorOk, doctorOkAs, agentThreads } = state;
+        writeFileSync(STATE_FILE, JSON.stringify({ login, parent, repoDir, chatgpt, codexVersion, doctorOk, doctorOkAs, agentThreads }, null, 2));
       } catch {
         // Remembering is a convenience; the checks find everything again anyway.
       }
     },
     get state() {
       return state;
+    },
+    get ghPath() {
+      return ghPath() ?? undefined;
+    },
+    get ghMissing() {
+      return !ghPath();
     },
     set state(value) {
       state = value;

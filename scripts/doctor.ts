@@ -92,7 +92,8 @@ const OFFLINE = /could not resolve|name or service not known|nodename nor servna
 const AUTH_FAILED = /permission denied|authentication failed|could not read username|403|access denied|invalid username or password/i;
 
 export type PushIdentity =
-  | { kind: "account"; login: string; via: "ssh" | "gh" } // we know which GitHub account git uses
+  | { kind: "account"; login: string; via: "ssh" | "gh" | "studio" } // we know which GitHub account git uses (studio: the one NetSim Studio pushes as)
+  | { kind: "signed-out"; login: string } // the studio's account isn't signed in to gh any more
   | { kind: "no-helper" } // HTTPS, but git has nothing to sign in with
   | { kind: "can-push" } // a dry-run push worked, so the account is right
   | { kind: "denied"; why: string } // GitHub refused
@@ -106,7 +107,13 @@ export function sshGreetingUser(text: string): string | null {
 
 const firstLine = (text: string) => text.split("\n")[0];
 
-export function pushIdentity(origin: Remote, run: Runner): PushIdentity {
+/**
+ * Who git pushes to the fork as. `account`: the GitHub account NetSim Studio uses for the course
+ * (NETSIM_GITHUB_ACCOUNT, a name, set by the studio when it runs the doctor). The studio pushes as
+ * that account even when it isn't gh's own in use, so that's the one to check: its token is asked
+ * of gh here and given only to the one gh command that asks GitHub who it is.
+ */
+export function pushIdentity(origin: Remote, run: Runner, account?: string): PushIdentity {
   if (origin.protocol === "ssh") {
     const port = origin.sshPort ? ["-p", origin.sshPort] : [];
     const ssh = run("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", ...port, origin.sshTarget]);
@@ -121,6 +128,19 @@ export function pushIdentity(origin: Remote, run: Runner): PushIdentity {
   // HTTPS: git needs a credential helper to sign in. Without one it asks for a password, and
   // GitHub stopped accepting passwords in 2021, so the push fails even if gh is logged in.
   if (!hasCredentialHelper(origin.host, run)) return { kind: "no-helper" };
+
+  // The studio's account, when it isn't gh's own in use: the one the studio pushes as.
+  if (account && /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/.test(account)) {
+    const own = run("gh", ["config", "get", "-h", "github.com", "user"]);
+    if (own && own.code === 0 && own.stdout && own.stdout.toLowerCase() !== account.toLowerCase()) {
+      const token = run("gh", ["auth", "token", "-h", "github.com", "--user", account]);
+      if (!token || token.code !== 0 || !/^[A-Za-z0-9_.-]+$/.test(token.stdout)) return { kind: "signed-out", login: account };
+      const as = run("gh", ["api", "user", "--jq", ".login"], { GH_TOKEN: token.stdout });
+      if (as && as.code === 0 && as.stdout) return { kind: "account", login: as.stdout, via: "studio" };
+      if (as && OFFLINE.test(as.stderr)) return { kind: "offline", why: firstLine(as.stderr) };
+      return { kind: "signed-out", login: account };
+    }
+  }
 
   // Ask the GitHub CLI who is logged in, if it's installed and logged in...
   const gh = run("gh", ["api", "user", "--jq", ".login"]);
@@ -164,10 +184,18 @@ export function pushCheck(origin: Remote | null, identity: PushIdentity | null):
             status: "fail",
             detail: `git pushes as ${identity.login}, not ${owner}`,
             fix:
-              identity.via === "gh"
-                ? `git would push as ${identity.login} but your fork belongs to ${owner}: run \`gh auth switch --user ${owner}\` (or \`gh auth login\` as ${owner} if it isn't signed in yet).`
-                : `git would push as ${identity.login} but your fork belongs to ${owner}: ${howToFix}.`,
+              identity.via === "studio"
+                ? `NetSim Studio pushes as ${identity.login} but your fork belongs to ${owner}: pick ${owner} with "Use a different account" in the studio's step 5 (Sign in to GitHub).`
+                : identity.via === "gh"
+                  ? `git would push as ${identity.login} but your fork belongs to ${owner}: run \`gh auth switch --user ${owner}\` (or \`gh auth login\` as ${owner} if it isn't signed in yet).`
+                  : `git would push as ${identity.login} but your fork belongs to ${owner}: ${howToFix}.`,
           };
+    case "signed-out":
+      return {
+        status: "fail",
+        detail: `${identity.login} isn't signed in to gh on this laptop`,
+        fix: `NetSim Studio uses ${identity.login} for the course, and it isn't signed in to gh any more: sign in as ${identity.login} again in the studio's step 5 (Sign in to GitHub).`,
+      };
     case "no-helper":
       return {
         status: "fail",
@@ -250,7 +278,7 @@ export function runChecks(root: string = process.cwd(), run: Runner = commandRun
   );
 
   const fork = origin !== null && !isStarter ? origin : null;
-  checks.push({ name: "you can push to your fork", required: true, ...pushCheck(fork, fork ? pushIdentity(fork, run) : null) });
+  checks.push({ name: "you can push to your fork", required: true, ...pushCheck(fork, fork ? pushIdentity(fork, run, process.env.NETSIM_GITHUB_ACCOUNT) : null) });
 
   const installed = existsSync(join(root, "node_modules", "zod", "package.json")) && existsSync(join(root, "node_modules", "vitest", "package.json"));
   add("dependencies installed", installed, installed ? "node_modules present" : "node_modules missing", "Run `npm install` in the course folder.");

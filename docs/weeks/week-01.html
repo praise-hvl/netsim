@@ -218,8 +218,22 @@
     </div>
   </section>
 
+  <section id="mac-app">
+    <h2>On a Mac: the NetSim Studio app</h2>
+    <div class="step">
+      <ol>
+        <li>Download <b><a href="https://github.com/praiseisaac/netsim/releases/download/mac-v1.0.1/NetSim-Studio-1.0.1.dmg">NetSim-Studio-1.0.1.dmg</a></b> (<a href="https://github.com/praiseisaac/netsim/releases/tag/mac-v1.0.1">release notes</a>) and open it.</li>
+        <li>Drag <b>NetSim Studio</b> into <b>Applications</b>, then open it from there.</li>
+        <li>The first time, follow its setup steps. It needs no Terminal and no Node.js: Node, npm and the GitHub CLI are built in, and it asks to install Apple's developer tools (they include git) if your Mac doesn't have them yet. When it asks where to keep the course, press <b>Choose…</b> and pick a folder.</li>
+      </ol>
+      <p><b>Every class after</b>, open NetSim Studio. It gets the new week's work, then opens on the Build view.</p>
+      <p>It's one app for every Mac (Apple Silicon and Intel), on macOS 13 or newer. Already set up with <code>npm start</code>? The app finds your course folder and carries on; you can use either.</p>
+      <p class="check"><b>Done when:</b> the app's last setup step says <span class="ok">doctor: all 8 checks passed</span>. You can skip part B.</p>
+    </div>
+  </section>
+
   <section id="setup-tool">
-    <h2>B. Node, then one command</h2>
+    <h2>B. On Windows, Linux, or a Mac from the terminal: Node, then one command</h2>
     <div class="step">
       <div class="step-head"><span class="logo"><img src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDQ0IDUwIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPgogIDxkZWZzPgogICAgPGNsaXBQYXRoIGlkPSJoZXhDbGlwIj4KICAgICAgPHBhdGggZD0iTTIyLjg3MjUgMC40MTY2QzIyLjEzNiAwIDIxLjI2MTYgMCAyMC41MjUzIDAuNDE2NkwxLjE1MDUgMTEuNjY5NEMwLjQxNDIgMTIuMDg2MiAwIDEyLjg3MzMgMCAxMy43MDdWMzYuMjU4NEMwIDM3LjA5MjEgMC40NjAyIDM3Ljg3OTEgMS4xNTA1IDM4LjI5NkwyMC41MjUzIDQ5LjU0ODdDMjEuMjYxNiA0OS45NjUzIDIyLjEzNiA0OS45NjUzIDIyLjg3MjUgNDkuNTQ4N0w0Mi4yNDcxIDM4LjI5NkM0Mi45ODM2IDM3Ljg3OTEgNDMuMzk3NiAzNy4wOTIxIDQzLjM5NzYgMzYuMjU4NFYxMy43MDdDNDMuMzk3NiAxMi44NzMzIDQyLjkzNzUgMTIuMDg2MiA0Mi4yNDcxIDExLjY2OTRMMjIuODcyNSAwLjQxNjZaIiAvPgogICAgPC9jbGlwUGF0aD4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0ibWFpbiIgeDE9IjMwLjMzIiB5MT0iOC41NiIgeDI9IjE0LjkiIHkyPSI0NC43IiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+CiAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiMzRjhCM0QiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIwLjY0IiBzdG9wLWNvbG9yPSIjM0Y4NzNGIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMC45MyIgc3RvcC1jb2xvcj0iIzNEQTkyRSIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMzREFFMkIiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InIxIiB4MT0iMTguOCIgeTE9IjI2LjgiIHgyPSI2OCIgeTI9IjAuNCIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPgogICAgICA8c3RvcCBvZmZzZXQ9IjAuMTQiIHN0b3AtY29sb3I9IiMzRjg3M0YiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIwLjQiIHN0b3AtY29sb3I9IiM1MkEwNDQiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIwLjcxIiBzdG9wLWNvbG9yPSIjNjRCNzQ5Ii8+CiAgICAgIDxzdG9wIG9mZnNldD0iMC45MSIgc3RvcC1jb2xvcj0iIzZBQkY0QiIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0icjIiIHgxPSIwLjI1IiB5MT0iMjQuNSIgeDI9IjQ0IiB5Mj0iMjQuNSIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPgogICAgICA8c3RvcCBvZmZzZXQ9IjAuMDkiIHN0b3AtY29sb3I9IiM2QUJGNEIiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIwLjI5IiBzdG9wLWNvbG9yPSIjNjRCNzQ5Ii8+CiAgICAgIDxzdG9wIG9mZnNldD0iMC42IiBzdG9wLWNvbG9yPSIjNTJBMDQ0Ii8+CiAgICAgIDxzdG9wIG9mZnNldD0iMC44NiIgc3RvcC1jb2xvcj0iIzNGODczRiIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICA8L2RlZnM+CiAgPHBhdGggZmlsbD0idXJsKCNtYWluKSIgZD0iTTIyLjg3MjUgMC40MTY2QzIyLjEzNiAwIDIxLjI2MTYgMCAyMC41MjUzIDAuNDE2NkwxLjE1MDUgMTEuNjY5NEMwLjQxNDIgMTIuMDg2MiAwIDEyLjg3MzMgMCAxMy43MDdWMzYuMjU4NEMwIDM3LjA5MjEgMC40NjAyIDM3Ljg3OTEgMS4xNTA1IDM4LjI5NkwyMC41MjUzIDQ5LjU0ODdDMjEuMjYxNiA0OS45NjUzIDIyLjEzNiA0OS45NjUzIDIyLjg3MjUgNDkuNTQ4N0w0Mi4yNDcxIDM4LjI5NkM0Mi45ODM2IDM3Ljg3OTEgNDMuMzk3NiAzNy4wOTIxIDQzLjM5NzYgMzYuMjU4NFYxMy43MDdDNDMuMzk3NiAxMi44NzMzIDQyLjkzNzUgMTIuMDg2MiA0Mi4yNDcxIDExLjY2OTRMMjIuODcyNSAwLjQxNjZaIiAvPgogIDxwb2x5Z29uIGZpbGw9InVybCgjcjEpIiBjbGlwLXBhdGg9InVybCgjaGV4Q2xpcCkiIHBvaW50cz0iMjEuNjk4OTAxLC0xLjA0NjYxOCA0My4yMDUzMiwxMS45NDgyNDcgMjEuNjk4OTAxLDUxLjA3MjcxNSAwLjE1Mjc3OCwzOC4wNTUxMDciIC8+CiAgPHBvbHlnb24gZmlsbD0idXJsKCNyMikiIGNsaXAtcGF0aD0idXJsKCNoZXhDbGlwKSIgcG9pbnRzPSIyMS42OTg5MDEsLTEuMDQ2NjE4IDAuMTUyNzc4LDExLjk0ODI0NyAyMS42OTg5MDEsNTEuMDcyNzE1IDQzLjIwNTMyLDM4LjA1NTEwNyIgLz4KPC9zdmc+Cg==" alt="Node.js"></span><h3>B1. Install Node.js 22 or newer (by hand)</h3></div>
       <div class="os">
