@@ -2,10 +2,25 @@
 
 ## Start here
 
+### On a Mac: the NetSim Studio app
+
+1. Download **[NetSim-Studio-1.0.0.dmg](https://github.com/praiseisaac/netsim/releases/download/mac-v1.0.0/NetSim-Studio-1.0.0.dmg)** ([release notes](https://github.com/praiseisaac/netsim/releases/tag/mac-v1.0.0)) and open it.
+2. Drag **NetSim Studio** into **Applications**, then open it from there.
+3. The first time, follow its setup steps. It needs no Terminal and no Node.js: Node, npm and the
+   GitHub CLI are built in, and it asks to install Apple's developer tools (they include git) if
+   your Mac doesn't have them yet.
+
+**Every class after**, open NetSim Studio. It gets the new week's work, then opens on the Build view.
+
+It's one app for every Mac (Apple Silicon and Intel), on macOS 13 or newer. Already set up with
+`npm start`? The app finds your course folder and carries on; you can use either.
+
+### On Windows, Linux, or a Mac from the terminal
+
 **First time** (install [Node.js 22+](https://nodejs.org) first), in a terminal:
 
 ```bash
-# macOS
+# macOS or Linux
 curl -fsSL https://raw.githubusercontent.com/praiseisaac/netsim/HEAD/setup.mjs -o setup.mjs && node setup.mjs
 ```
 
@@ -136,7 +151,7 @@ npm run course:catch-up -- 3         # copy the published week-3 solution into y
 
 **What the first-time setup does.** Week 1 is all setup, and [its guide](docs/weeks/week-01.md)
 walks through it. You make a GitHub account and a ChatGPT account (and claim the student offer)
-and install Node.js 22+ by hand; the studio does the rest with you, one step at a time, with you
+and, unless you use the Mac app, install Node.js 22+ by hand; the studio does the rest with you, one step at a time, with you
 typing each command: it installs git, the GitHub CLI, VS Code and Codex, signs you in, forks the
 course, clones your fork into a `netsim` folder, makes your `work` branch from the course's
 current week, installs the packages, and ends with `npm run doctor`.
