@@ -22,7 +22,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -98,7 +98,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 20;
+export const STUDIO_VERSION = 21;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -234,7 +234,9 @@ const CODEX_FLAGS = ["-c", "check_for_update_on_startup=false"];
  *   mtime?: (path: string) => number | null,
  *   readText: (path: string) => string | null,
  *   save?: () => void,
- *   state: { madeFolder?: string, movedOld?: string, login?: string, seenLogin?: string, parent?: string, repoDir?: string, chatgpt?: string, doctorOk?: boolean, refused?: { dir: string, why: string }, codexVersion?: string, agentThreads?: Record<string, string>, dryDone?: Record<string, boolean>, dryFound?: Record<string, string> },
+ *   ghPath?: string,
+ *   ghMissing?: boolean,
+ *   state: { madeFolder?: string, movedOld?: string, login?: string, seenLogin?: string, parent?: string, repoDir?: string, chatgpt?: string, doctorOk?: boolean, doctorOkAs?: string, refused?: { dir: string, why: string }, codexVersion?: string, agentThreads?: Record<string, string>, dryDone?: Record<string, boolean>, dryFound?: Record<string, string> },
  * }} Context
  */
 
@@ -578,9 +580,12 @@ export function ghTokenVar(ctx) {
 const tokenLogins = new Map();
 
 /**
- * The account gh (and so git) uses now. With a token in this terminal, that's the token's account
- * (asked of GitHub once); otherwise gh's own setting, read without going to GitHub, so the studio
- * can show it at any time.
+ * The account the studio acts as on GitHub. With a token in this terminal, that's the token's
+ * account (asked of GitHub once). Otherwise it's the account chosen for the course (state.login),
+ * which can be any account gh knows: the studio never changes gh's own account in use (no
+ * `gh auth switch`), it gives that account's token to its own gh and git commands (accountEnv).
+ * Before an account is chosen, it's gh's own (read without going to GitHub, so it can be shown at
+ * any time).
  * @param {Context} ctx
  */
 export function ghActiveAccount(ctx) {
@@ -591,8 +596,119 @@ export function ghActiveAccount(ctx) {
     const login = tokenLogins.get(token);
     return isGithubUsername(login) ? login : null;
   }
+  if (isGithubUsername(ctx.state.login)) return ctx.state.login;
+  return ghOwnAccount(ctx);
+}
+
+/**
+ * gh's own account in use on this laptop (what `gh auth switch` sets), or null. Read without going
+ * to GitHub. The studio reads it; it never changes it.
+ * @param {Context} ctx
+ */
+export function ghOwnAccount(ctx) {
   const user = output(ctx, ["gh", "config", "get", "-h", "github.com", "user"]);
   return isGithubUsername(user) ? user : null;
+}
+
+/** Same GitHub login? (GitHub's are case-insensitive.) @param {string | null | undefined} a @param {string | null | undefined} b */
+const sameLogin = (a, b) => Boolean(a && b && a.toLowerCase() === b.toLowerCase());
+
+/**
+ * The course's account isn't signed in to gh on this laptop any more (it was signed out), so no
+ * command can act as it: the plain words for that, or "" when it's fine. Only for an account that
+ * isn't gh's own in use; a token in this terminal decides by itself.
+ * @param {Context} ctx
+ */
+export function chosenSignedOut(ctx) {
+  const login = ctx.state.login;
+  if (ghTokenVar(ctx) || !isGithubUsername(login) || ctx.dryRun) return "";
+  // gh not signed in to anything (or not saying): step 5's own "not signed in" covers it.
+  const own = ghOwnAccount(ctx);
+  if (!own || sameLogin(own, login)) return "";
+  if (ghAccounts(ctx).some((a) => sameLogin(a.login, login))) return "";
+  return `${login}, the account this course uses, isn't signed in to GitHub on this laptop any more. Sign in as ${login} again (gh auth login below adds it back), or use a different account.`;
+}
+
+/** The variables gh reads a github.com token from. */
+const TOKEN_VARS = ["GH_TOKEN", "GITHUB_TOKEN"];
+/** Every token variable gh reads (GitHub Enterprise's too): none of them reaches anything but gh and git. */
+const ALL_TOKEN_VARS = [...TOKEN_VARS, "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
+
+/**
+ * What a command is, for its GitHub token: "account" when it acts on GitHub as the student (gh,
+ * apart from gh auth; git with gh as its credential helper, which networkGit gives every push and
+ * fetch to the student's fork), "gh" for gh auth (gh's own sign-ins), else "other" (npm, node,
+ * vitest, codex, the board, git on its own: they never get a GitHub token).
+ * @param {string[]} argv
+ * @returns {"account" | "gh" | "other"}
+ */
+export function tokenKind(argv) {
+  const program = (argv[0] ?? "").split(/[\\/]/).pop()?.replace(/\.(exe|cmd)$/i, "").toLowerCase() ?? "";
+  if (program === "gh") return argv[1] === "auth" || argv[1] === "--version" ? "gh" : "account";
+  if (program === "git" && argv.some(isGhHelper)) return "account";
+  return "other";
+}
+
+/** A token gh and GitHub refuse: for the course's account when it was signed out, so nothing acts as another account instead. */
+export const SIGNED_OUT_TOKEN = "netsim-account-signed-out";
+
+/**
+ * The environment for one command the studio runs. Never a GitHub token for anything but gh and
+ * git talking to GitHub as the student: npm, vitest, codex and the board get none, even when this
+ * terminal has one. With a token in this terminal, gh and git keep it (it picks the account). Else,
+ * when the course's account isn't gh's own in use, the account commands get that account's token,
+ * asked of gh as the command starts (token()), in their environment only: never on a command line,
+ * in a file, a log or the page.
+ * @param {string[]} argv
+ * @param {Record<string, string | undefined>} env  the studio's own
+ * @param {() => string | null | undefined} token  undefined: gh's own account is the course's (nothing to add); null: the course's account has no token on this laptop; else its token
+ * @returns {Record<string, string | undefined>}
+ */
+export function accountEnv(argv, env, token) {
+  const kind = tokenKind(argv);
+  const terminal = TOKEN_VARS.some((k) => env[k]);
+  if (kind === "other") {
+    if (!ALL_TOKEN_VARS.some((k) => env[k])) return env;
+    const clean = { ...env };
+    for (const k of ALL_TOKEN_VARS) delete clean[k];
+    return clean;
+  }
+  if (terminal || kind === "gh") return env;
+  const t = token();
+  if (t === undefined) return env;
+  return { ...env, GH_TOKEN: t || SIGNED_OUT_TOKEN };
+}
+
+/**
+ * The environment of one command the studio runs: accountEnv, and for everything that isn't gh or
+ * git talking to GitHub, the course's account's name (NETSIM_GITHUB_ACCOUNT, never a token) so the
+ * doctor checks the account the studio pushes as. Not with a token in this terminal: that token
+ * picks the account, and the doctor sees it the same way.
+ * @param {string[]} argv
+ * @param {Record<string, string | undefined>} env
+ * @param {string | undefined} login  state.login
+ * @param {() => string | null | undefined} token
+ */
+export function commandEnv(argv, env, login, token) {
+  const out = accountEnv(argv, env, token);
+  const terminal = TOKEN_VARS.some((k) => env[k]);
+  return tokenKind(argv) === "other" && !terminal && isGithubUsername(login) ? { ...out, NETSIM_GITHUB_ACCOUNT: login } : out;
+}
+
+/**
+ * The course's account's token, for accountEnv, asked of gh when a command starts: undefined when
+ * there's no chosen account or it's gh's own in use (gh needs nothing more), null when gh has no
+ * token for it (signed out).
+ * @param {(argv: string[]) => RunResult | null} capture  runs gh with no token in its environment
+ * @param {string | undefined} login  the course's account (state.login)
+ */
+export function chosenToken(capture, login) {
+  if (!isGithubUsername(login)) return undefined;
+  const own = capture(["gh", "config", "get", "-h", "github.com", "user"]);
+  if (own && own.code === 0 && sameLogin(own.stdout.trim(), login)) return undefined;
+  const r = capture(["gh", "auth", "token", "-h", "github.com", "--user", login]);
+  const token = r && r.code === 0 ? r.stdout.trim() : "";
+  return /^[A-Za-z0-9_.-]+$/.test(token) ? token : null;
 }
 
 /**
@@ -602,14 +718,52 @@ export function ghActiveAccount(ctx) {
  * @param {string[]} args
  */
 export function gitArgv(ctx, args) {
-  return ghTokenVar(ctx) ? ["git", "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential", ...args] : ["git", ...args];
+  return ghTokenVar(ctx) ? ["git", "-c", "credential.helper=", "-c", ghHelper(ctx), ...args] : ["git", ...args];
+}
+
+/**
+ * git's credential helper setting for gh: the gh the studio resolved (ctx.ghPath, an absolute path
+ * outside the course folder), else plain gh. git runs a "!" helper through a shell: the path is
+ * single-quoted.
+ * @param {Context} ctx
+ */
+export function ghHelper(ctx) {
+  const gh = ctx.ghPath;
+  return `credential.helper=!${gh ? `'${gh.replace(/'/g, "'\\''")}'` : "gh"} auth git-credential`;
+}
+
+/** Is this git -c setting gh as the credential helper (ghHelper)? @param {string} arg */
+const isGhHelper = (arg) => /^credential\.helper=!(?:gh|'[^']*[\\/]gh(?:\.exe)?') auth git-credential$/.test(arg);
+
+/**
+ * The gh to run: the first gh on PATH that's an absolute folder outside the course folder and any
+ * node_modules (a course folder the agent can write could otherwise put its own gh first), or null.
+ * @param {string | undefined} pathVar  PATH
+ * @param {string[]} courseDirs  the course folder(s): never a gh from inside them
+ * @param {(path: string) => boolean} isFile
+ * @param {Platform} platform
+ */
+export function resolveGh(pathVar, courseDirs, isFile, platform) {
+  const sep = platform === "windows" ? ";" : ":";
+  const names = platform === "windows" ? ["gh.exe"] : ["gh"];
+  const inside = (/** @type {string} */ dir, /** @type {string} */ root) => {
+    const rel = relative(resolve(root), resolve(dir));
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  };
+  for (const dir of (pathVar ?? "").split(sep)) {
+    if (!dir || !isAbsolute(dir) || /(^|[\\/])node_modules([\\/]|$)/.test(dir)) continue;
+    if (courseDirs.some((root) => root && inside(dir, root))) continue;
+    for (const name of names) if (isFile(join(dir, name))) return join(dir, name);
+  }
+  return null;
 }
 
 /**
  * What the folder's own git config (which the agent can write) could make a network git command run
  * or reach instead of GitHub: a rewritten address (url.*.insteadOf, a push URL), a program for the
- * remote end (uploadpack/receivepack/proxy), a credential helper, an askpass or ssh command, or (for
- * a push) a hooks folder: the reason the studio won't run it, or null.
+ * remote end (uploadpack/receivepack/proxy), a credential helper, an askpass or ssh command, any
+ * http.* setting (a proxy, sslVerify=false or an extra header would let something in the middle see
+ * the sign-in), or (for a push) a hooks folder: the reason the studio won't run it, or null.
  * @param {Context} ctx
  * @param {string} dir
  * @param {{ push?: boolean }} [options]
@@ -618,7 +772,7 @@ export function networkRefusal(ctx, dir, { push = false } = {}) {
   const r = ctx.capture(["git", "config", "--list", "--show-scope"], dir, { timeout: 5000 });
   if (!r || r.code !== 0) return null; // not a git folder yet: nothing of its own to read
   const local = r.stdout.split("\n").filter((line) => /^(local|worktree)\t/.test(line)).map((line) => line.slice(line.indexOf("\t") + 1));
-  const risky = local.find((e) => /^(url\..*\.(insteadof|pushinsteadof)=|remote\.[^=]*\.(pushurl|uploadpack|receivepack|proxy|vcs)=|credential\.[^=]*helper=|core\.(askpass|sshcommand|gitproxy)=|[^=]*command=)/i.test(e) || (push && /^core\.hookspath=/i.test(e)));
+  const risky = local.find((e) => /^(url\..*\.(insteadof|pushinsteadof)=|remote\.[^=]*\.(pushurl|uploadpack|receivepack|proxy|vcs)=|credential\.[^=]*helper=|core\.(askpass|sshcommand|gitproxy)=|http\.|[^=]*command=)/i.test(e) || (push && /^core\.hookspath=/i.test(e)));
   if (risky) return `This folder's git settings (.git/config: ${risky.split("=")[0]}) could send git somewhere else or run a program, so the studio won't do it: check .git/config, or run it in the terminal.`;
   if (push) {
     // git pushes to every url origin has: exactly one, and it's GitHub's.
@@ -661,12 +815,14 @@ function originUrl(ctx, dir) {
  * @param {{ ssh?: boolean }} [options]  ssh: the fork is reached by ssh (originKind)
  */
 export function networkGit(ctx, remote, args, { ssh = false } = {}) {
+  // No gh outside the course folder: nothing signs in to the fork (a bare gh could be the folder's own).
+  if (remote === "origin" && ctx.ghMissing) return refusedCommand(GH_MISSING);
   const none = process.platform === "win32" ? "NUL" : "/dev/null";
   const file = process.env.NETSIM_FILE_REMOTES === "1" ? "always" : "never";
   // Each protocol by name too: the folder's own protocol.ext.allow=always would beat a general "never".
-  const guard = ["-c", "protocol.allow=never", "-c", "protocol.ext.allow=never", "-c", `protocol.ssh.allow=${ssh && remote === "origin" ? "always" : "never"}`, "-c", "protocol.git.allow=never", "-c", "protocol.http.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${file}`, "-c", `core.hooksPath=${none}`, "-c", "core.fsmonitor=false", "-c", "core.askPass=", "-c", "core.sshCommand=ssh", "-c", "credential.helper="];
+  const guard = ["-c", "protocol.allow=never", "-c", "protocol.ext.allow=never", "-c", `protocol.ssh.allow=${ssh && remote === "origin" ? "always" : "never"}`, "-c", "protocol.git.allow=never", "-c", "protocol.http.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${file}`, "-c", `core.hooksPath=${none}`, "-c", "core.fsmonitor=false", "-c", "core.askPass=", "-c", "core.sshCommand=ssh", "-c", "credential.helper=", "-c", "http.sslVerify=true", "-c", "http.proxy=", "-c", "http.extraHeader="];
   if (remote === "upstream") return ["git", ...guard, ...args.map((a) => (a === "upstream" ? STARTER_URL : a))];
-  return ["git", ...guard, "-c", "credential.helper=!gh auth git-credential", ...args];
+  return ["git", ...guard, "-c", ghHelper(ctx), ...args];
 }
 
 /**
@@ -677,9 +833,12 @@ export function networkGit(ctx, remote, args, { ssh = false } = {}) {
  */
 function pushArgv(ctx, args) {
   const dir = ctx.state.repoDir ?? null;
-  const why = dir ? networkRefusal(ctx, dir, { push: true }) : null;
+  const why = ctx.ghMissing ? GH_MISSING : dir ? networkRefusal(ctx, dir, { push: true }) : null;
   return why ? refusedCommand(why) : networkGit(ctx, "origin", args, { ssh: dir !== null && originKind(originUrl(ctx, dir)) === "ssh" });
 }
+
+/** What a push says when no gh was found outside the course folder (a gh from inside it is never run). */
+export const GH_MISSING = "GitHub's CLI wasn't found outside the course folder, so the studio won't push: install gh (brew install gh), or check that it's on your PATH.";
 
 /** A command that only says why the studio won't run the real one, and fails. @param {string} why */
 const refusedCommand = (why) => [process.execPath, "-e", `console.error(${JSON.stringify(why)}); process.exit(1)`];
@@ -715,30 +874,27 @@ export function ownerMismatch(ctx, login) {
   return `Your copy belongs to ${owner}; you're now ${login}.`;
 }
 
-/**
- * Switch gh (and so git) to another account it already knows.
- * @param {string} login  checked with isGithubUsername by the caller
- * @returns {Command}
- */
-export function switchAccountCommand(login) {
-  return {
-    display: `gh auth switch --user ${login}`,
-    argv: ["gh", "auth", "switch", "-h", "github.com", "--user", login],
-    what: `Makes ${login} the account gh and git use on this laptop. Nothing is signed out: you can switch back the same way.`,
-    words: [["auth", "sign-in (authentication)"], ["switch", "use another account gh already knows"], ["--user", "which account"]],
-  };
-}
-
-/** Sign in to one more GitHub account; gh then uses it. @returns {Command} */
+/** Sign in to one more GitHub account (the course then uses it). @returns {Command} */
 export function addAccountCommand() {
   return {
     display: "gh auth login",
     argv: ["gh", "auth", "login", "--web", "-h", "github.com", "-p", "https"],
-    what: "Signs in to another GitHub account, next to the ones gh already knows, and makes it the one in use. The studio shows a one-time code and opens github.com: sign in there with the other account, paste the code and approve.",
+    what: "Signs in to another GitHub account, next to the ones gh already knows, and the course uses it. gh also makes it its own account in use on this laptop (what gh and git use in a terminal). The studio shows a one-time code and opens github.com: sign in there with the other account, paste the code and approve.",
     words: [["auth", "sign-in (authentication)"], ["login", "sign in (to one more account)"]],
     waitFor: "browser",
     openUrl: true,
   };
+}
+
+/**
+ * The agent's environment (codex app-server, and every command it runs in its sandbox): never a
+ * GitHub token, even when this terminal has one. The agent doesn't push or talk to GitHub.
+ * @param {Record<string, string | undefined>} env
+ */
+export function agentEnv(env) {
+  const out = { ...env, NO_COLOR: "1" };
+  for (const k of ALL_TOKEN_VARS) delete out[k];
+  return out;
 }
 
 /**
@@ -971,6 +1127,9 @@ export function courseSteps() {
       why: "Your copy of the course and everything you send to GitHub belong to this account.",
       example: "You're signed in to GitHub as your-github-name.",
       check: async (ctx) => {
+        // The course's account was signed out of gh: say so, rather than act as another account.
+        const gone = chosenSignedOut(ctx);
+        if (gone) return { done: false, found: gone };
         const login = ghLogin(ctx);
         const token = ghTokenVar(ctx);
         if (!login) return { done: false, found: token ? `This terminal's ${token} doesn't sign in to GitHub (an old or wrong token?).` : "You're not signed in to GitHub yet." };
@@ -983,8 +1142,8 @@ export function courseSteps() {
       confirm: (ctx, yes) => {
         if (yes && ctx.state.seenLogin) ctx.state.login = ctx.state.seenLogin;
       },
-      // Signed in: this is where the student changes which account the course uses.
-      accountChange: (ctx) => !ghTokenVar(ctx) && ghActiveAccount(ctx) !== null,
+      // Signed in to gh: this is where the student changes which account the course uses.
+      accountChange: (ctx) => !ghTokenVar(ctx) && ghOwnAccount(ctx) !== null,
       // A dry run still asks the account question, about a pretend login.
       pretend: (ctx) => {
         ctx.state.seenLogin = ctx.state.login ?? "your-github-name";
@@ -1203,7 +1362,7 @@ export function courseSteps() {
         const tracking = output(ctx, ["git", "rev-parse", "--abbrev-ref", "work@{upstream}"], repoDir(ctx));
         if (tracking !== "origin/work") return { done: false, found: "Your work branch isn't on GitHub yet." };
         // Ask GitHub too (when it answers): after an account switch, the new copy may not have it yet.
-        const remote = networkRefusal(ctx, repoDir(ctx), { push: true }) ? null : ctx.capture(networkGit(ctx, "origin", ["ls-remote", "--heads", "origin", "work"], { ssh: originKind(originUrl(ctx, repoDir(ctx))) === "ssh" }), repoDir(ctx));
+        const remote = ctx.ghMissing || networkRefusal(ctx, repoDir(ctx), { push: true }) ? null : ctx.capture(networkGit(ctx, "origin", ["ls-remote", "--heads", "origin", "work"], { ssh: originKind(originUrl(ctx, repoDir(ctx))) === "ssh" }), repoDir(ctx));
         if (remote?.code === 0 && !remote.stdout.includes("refs/heads/work")) return { done: false, found: `Your work branch isn't on ${ctx.state.login ?? "your"}'s copy on GitHub yet.` };
         return { done: true, found: "Your work branch is on GitHub, linked to origin/work." };
       },
@@ -1659,15 +1818,8 @@ export function weekSteps(week, { onWork = true } = {}) {
         const ahead = output(ctx, ["git", "rev-list", "--count", "origin/work..work"], repoDir(ctx));
         return { done: ahead === "0", found: ahead === "0" ? "Your fork on GitHub has it too." : `GitHub doesn't have ${ahead ?? "your latest"} of your commits yet.` };
       },
-      plan: (ctx) => {
-        const owner = cloneOwner(ctx);
-        // Signed in as someone else, and gh knows the copy's owner: switch to it first.
-        const back = owner && !ghTokenVar(ctx) && ownerMismatch(ctx, ghActiveAccount(ctx)) && ghAccounts(ctx).some((a) => a.login.toLowerCase() === owner.toLowerCase()) ? owner : null;
-        return [
-          ...(back && isGithubUsername(back) ? [{ kind: /** @type {const} */ ("command"), command: { ...switchAccountCommand(back), label: `First: use ${back}, the account your copy belongs to` } }] : []),
-          cmd("git push", pushArgv(ctx, ["push", "origin", "work"]), { cwd: repoDir(ctx), what: "Sends your work branch to your fork on GitHub.", words: [["push", "send commits to GitHub"]] }),
-        ];
-      },
+      // The wrong account: "Use a different account" in this step picks the copy's owner (no command).
+      plan: (ctx) => [cmd("git push", pushArgv(ctx, ["push", "origin", "work"]), { cwd: repoDir(ctx), what: "Sends your work branch to your fork on GitHub.", words: [["push", "send commits to GitHub"]] })],
       // Only here, and only when it's the wrong account, does "Get week N" offer a different one.
       accountChange: (ctx) => !ghTokenVar(ctx) && Boolean(ownerMismatch(ctx, ghActiveAccount(ctx))),
       hint: (ctx) =>
@@ -2132,13 +2284,16 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     active = ctx.dryRun ? (ctx.state.login ?? active) : ghActiveAccount(ctx);
   };
   /**
-   * "Use a different account", while it's open: the accounts gh knows, then the one command the
-   * student picked. Only an account gh listed (or "add") can become a command.
+   * "Use a different account", while it's open: the accounts gh knows (picking one just records it
+   * for the course), or "add", the one command (gh auth login). Only an account gh listed can be picked.
    * @type {null | { phase: "choose" | "ready" | "running" | "failed", accounts: { login: string, active: boolean }[], choice: string,
-   *   command: Command | null, attempt: number, error: string, code: string, url: string, before: string | null }}
+   *   command: Command | null, attempt: number, error: string, code: string, url: string, before: string | null, beforeOwn: string | null }}
    */
   let acct = null;
   let acctRun = 0; // which account command is running (an older one's ending is ignored)
+  /** Steps an account change marked to do again: checked again after the next change. @type {Set<number>} */
+  const unmarkedByAccount = new Set();
+  // The account the doctor last passed with lives in state.doctorOkAs (state.doctorOk is dropped on a change; it comes back, after a restart too, for that account).
   let notice = ""; // what changed after a switch, shown in the step
   let keepNotice = false;
   let canChange = false; // the current step offers "Use a different account"
@@ -2206,6 +2361,8 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
         notice,
         panel: acct && {
           phase: acct.phase,
+          // The fork is reached by ssh: its key decides who pushes, not the account picked here.
+          ssh: Boolean(ctx.state.repoDir) && originKind(originUrl(ctx, /** @type {string} */ (ctx.state.repoDir))) === "ssh",
           others: acct.accounts.filter((x) => !x.active && x.login !== active).map((x) => x.login),
           choice: acct.choice,
           action: acct.command ? describe({ kind: "command", command: acct.command }) : null,
@@ -2699,7 +2856,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
    * @param {string} said  git's last line(s)
    */
   function pushFailure(said) {
-    const why = /couldn't push|won't push|isn't a GitHub address|has \d+ addresses|user name in its address/.test(said)
+    const why = /couldn't push|won't push|isn't a GitHub address|has \d+ addresses|user name in its address|wasn't found outside the course folder/.test(said)
       ? "" // already the studio's own sentence
       : /not allowed|could not resolve host|unable to access|network|timed out|connection/i.test(said)
         ? "The push didn't reach GitHub: check the Wi-Fi, then press Push again."
@@ -2829,6 +2986,10 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     if (a.type === "back") {
       const to = Number(a.to);
       if (!Number.isInteger(to) || to < 1 || to > Math.min(current, steps.length)) return reject(409, "You can only go back to an earlier step.");
+      // The student chose that step: it stays there (a returning student's setup, all done, would
+      // otherwise tick itself off again straight to the week, and step 5's account change with it).
+      autoSetup = false;
+      vouched.clear();
       void enter(to - 1);
       return ok;
     }
@@ -2969,8 +3130,9 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
   }
 
   /**
-   * "Use a different account": open it, pick one of gh's accounts (or add one), type its command,
-   * run it. Afterwards every step that depends on the account is checked again.
+   * "Use a different account": open it, then pick one of gh's accounts (the course uses it from now
+   * on, nothing runs: gh's own account in use never changes) or add one (gh auth login, typed and
+   * run). Afterwards every step that depends on the account is checked again.
    * @param {{ type?: unknown, choice?: unknown, typed?: unknown }} a
    */
   async function accountAct(a) {
@@ -2979,10 +3141,10 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
         if (acct) return ok;
         if (!canChange) return reject(409, "The account can only be changed in the step that signs you in.");
         if (child) return reject(409, "Wait for the command that's running to finish, then change the account.");
-        const accounts = ctx.dryRun && ctx.fresh ? [] : ghAccounts(ctx);
-        const using = accounts.find((x) => x.active);
-        if (using && !ctx.dryRun) active = using.login;
-        acct = { phase: "choose", accounts, choice: "", command: null, attempt: 0, error: "", code: "", url: "", before: null };
+        if (!ctx.dryRun) refreshActive();
+        // "In use" is the course's account, which needn't be gh's own (the studio never switches gh's).
+        const accounts = (ctx.dryRun && ctx.fresh ? [] : ghAccounts(ctx)).map((x) => ({ ...x, active: ctx.dryRun ? x.active : sameLogin(x.login, active) }));
+        acct = { phase: "choose", accounts, choice: "", command: null, attempt: 0, error: "", code: "", url: "", before: null, beforeOwn: null };
         publish();
         return ok;
       }
@@ -2999,15 +3161,17 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
       }
       case "account-pick": {
         if (!acct || acct.phase === "running") return reject(409, "There's nothing to choose right now.");
-        /** @type {Command} */
-        let command;
-        if (a.choice === "add") command = addAccountCommand();
-        else {
+        if (a.choice !== "add") {
+          // An account gh already knows: the course uses it from now on. Nothing runs, and gh's own
+          // account in use stays as it is (its token goes to the studio's own commands only).
           const pick = acct.accounts.find((x) => !x.active && x.login === a.choice);
           if (!pick || !isGithubUsername(pick.login)) return reject(400, "gh doesn't know that account on this laptop.");
-          command = switchAccountCommand(pick.login);
+          if (child) return reject(409, "Wait for the command that's running to finish, then change the account.");
+          acct = { ...acct, choice: pick.login, before: active };
+          await finishAccount(pick.login);
+          return ok;
         }
-        acct = { ...acct, phase: "ready", choice: String(a.choice), command, attempt: acct.attempt + 1, error: "" };
+        acct = { ...acct, phase: "ready", choice: "add", command: addAccountCommand(), attempt: acct.attempt + 1, error: "" };
         publish();
         return ok;
       }
@@ -3024,10 +3188,10 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
         return ok;
       }
       case "account-recheck": {
-        // Back from signing in to another account in the browser: done once gh uses a new one.
+        // Back from signing in to another account in the browser: done once gh has a new one in use.
         if (!acct || acct.phase !== "running" || acct.command?.waitFor !== "browser" || ctx.dryRun) return ok;
-        const now = ghActiveAccount(ctx);
-        if (now && now !== acct.before) {
+        const now = ghOwnAccount(ctx);
+        if (now && now !== acct.beforeOwn) {
           acctRun++;
           child?.kill();
           child = null;
@@ -3044,7 +3208,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
   async function runAccount(command) {
     if (!acct) return;
     const mine = ++acctRun;
-    acct = { ...acct, phase: "running", code: "", url: "", before: active };
+    acct = { ...acct, phase: "running", code: "", url: "", before: active, beforeOwn: ctx.dryRun ? null : ghOwnAccount(ctx) };
     out = "";
     outputId++;
     for (const l of listeners) l("output", { id: outputId, text: "", reset: true });
@@ -3076,27 +3240,42 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     await finishAccount();
   }
 
-  /** The switch (or sign-in) worked: use the new account, and check again what depends on it. */
-  async function finishAccount() {
+  /**
+   * An account was picked (or one more signed in to): the course uses it from now on, and what
+   * depends on it is checked again.
+   * @param {string} [picked]  an account gh knew; none: the one just signed in to (gh has it in use now)
+   */
+  async function finishAccount(picked) {
     const choice = acct?.choice ?? "";
-    const wasUsing = acct?.before ?? active; // the account gh used before this switch
+    const wasUsing = acct?.before ?? active; // the account the studio used before
     const wasCourse = ctx.state.login ?? wasUsing; // the account the course was set up with
     acct = null;
-    const now = ctx.dryRun ? (isGithubUsername(choice) ? choice : wasUsing) : ghActiveAccount(ctx);
+    const now = ctx.dryRun ? (isGithubUsername(choice) ? choice : wasUsing) : (picked ?? ghOwnAccount(ctx));
     active = now;
     const changed = Boolean(now && (now !== wasUsing || now !== wasCourse));
     if (now) ctx.state.login = now; // the student chose this account: it's the course account now
-    if (now && now !== wasCourse) delete ctx.state.doctorOk; // the doctor checks you can push: run it again
+    // The doctor checks you can push: with another account, run it again. Back to the account it
+    // passed with (in this studio), its pass holds again.
+    if (now && now !== wasCourse) {
+      if (ctx.state.doctorOk && isGithubUsername(wasCourse)) ctx.state.doctorOkAs = wasCourse;
+      delete ctx.state.doctorOk;
+      if (sameLogin(now, ctx.state.doctorOkAs)) ctx.state.doctorOk = true;
+    }
     if (!ctx.dryRun) ctx.save?.();
-    // Check again every other step already done that depends on the account. This step is checked
+    // Check again every other step already done that depends on the account, and every one an
+    // earlier change unmarked (back to the first account, they hold again). This step is checked
     // again by entering it (it updates in place); the others are done again when the student gets there.
     /** @type {number[]} */
     const again = [];
     for (let i = 0; i < steps.length; i++) {
-      if (i === current || marks[i] !== "done" || !ACCOUNT_STEPS.has(steps[i].id)) continue;
+      if (i === current || !ACCOUNT_STEPS.has(steps[i].id) || !(marks[i] === "done" || unmarkedByAccount.has(i))) continue;
       const r = await checkStep(steps[i], ctx);
       found[i] = r.found;
-      if (!r.done) {
+      if (r.done) {
+        marks[i] = "done";
+        unmarkedByAccount.delete(i);
+      } else {
+        if (marks[i] === "done") unmarkedByAccount.add(i);
         marks[i] = "pending";
         again.push(i + 1);
       }
@@ -3280,7 +3459,7 @@ export function codexTransport(ctx, cwd) {
   const windows = ctx.platform === "windows";
   // Fixed arguments only: nothing the student types ever goes on this command line, so the Windows
   // shim's shell sees nothing of theirs. Their words go over stdio.
-  const child = spawn("codex", [...CODEX_FLAGS, "app-server"], { cwd, env: { ...process.env, NO_COLOR: "1" }, stdio: ["pipe", "pipe", "pipe"], shell: windows, detached: !windows, windowsHide: true });
+  const child = spawn("codex", [...CODEX_FLAGS, "app-server"], { cwd, env: agentEnv(process.env), stdio: ["pipe", "pipe", "pipe"], shell: windows, detached: !windows, windowsHide: true });
   /** @type {(message: any) => void} */
   let message = () => {};
   /** @type {(line: string) => void} */
@@ -6354,7 +6533,8 @@ form.fields input:focus { outline: 3px solid var(--mint); }
 .finish h1 { font-size: 40px; }
 .finish ol { display: grid; gap: 12px; padding-left: 22px; margin: 0; font-size: 15.5px; }
 .toastsub { margin-top: 4px; font: 12px/1.4 "JetBrains Mono", ui-monospace, monospace; opacity: .75; white-space: pre-wrap; overflow-wrap: anywhere; }
-.toast { position: fixed; bottom: 16px; right: 16px; background: var(--ink); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 14px; max-width: 420px; }
+/* A fixed dark box with white text in both themes (var(--ink) turns pale in the dark one). */
+.toast { position: fixed; bottom: 16px; right: 16px; background: #16201b; color: #fff; border: 1px solid #3a4a41; padding: 10px 14px; border-radius: 8px; font-size: 14px; max-width: 420px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
 
 .machine { display: grid; gap: 16px; grid-template-columns: minmax(0, 1.7fr) minmax(260px, 1fr); align-items: start; }
 @media (max-width: 1150px) { .machine { grid-template-columns: 1fr; } }
@@ -6486,7 +6666,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       t.append(sub);
     }
     document.body.append(t);
-    setTimeout(() => t.remove(), rest.length ? 8000 : 4000);
+    setTimeout(() => t.remove(), rest.length ? 9000 : 6000);
   }
 
   const events = new EventSource(`/events?t=${encodeURIComponent(TOKEN)}`);
@@ -6611,7 +6791,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
 
   /**
    * "Use a different account", inside the step that offers it: a link, which opens in place into
-   * the accounts gh knows (each one a command to type) and "Add another account".
+   * the accounts gh knows (one click picks one) and "Add another account" (a command to type).
    */
   function accountInline() {
     const snap = present();
@@ -6628,6 +6808,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         : `<p class="note">gh doesn't know any other account on this laptop yet.</p>`;
       return box(`<div class="accounts">
           ${login ? `<div class="account now"><span class="who">${esc(login)}</span><span class="muted">in use now</span></div>` : ""}
+          ${p.ssh ? `<p class="note">Your fork is reached by SSH, so this laptop's SSH key decides who pushes: picking an account here doesn't change that.</p>` : ""}
           ${others}
           <div class="account"><span>An account gh doesn't know yet</span><button class="btn ghost" data-do="acct-pick" data-choice="add">Add another account</button></div>
         </div>
@@ -8588,10 +8769,43 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
   }
   // GIT_MERGE_AUTOEDIT: a merge never opens an editor for its message (there's no terminal to type in).
   const env = { ...process.env, NO_COLOR: "1", GH_NO_UPDATE_NOTIFIER: "1", GIT_TERMINAL_PROMPT: "0", GIT_MERGE_AUTOEDIT: "no", HOMEBREW_NO_ENV_HINTS: "1" };
+  /** The environment with no GitHub token (for anything that isn't gh or git talking to GitHub). */
+  const plain = accountEnv(["node"], env, () => undefined);
+  /** gh, resolved once found: an absolute path, never from the course folder or a node_modules. @type {string | null} */
+  let ghFound = null;
+  const ghPath = () => {
+    if (!ghFound) {
+      const isFile = (/** @type {string} */ p) => {
+        try {
+          return statSync(p).isFile();
+        } catch {
+          return false;
+        }
+      };
+      ghFound = resolveGh(process.env.PATH, [process.cwd(), state.repoDir ?? ""], isFile, platform);
+    }
+    return ghFound;
+  };
+  /** The argv as run: gh is the resolved one; with none found, gh isn't run at all (null). @param {string[]} argv */
+  const real = (argv) => {
+    if (argv[0] !== "gh") return argv;
+    const gh = ghPath();
+    return gh ? [gh, ...argv.slice(1)] : null;
+  };
+  /** gh, run to ask it something about its own accounts (never with a token). @param {string[]} argv */
+  const askGh = (argv) => {
+    const run = real(argv);
+    if (!run) return null;
+    const r = spawnSync(run[0], run.slice(1), { env: plain, encoding: "utf8", shell: shell(argv), timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
+    return r.error ? null : { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: "" };
+  };
+  /** One command's environment (commandEnv): the course's account's token only where it's needed, asked for now. @param {string[]} argv */
+  // No gh outside the course folder: no command gets a token.
+  const envFor = (argv) => commandEnv(argv, env, state.login, () => (ghPath() ? chosenToken(askGh, state.login) : undefined));
   /** @param {string} program @param {string[]} args */
   const detached = (program, args) => {
     try {
-      spawn(program, args, { stdio: "ignore", detached: true }).unref();
+      spawn(program, args, { stdio: "ignore", detached: true, env: plain }).unref();
     } catch {
       // No browser opener: the terminal shows the link.
     }
@@ -8605,14 +8819,20 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
     style: makeStyle(color),
     capture: (argv, cwd, options = {}) => {
       // stdin closed: a program that waits for input (codex does, without a terminal) mustn't hang the check.
-      const r = spawnSync(argv[0], argv.slice(1), { cwd, env, encoding: "utf8", shell: shell(argv), timeout: options.timeout ?? 30_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+      const run = real(argv);
+      if (!run) return null; // as if gh weren't installed
+      const r = spawnSync(run[0], run.slice(1), { cwd, env: envFor(argv), encoding: "utf8", shell: shell(argv), timeout: options.timeout ?? 30_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
       if (r.error && /** @type {NodeJS.ErrnoException} */ (r.error).code === "ENOENT") return null;
       return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
     },
-    execute: (argv, cwd) => spawnSync(argv[0], argv.slice(1), { cwd, env: { ...env, NO_COLOR: process.env.NO_COLOR ?? "" }, stdio: "inherit", shell: shell(argv) }).status ?? 1,
+    execute: (argv, cwd) => {
+      const run = real(argv) ?? refusedCommand(GH_MISSING);
+      return spawnSync(run[0], run.slice(1), { cwd, env: { ...envFor(argv), NO_COLOR: process.env.NO_COLOR ?? "" }, stdio: "inherit", shell: shell(argv) }).status ?? 1;
+    },
     stream: (argv, cwd, onData) => {
       if (dryRun) return dryRunStream(argv, cwd, onData);
-      const child = spawn(argv[0], argv.slice(1), { cwd, shell: shell(argv), env, stdio: ["ignore", "pipe", "pipe"] });
+      const run = real(argv) ?? refusedCommand(GH_MISSING);
+      const child = spawn(run[0], run.slice(1), { cwd, shell: shell(argv), env: envFor(argv), stdio: ["ignore", "pipe", "pipe"] });
       child.stdout.setEncoding("utf8").on("data", onData);
       child.stderr.setEncoding("utf8").on("data", onData);
       return {
@@ -8632,7 +8852,7 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
         if (process.env.NETSIM_STUDIO_NO_OPEN === "1") return done(null);
         const [command, args] = pickFolderCommand(platform, initial, prompt);
         let out = "";
-        const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"] });
+        const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"], env: plain });
         child.stdout.setEncoding("utf8").on("data", (d) => (out += d));
         child.on("error", () => done(null));
         child.on("close", () => done(out.trim().replace(/(.)\/$/, "$1") || null));
@@ -8690,14 +8910,20 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
         mkdirSync(dirname(STATE_FILE), { recursive: true });
         // doctorOk too: the doctor passing can't be checked again without running it, so the next
         // run (and the next week) needs it.
-        const { login, parent, repoDir, chatgpt, codexVersion, doctorOk, agentThreads } = state;
-        writeFileSync(STATE_FILE, JSON.stringify({ login, parent, repoDir, chatgpt, codexVersion, doctorOk, agentThreads }, null, 2));
+        const { login, parent, repoDir, chatgpt, codexVersion, doctorOk, doctorOkAs, agentThreads } = state;
+        writeFileSync(STATE_FILE, JSON.stringify({ login, parent, repoDir, chatgpt, codexVersion, doctorOk, doctorOkAs, agentThreads }, null, 2));
       } catch {
         // Remembering is a convenience; the checks find everything again anyway.
       }
     },
     get state() {
       return state;
+    },
+    get ghPath() {
+      return ghPath() ?? undefined;
+    },
+    get ghMissing() {
+      return !ghPath();
     },
     set state(value) {
       state = value;

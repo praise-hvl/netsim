@@ -170,3 +170,54 @@ describe("reading remote URLs", () => {
     expect(sshGreetingUser("Permission denied (publickey).")).toBeNull();
   });
 });
+
+describe("the push check, for the account NetSim Studio uses", () => {
+  const origin = parseRemote("https://github.com/ada/netsim.git")!;
+  /** gh knows ada and bob, with bob its own in use; records each command and the env it got. */
+  function twoAccounts(tokens: Record<string, string> = { ada: "gho_ADAtoken1" }) {
+    const calls: { line: string; env?: Record<string, string> }[] = [];
+    const run: Runner = (command, args, env) => {
+      const line = [command, ...args].join(" ");
+      calls.push({ line, env });
+      if (line === "git config --get-all credential.https://github.com.helper") return ok("!gh auth git-credential");
+      if (line === "gh config get -h github.com user") return ok("bob");
+      if (line === "gh auth token -h github.com --user ada") return tokens.ada ? ok(tokens.ada) : failed("no oauth token found for github.com account ada");
+      if (line === "gh api user --jq .login") return ok(env?.GH_TOKEN === tokens.ada ? "ada" : "bob");
+      return null;
+    };
+    return { run, calls };
+  }
+
+  it("checks the studio's account (ada), not gh's own (bob), with ada's token on that one gh command only", () => {
+    const { run, calls } = twoAccounts();
+    expect(pushIdentity(origin, run, "ada")).toEqual({ kind: "account", login: "ada", via: "studio" });
+    const withToken = calls.filter((c) => c.env?.GH_TOKEN);
+    expect(withToken.map((c) => c.line)).toEqual(["gh api user --jq .login"]);
+    expect(calls.every((c) => !c.line.includes("gho_ADAtoken1"))).toBe(true); // never on a command line
+    expect(pushCheck(origin, pushIdentity(origin, run, "ada"))).toMatchObject({ status: "pass", detail: "as ada" });
+  });
+
+  it("the studio's account isn't the fork's owner: says to pick the owner in the studio, not gh auth switch", () => {
+    const { run } = twoAccounts({ ada: "gho_ADAtoken1", carol: "gho_C" });
+    const other = parseRemote("https://github.com/carol/netsim.git")!;
+    const push = pushCheck(other, pushIdentity(other, run, "ada"));
+    expect(push.status).toBe("fail");
+    expect(push.fix).toContain('pick carol with "Use a different account"');
+    expect(push.fix).not.toContain("gh auth switch");
+  });
+
+  it("the studio's account was signed out of gh: says so, and how to sign back in", () => {
+    const { run } = twoAccounts({});
+    expect(pushIdentity(origin, run, "ada")).toEqual({ kind: "signed-out", login: "ada" });
+    expect(pushCheck(origin, pushIdentity(origin, run, "ada"))).toMatchObject({ status: "fail", detail: "ada isn't signed in to gh on this laptop" });
+  });
+
+  it("the studio's account is gh's own, or none is given: exactly as before", () => {
+    const { run, calls } = twoAccounts();
+    expect(pushIdentity(origin, run, "bob")).toEqual({ kind: "account", login: "bob", via: "gh" });
+    expect(pushIdentity(origin, run)).toEqual({ kind: "account", login: "bob", via: "gh" });
+    expect(pushIdentity(origin, run, "not a login;rm")).toEqual({ kind: "account", login: "bob", via: "gh" });
+    expect(calls.some((c) => c.env?.GH_TOKEN)).toBe(false);
+    expect(calls.some((c) => c.line.startsWith("gh auth token"))).toBe(false);
+  });
+});
