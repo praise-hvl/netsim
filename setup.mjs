@@ -98,7 +98,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 19;
+export const STUDIO_VERSION = 20;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -2583,6 +2583,10 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
    */
   function runTaskTests(dir, week, task, from = "", then = () => {}) {
     const id = task.id;
+    // Committed as it is now (pressed here, or found in the last commit, e.g. after a restart): a fresh run
+    // doesn't undo that, or offer the commit again.
+    const before = code[id];
+    const wasCommitted = Boolean((before?.done && before?.rev === task.rev) || regionCommitted(ctx, dir, task));
     // "check": the Build view checking where the student is, quietly, in the sandbox (nobody pressed anything).
     const quiet = from === "check";
     const sandboxed = from === "sandbox" || quiet;
@@ -2613,7 +2617,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
           return then(false);
         }
         code = { ...code, [id]: { phase: "error", error: `The tests couldn't run:\n${cleanOutput(text).slice(-1500)}` } };
-      } else code = { ...code, [id]: { phase: results.failed ? "failed" : "passed", rev: task.rev, ...results } };
+      } else code = { ...code, [id]: { phase: results.failed ? "failed" : "passed", rev: task.rev, ...results, ...(wasCommitted && !results.failed ? { done: true, ...(before?.committed ? { committed: before.committed } : {}) } : {}) } };
       if (quiet) {
         publish();
         return then(Boolean(results && !results.failed && results.passed > 0));
@@ -2623,6 +2627,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
         const socket = results.blocked ? ` ${results.blocked} more open a local socket, so they need Run its tests.` : "";
         if (results.failed) agent.say("bad", `\`${id}\`: ${results.failed} of its tests fail. First: ${results.failures[0]?.test ?? ""}: ${String(results.failures[0]?.message ?? "").split("\n")[0].slice(0, 300)}`);
         else if (results.blocked && !results.passed) agent.testOffer(week, id, `\`${id}\`: its tests open a local socket, so they can't run in the sandbox.${todo}`);
+        else if (wasCommitted) agent.say("info", `\`${id}\`: ${results.passed} test${results.passed === 1 ? "" : "s"} pass. It's already committed.${todo}`);
         else agent.commitOffer(week, id, `\`${id}\`: ${results.passed} test${results.passed === 1 ? "" : "s"} pass.${todo}${socket}`);
       } else if (from) agent.say("bad", `The tests for \`${id}\` couldn't run.`);
       publish();
@@ -2665,6 +2670,51 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     };
     next(0);
     return ok;
+  }
+
+  let pushing = false;
+  /**
+   * The Build view's Push: the work branch to the student's fork, the way the week's push step does
+   * it (pushArgv: GitHub only, gh's sign-in, nothing the folder's config names; else it says why).
+   */
+  async function pushWork() {
+    const dir = ctx.state.repoDir;
+    if (!dir || !ctx.stream) return reject(409, "The course folder isn't set up yet.");
+    if (pushing) return reject(409, "It's already pushing.");
+    pushing = true;
+    try {
+      let out = "";
+      const run = ctx.stream(pushArgv(ctx, ["push", "origin", "work"]), dir, (t) => (out = (out + t).slice(-8000)));
+      const exit = await run.done;
+      if (exit === 0) return { ...ok, said: /up-to-date/i.test(out) ? "Nothing new to push: GitHub has all your commits." : "Pushed: your work is on GitHub." };
+      const last = cleanOutput(out).trim().split("\n").filter(Boolean).slice(-2).join(" ");
+      return reject(409, pushFailure(last));
+    } finally {
+      pushing = false;
+    }
+  }
+
+  /**
+   * What a failed push means, in a sentence, with git's own last line under it.
+   * @param {string} said  git's last line(s)
+   */
+  function pushFailure(said) {
+    const why = /couldn't push|won't push|isn't a GitHub address|has \d+ addresses|user name in its address/.test(said)
+      ? "" // already the studio's own sentence
+      : /not allowed|could not resolve host|unable to access|network|timed out|connection/i.test(said)
+        ? "The push didn't reach GitHub: check the Wi-Fi, then press Push again."
+        : /rejected|non-fast-forward|fetch first/i.test(said)
+          ? "GitHub has commits this laptop doesn't: get them first (npm start does it), then press Push again."
+          : /authentication|permission|403|denied/i.test(said)
+            ? "GitHub didn't accept the sign-in: check the account in the studio's setup steps, then press Push again."
+            : "The push didn't go through.";
+    return why ? (said ? `${why}\n${said}` : why) : said;
+  }
+
+  /** Commits on work that origin/work doesn't have (as last fetched or pushed), or 0. @param {string} dir */
+  function unpushed(dir) {
+    const r = quietGit(ctx, dir, ["rev-list", "--count", "refs/remotes/origin/work..refs/heads/work"], { check: false });
+    return r?.code === 0 ? Number(r.stdout.trim()) || 0 : 0;
   }
 
   /** The commit for one task, once its tests pass as the file is now: only that task's file. @param {Record<string, unknown>} a */
@@ -2772,6 +2822,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     if (a.type === "code-test") return testCode(a);
     if (a.type === "build-check") return buildCheck(a);
     if (a.type === "code-commit") return commitCode(a);
+    if (a.type === "work-push") return pushWork();
     if (typeof a.type === "string" && a.type.startsWith("account-")) return accountAct(a);
     if (acct) return reject(409, "Finish changing the GitHub account first, or close it.");
     // Going back to an earlier step works from anywhere, the finish screen included.
@@ -3120,6 +3171,8 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
       if (!dir || !weekIn(week)) return null;
       return buildSteps(ctx, dir, week, agentTaskList(dir, week));
     },
+    /** Commits on work not on GitHub yet, for the Build view's Push. */
+    unpushed: () => (ctx.state.repoDir ? unpushed(ctx.state.repoDir) : 0),
     /** The Agent tab's state: a snapshot; numbered "agent" events follow it. */
     agentSnapshot: () => agent.snapshot(),
     /** Ends what the studio started and waits, boundedly, for its Codex to go. */
@@ -4480,7 +4533,7 @@ export function serveStudio(studio, { token = randomBytes(24).toString("base64ur
     // The Build tab's steps.
     if (req.method === "GET" && url.pathname === "/api/build") {
       const steps = studio.buildSteps(Number(url.searchParams.get("week")));
-      res.writeHead(steps ? 200 : 409, { ...secure, "content-type": "application/json" }).end(JSON.stringify({ steps: steps ?? [] }));
+      res.writeHead(steps ? 200 : 409, { ...secure, "content-type": "application/json" }).end(JSON.stringify({ steps: steps ?? [], ahead: steps ? studio.unpushed() : 0 }));
       return;
     }
     // The tasks the Agent tab can work on.
@@ -5162,7 +5215,7 @@ export function buildSteps(ctx, dir, week, tasks) {
   const found = [];
   let section = "";
   let heading = "";
-  /** @type {{ id: string, title: string, intro: string, works: string, check: string, board: boolean, notes: string }} */
+  /** @type {{ id: string, title: string, intro: string, works: string, check: string, board: boolean, notes: string, notesText?: string }} */
   let component = { id: "", title: "", intro: "", works: "", check: "", board: false, notes: "" };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -5197,7 +5250,7 @@ export function buildSteps(ctx, dir, week, tasks) {
       }
       // Its title: "### Component · title" (or "## Component N · title") just above the mark.
       const above = /^Component\b/i.test(heading) ? heading : section.replace(/^##\s+/, "");
-      component = { id: comp[1], title: above.replace(/^Component\s*(\d+\s*)?·\s*/i, "").trim(), intro: intro.join(" ").replace(/\s+/g, " ").trim(), works, check, board, notes: notes.length ? renderMarkdown(notes.join("\n"), { strict: true }) : "" };
+      component = { id: comp[1], title: above.replace(/^Component\s*(\d+\s*)?·\s*/i, "").trim(), intro: intro.join(" ").replace(/\s+/g, " ").trim(), works, check, board, notes: notes.length ? renderMarkdown(notes.join("\n"), { strict: true }) : "", notesText: notes.join("\n").trim() };
       continue;
     }
     if (/^### /.test(line)) heading = line.slice(4).trim();
@@ -5437,6 +5490,22 @@ export function readableFailure(message) {
  *   that also needs a task still a stub waits for it. Tests it doesn't list fall back to the guesses.
  * @param {boolean} [sandboxed]  run in Codex's sandbox: a test stopped by "listen EPERM" says nothing about the code (counted as blocked)
  */
+/**
+ * Whether a task's code is in the last commit exactly as it is in the folder now (lines compared trimmed,
+ * as the Build view does). A stub, or a region missing on either side, isn't.
+ * @param {Context} ctx @param {string} dir @param {{ id: string, file: string, stubbed?: boolean }} task
+ */
+export function regionCommitted(ctx, dir, task) {
+  if (task.stubbed || !task.file) return false;
+  const body = (/** @type {string} */ text) => {
+    const region = findCodeRegions(text).find((r) => r.id === task.id);
+    return region ? text.split("\n").slice(region.start + 1, region.end).map((l) => l.trim()).join("\n") : undefined;
+  };
+  const now = body(ctx.readText(join(dir, task.file)) ?? "");
+  const head = output(ctx, ["git", "show", `HEAD:${task.file}`], dir);
+  return now !== undefined && head != null && body(head) === now;
+}
+
 export function taskResults(json, task, stubs = [], needs = null, sandboxed = false) {
   const me = typeof task === "string" ? { id: task, file: "" } : task;
   const stubbed = new Set(stubs.map((s) => s.id));
@@ -5461,6 +5530,8 @@ export function taskResults(json, task, stubs = [], needs = null, sandboxed = fa
   }
   let passed = 0;
   let blocked = 0;
+  /** @type {string[]} the tests that passed, by name (at most 50) */
+  const passedTests = [];
   /** @type {Set<string>} */
   const waiting = new Set();
   /** @type {{ test: string, message: string, own?: boolean }[]} */
@@ -5492,7 +5563,10 @@ export function taskResults(json, task, stubs = [], needs = null, sandboxed = fa
           continue;
         }
       }
-      if (t.status === "passed") passed++;
+      if (t.status === "passed") {
+        passed++;
+        if (passedTests.length < 50) passedTests.push(t.fullName ?? t.title ?? name);
+      }
       else if (t.status === "failed") {
         const message = readableFailure((t.failureMessages ?? []).join("\n"));
         if (sandboxed && /listen EPERM/.test(message)) {
@@ -5512,7 +5586,7 @@ export function taskResults(json, task, stubs = [], needs = null, sandboxed = fa
   }
   // This task's own failures first: the test is named after its function, or the error came from its file.
   failures.sort((a, b) => Number(Boolean(b.own)) - Number(Boolean(a.own)));
-  return { passed, failed: failures.length, failures: failures.slice(0, 5), waiting: [...waiting], ...(blocked ? { blocked } : {}) };
+  return { passed, failed: failures.length, failures: failures.slice(0, 5), waiting: [...waiting], ...(blocked ? { blocked } : {}), ...(passedTests.length ? { passedTests } : {}) };
 }
 
 // ── The page (HTML, CSS and the browser code, all in this file) ────────────
@@ -5856,6 +5930,96 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .tab.on { color: var(--ink); background: var(--panel); border-color: var(--line); margin-bottom: -1px; }
 .tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .framebar { display: flex; }
+/* Design A's top bar: back to the course, the part, Codex's state, progress, Push. */
+.ctop .cback { background: none; border: 0; color: #cfe8dc; font: 600 13px/1 "Inter", sans-serif; cursor: pointer; padding: 4px 2px; white-space: nowrap; }
+.ctop .cback:hover { color: #fff; }
+.ctop .csep { width: 1px; height: 22px; background: #ffffff33; }
+.ctop .cname { flex: 1; min-width: 0; }
+.ctop .cright { display: flex; align-items: center; gap: 14px; }
+.cstatus { font-size: 12.5px; color: #cfe8dc; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.cstatus::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #8fb3a1; }
+.cstatus.ok::before { background: var(--mint); } .cstatus.work::before { background: var(--yellow); } .cstatus.bad::before { background: #ff6b7a; }
+.ctop .cpush { background: #ffffff1a; border-color: #ffffff40; color: #fff; }
+.ctop .cpush:hover { background: #ffffff2e; }
+.work.showcourse:has(.chatui) { grid-template-columns: 330px minmax(0, 1fr) !important; }
+.work.showcourse:has(.chatui) .steps { display: flex; }
+/* The agent's commands, one row per run. */
+.ag.rangroup { font-size: 13px; color: var(--muted); }
+.ag.rangroup > summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; }
+.ag.rangroup > summary::after { content: "⌄"; }
+.ag.rangroup[open] > summary::after { content: "⌃"; }
+.ag.rangroup .rgbody { margin: 6px 0 0 6px; padding-left: 12px; border-left: 2px solid var(--line); display: grid; gap: 4px; }
+/* A change Codex made: the file, +N −M, the first changed lines. */
+.ag.files { display: grid; gap: 8px; }
+.dcard { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.dch { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 13px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.dch .ic { color: var(--muted); }
+.dch .btn { margin-left: auto; }
+.minidiff { margin: 0; padding: 6px 0; font: 12px/1.6 "JetBrains Mono", ui-monospace, monospace; white-space: pre; overflow: hidden; }
+.minidiff > span { display: block; padding: 0 12px; overflow: hidden; text-overflow: ellipsis; }
+.minidiff .sg { display: inline-block; width: 1.3em; color: var(--muted); user-select: none; }
+.minidiff .a { background: color-mix(in srgb, var(--mint) 18%, transparent); } .minidiff .a .sg { color: var(--mint-ink); }
+.minidiff .d { background: color-mix(in srgb, var(--red) 13%, transparent); } .minidiff .d .sg { color: var(--red-ink); }
+.minidiff .x { color: var(--muted); }
+.pill.bad { background: #ffe1e4; color: var(--red-ink); }
+/* The studio's verdict on a step's tests. */
+.tcard { border: 1px solid var(--line); border-left: 3px solid var(--mint); border-radius: 10px; padding: 10px 12px; display: grid; gap: 6px; background: var(--panel); }
+.tcard.bad { border-left-color: var(--red); }
+.tcard .tch { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.tcard.ok .tch b { color: var(--mint-ink); } .tcard.bad .tch b { color: var(--red-ink); }
+.tcard ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font: 12.5px/1.45 "JetBrains Mono", ui-monospace, monospace; }
+.tcard li { display: flex; gap: 8px; align-items: baseline; }
+.tcard li.ok > span { color: var(--mint-ink); } .tcard li.bad > span { color: var(--red-ink); }
+.tcard li.more summary { cursor: pointer; color: var(--muted); }
+.tcard li .sub { font-family: "Inter", sans-serif; }
+/* The composer's tools. */
+.agcomposer .row .sp { flex: 1; }
+.filepick { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 6px; display: grid; gap: 4px; max-height: 240px; }
+.filepick input { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--well); color: var(--ink); }
+.filepick ul { list-style: none; margin: 0; padding: 0; overflow: auto; }
+.filepick li button { width: 100%; text-align: left; background: none; border: 0; padding: 3px 6px; border-radius: 6px; cursor: pointer; display: flex; gap: 6px; align-items: center; color: var(--ink); }
+.filepick li button:hover { background: var(--well); }
+.filepick .mk { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); }
+/* Dark: the Build view follows the Mac's appearance (the rest of the studio stays light for now). */
+@media (prefers-color-scheme: dark) {
+  body:has(.chatui) {
+    --ink: #e8efeb; --muted: #9aa8a0; --line: #26312b; --panel: #121a16; --well: #0b110e;
+    --mint-ink: #6fd3a7; --red-ink: #ff6b7a; --green: #0e1f17; color-scheme: dark;
+  }
+  body:has(.chatui) .ccol .ag.you .said { background: #1d3a2c; color: var(--ink); }
+  body:has(.chatui) .crow.now, body:has(.chatui) .ftree li.on { background: #133325; }
+  body:has(.chatui) .src .rg { background: #2e2810; }
+  body:has(.chatui) .src .add, body:has(.chatui) .fvfoot { background: #133325; }
+  body:has(.chatui) .src .del, body:has(.chatui) .pill.bad { background: #3a1419; }
+  body:has(.chatui) .status.ok { background: #133325; border-color: #1f5a3f; }
+  body:has(.chatui) .status.bad, body:has(.chatui) .stuck.bad { background: #3a1419; border-color: #6a2630; }
+  body:has(.chatui) .status.run, body:has(.chatui) .status.wait { background: #2e2810; border-color: #6b5a1a; }
+  body:has(.chatui) .btn { background: var(--panel); color: var(--ink); border-color: var(--line); }
+  body:has(.chatui) .btn.primary { background: var(--mint); color: #0b1a13; border-color: var(--mint); }
+  body:has(.chatui) .hl-keyword { color: #c9a7ff; } body:has(.chatui) .hl-string, body:has(.chatui) .hl-code { color: #8fe0b8; } body:has(.chatui) .hl-number { color: #ff9aa6; } body:has(.chatui) .hl-comment { color: #7fa893; }
+  body:has(.chatui) .hl-type, body:has(.chatui) .hl-key, body:has(.chatui) .hl-register, body:has(.chatui) .hl-label, body:has(.chatui) .hl-heading { color: #7fb6ff; } body:has(.chatui) .hl-strong, body:has(.chatui) .hl-bullet, body:has(.chatui) .hl-fence { color: #ffcb12; }
+  body:has(.chatui) code { color: var(--ink); }
+  /* Text that's dark green on light (--green is the dark chrome here): mint, readable on the dark panel. */
+  body:has(.chatui) .bfinish h2, body:has(.chatui) .bdoneline, body:has(.chatui) .bcomp.done, body:has(.chatui) .bstep.done .n { color: var(--mint-ink); }
+  body:has(.chatui) .wpill.on { background: var(--mint); border-color: var(--mint); color: #0b1a13; }
+  body:has(.chatui) .tab.on { background: var(--panel); }
+  body:has(.chatui) textarea, body:has(.chatui) select, body:has(.chatui) input { background: var(--well); color: var(--ink); border-color: var(--line); }
+}
+/* A short screen (a MacBook at 720-860 px of window): the rows above the chat and the message box
+   give up their room, so the conversation keeps a usable height. The top bar already names the part. */
+@media (min-width: 901px) and (max-height: 860px) {
+  .detail .body:has(.chatui) { padding: 8px 14px; }
+  .detail .inner.week:has(.chatui) { gap: 6px; }
+  .inner.week:has(.chatui) .weekhead { display: none; }
+  .inner.week:has(.chatui) .wpill { padding: 2px 9px; font-size: 12px; }
+  .inner.week:has(.chatui) .tab { padding: 6px 12px; }
+  .chatui { gap: 6px; }
+  .ctop { padding: 6px 12px; }
+  .ccol .agcomposer.pinned { padding: 6px 8px; margin-top: 6px; }
+  .ccol .agcomposer.pinned textarea { min-height: 0; height: 2.6em; }
+  .ccol .agcomposer.pinned .row { margin-top: 2px; }
+  .ccol .cdisclaim { display: none; }
+}
 .bchips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 3px 10px; font: 600 12px/1.3 "JetBrains Mono", monospace; color: var(--ink); cursor: pointer; }
 .chip:hover { border-color: var(--mint); }
@@ -5890,7 +6054,7 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 .ftree .mk { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); flex: none; margin-left: auto; }
 .ftree .mk.new { background: var(--mint); }
 .ftree .cnt + .mk { margin-left: 4px; }
-.plus { color: #1b7650; font-weight: 700; } .minus { color: #c4051a; font-weight: 700; }
+.plus { color: var(--mint-ink); font-weight: 700; } .minus { color: var(--red-ink); font-weight: 700; }
 .fvempty { padding: 14px; }
 .fview { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
 .fvh { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--line); font-size: 12.5px; flex-wrap: wrap; }
@@ -5969,7 +6133,9 @@ button.sgroup.viewing { outline: 2px solid var(--mint); outline-offset: -2px; }
 /* The chat column: the conversation and the step card scroll; the message box has its own row below. */
 .ccol { overflow: hidden; }
 .ccol .agenttab { display: flex; flex-direction: column; gap: 0; min-height: 0; }
-.ccol .agscroll { flex: 1; min-height: 0; overflow-y: auto; display: grid; gap: 12px; align-content: start; padding-right: 4px; }
+.ccol .agscroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px; }
+/* Each part keeps its full height and the column scrolls (a grid here shrank the conversation to its minimum, under the step card). */
+.ccol .agscroll > * { flex: none; }
 .ccol .agcomposer.pinned { flex: none; background: var(--panel); border: 2px solid var(--green); border-radius: 16px; padding: 8px 10px; margin-top: 10px; }
 .ccol .agcomposer.pinned textarea { border: 0; padding: 4px; }
 .cdisclaim { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); text-align: center; }
@@ -6187,6 +6353,7 @@ form.fields input:focus { outline: 3px solid var(--mint); }
 .diagram svg { width: 100%; height: auto; display: block; max-width: 720px; }
 .finish h1 { font-size: 40px; }
 .finish ol { display: grid; gap: 12px; padding-left: 22px; margin: 0; font-size: 15.5px; }
+.toastsub { margin-top: 4px; font: 12px/1.4 "JetBrains Mono", ui-monospace, monospace; opacity: .75; white-space: pre-wrap; overflow-wrap: anywhere; }
 .toast { position: fixed; bottom: 16px; right: 16px; background: var(--ink); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 14px; max-width: 420px; }
 
 .machine { display: grid; gap: 16px; grid-template-columns: minmax(0, 1.7fr) minmax(260px, 1fr); align-items: start; }
@@ -6306,12 +6473,20 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       return { ok: false, error: "The studio stopped. Run npm start again to reopen it." };
     }
   }
+  /** A message at the corner. A second line (git's own words, say) shows smaller under the first; all of it as text. */
   function toast(/** @type {string} */ text) {
     const t = document.createElement("div");
     t.className = "toast";
-    t.textContent = text;
+    const [first, ...rest] = String(text).split("\n");
+    t.textContent = first;
+    if (rest.length) {
+      const sub = document.createElement("div");
+      sub.className = "toastsub";
+      sub.textContent = rest.join("\n");
+      t.append(sub);
+    }
     document.body.append(t);
-    setTimeout(() => t.remove(), 4000);
+    setTimeout(() => t.remove(), rest.length ? 8000 : 4000);
   }
 
   const events = new EventSource(`/events?t=${encodeURIComponent(TOKEN)}`);
@@ -7229,11 +7404,77 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     let scrolledFor = ""; // the step the chat column last scrolled to
     let followCard = true; // the chat stays on the step card until the student scrolls it
     let actedOn = ""; // the step the student last committed or tested in the Build view
+    let ahead = 0; // commits on work that GitHub doesn't have yet
     /** @type {Set<any>} entries with deltas waiting for the next frame */
     const dirty = new Set();
     let painting = false;
     const clientId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const md = (/** @type {string} */ text) => esc(text).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+
+    /** A file's language for the highlighter, from its name. @param {string} path */
+    const langOf = (path) => ({ ts: "ts", tsx: "tsx", js: "js", mjs: "js", json: "json", md: "md", asm: "asm" })[/\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase() ?? ""] ?? "text";
+    /**
+     * One change Codex made, as a card: the file, +N −M, the first changed lines (unified, escaped and
+     * highlighted) and Open in Files. A new file's "diff" can be its whole text: all added.
+     * @param {any} c @param {string} status
+     */
+    function diffCard(c, status) {
+      const text = String(c.diff ?? "");
+      const lines = text.split("\n");
+      const unified = lines.some((l) => l.startsWith("@@"));
+      /** @type {{ kind: "a" | "d" | "x", text: string }[]} */
+      const rows = [];
+      if (unified) {
+        let inHunk = false;
+        for (const l of lines) {
+          if (l.startsWith("@@")) {
+            inHunk = true;
+            rows.push({ kind: "x", text: l });
+          } else if (!inHunk) continue;
+          else if (l.startsWith("+")) rows.push({ kind: "a", text: l.slice(1) });
+          else if (l.startsWith("-")) rows.push({ kind: "d", text: l.slice(1) });
+        }
+      } else for (const l of lines.filter((x, i) => x || i < lines.length - 1)) rows.push({ kind: "a", text: l });
+      const added = rows.filter((r) => r.kind === "a").length;
+      const removed = rows.filter((r) => r.kind === "d").length;
+      const changed = rows.filter((r) => r.kind !== "x");
+      const shown = rows.slice(0, 7);
+      const more = changed.length - shown.filter((r) => r.kind !== "x").length;
+      const lang = langOf(String(c.path ?? ""));
+      const sign = { a: "+", d: "−", x: "" };
+      const mini = shown.length ? `<pre class="minidiff">${shown.map((r) => `<span class="${r.kind}"><span class="sg">${sign[r.kind]}</span>${r.kind === "x" ? esc(r.text) : highlightSource(r.text, lang) || " "}</span>`).join("")}${more > 0 ? `<span class="x">… ${esc(more)} more changed line${more === 1 ? "" : "s"}</span>` : ""}</pre>` : "";
+      const label = status === "declined" ? `<span class="pill">declined</span>` : status === "failed" ? `<span class="pill bad">didn't apply</span>` : "";
+      return `<div class="dcard"><div class="dch"><span class="ic">✎</span><code>${esc(c.path)}</code>${c.movePath ? ` → <code>${esc(c.movePath)}</code>` : ""}${added ? `<span class="plus">+${esc(added)}</span>` : ""}${removed ? `<span class="minus">−${esc(removed)}</span>` : ""}${label}<button class="btn sm ghost" data-open-file="${esc(c.movePath || c.path)}">Open in Files</button></div>${mini}</div>`;
+    }
+    /** A run of the agent's commands as one row: "✓ N steps completed", opened to the list. @param {any[]} list */
+    function ranGroupHtml(list) {
+      const running = list.some((x) => x.status === "inProgress");
+      const failed = list.filter((x) => x.status === "completed" && x.exitCode).length;
+      const n = list.length;
+      const head = running ? `<i class="spin"></i> ${esc(n)} step${n === 1 ? "" : "s"}, one running…` : `✓ ${esc(n)} step${n === 1 ? "" : "s"} completed${failed ? ` · ${esc(failed)} exited with an error` : ""}`;
+      return `<details class="ag rangroup" data-group="${esc(list[0].id)}"><summary>${head}</summary><div class="rgbody">${list.map(entryHtml).join("")}</div></details>`;
+    }
+    /** The chat's entries, with each run of commands grouped (build weeks). @param {any[]} entries */
+    function logHtml(entries) {
+      if (!grouped()) return entries.map(entryHtml).join("");
+      let out = "";
+      /** @type {any[]} */
+      let run = [];
+      const flush = () => {
+        if (run.length) out += ranGroupHtml(run);
+        run = [];
+      };
+      for (const e of entries) {
+        if (e.kind === "command") run.push(e);
+        else {
+          flush();
+          out += entryHtml(e);
+        }
+      }
+      flush();
+      return out;
+    }
+    const grouped = () => Boolean(mounted && mounted.week >= 4);
 
     /** @param {any} e */
     function entryHtml(e) {
@@ -7244,6 +7485,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         const status = e.status === "completed" ? (e.exitCode ? `exit ${esc(e.exitCode)}` : "done") : e.status === "inProgress" ? "running…" : esc(e.status);
         return `<details class="ag ran" data-entry="${esc(e.id)}"><summary><span class="what">Ran</span> <code>${esc(plainCommand(e.command))}</code> <em>${status}</em></summary><pre class="log" data-field="output">${esc(e.output)}</pre></details>`;
       }
+      if (e.kind === "file" && grouped() && (e.changes ?? []).length) return `<div class="ag files" data-entry="${esc(e.id)}">${(e.changes ?? []).map((/** @type {any} */ c) => diffCard(c, e.status)).join("")}</div>`;
       if (e.kind === "file") {
         const list = (e.changes ?? []).map((/** @type {any} */ c) => `<div><button class="linkbtn mono" data-open-file="${esc(c.path)}" title="Open it in the Files tab">${esc(c.path)}</button>${c.movePath ? ` moves to <code>${esc(c.movePath)}</code>` : ""} <em>${esc(c.kind)}</em></div>`).join("");
         const diffs = (e.changes ?? []).map((/** @type {any} */ c) => c.diff).filter(Boolean).join("\n");
@@ -7308,6 +7550,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       stop.textContent = s?.turn?.status === "stopping" ? "Stopping…" : "Stop";
       const line = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-working]"));
       line.hidden = !busy;
+      const pill = /** @type {HTMLElement | null} */ (document.querySelector("[data-cstatus]"));
+      if (pill) {
+        const [cls, text] = busy ? ["work", "Codex is working"] : ready ? ["ok", "Codex ready"] : s?.phase === "signed-out" || s?.phase === "signing-in" ? ["bad", "Codex isn't signed in"] : s?.phase === "failed" || s?.phase === "missing" || s?.phase === "too-old" || s?.phase === "unavailable" ? ["bad", "Codex needs a fix"] : ["", "Starting Codex…"];
+        pill.className = `cstatus ${cls}`;
+        pill.textContent = text;
+      }
       const who = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-who]"));
       who.textContent = ready ? `Codex ${s.version}${s.account?.email ? ` · ${s.account.email}` : ""}` : "";
       /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-perms]")).textContent = s?.permissions ?? "";
@@ -7317,6 +7565,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     function paintEntry(entry) {
       const log = mounted?.el.querySelector("[data-agent-log]");
       if (!log) return;
+      if (grouped() && entry.kind === "command") return paintCommand(log, entry);
       const html = entryHtml(entry);
       const old = log.querySelector(`[data-entry="${CSS.escape(entry.id)}"]`);
       if (!html) return;
@@ -7329,10 +7578,33 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       if (nearEnd) log.scrollTop = log.scrollHeight;
     }
 
+    /** A command in a build week: into the run of commands it belongs to, whose summary is redrawn. @param {Element} log @param {any} entry */
+    function paintCommand(log, entry) {
+      const nearEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+      const all = /** @type {any[]} */ (state?.entries ?? []);
+      const at = all.findIndex((x) => x.id === entry.id);
+      // Its run: the commands around it with nothing else in between.
+      let from = at;
+      while (from > 0 && all[from - 1].kind === "command") from--;
+      let to = at;
+      while (to < all.length - 1 && all[to + 1].kind === "command") to++;
+      const run = at < 0 ? [entry] : all.slice(from, to + 1);
+      const old = log.querySelector(`[data-group="${CSS.escape(run[0].id)}"]`) ?? log.querySelector(`[data-entry="${CSS.escape(entry.id)}"]`)?.closest("[data-group]");
+      const open = old instanceof HTMLDetailsElement && old.open;
+      const openRows = old ? [...old.querySelectorAll("details[data-entry][open]")].map((d) => d.getAttribute("data-entry")) : [];
+      const html = ranGroupHtml(run);
+      if (old) old.outerHTML = html;
+      else log.insertAdjacentHTML("beforeend", html);
+      const now = log.querySelector(`[data-group="${CSS.escape(run[0].id)}"]`);
+      if (open) now?.setAttribute("open", "");
+      for (const id of openRows) if (id) now?.querySelector(`[data-entry="${CSS.escape(id)}"]`)?.setAttribute("open", "");
+      if (nearEnd) log.scrollTop = log.scrollHeight;
+    }
+
     function paintAll() {
       if (!mounted || !state) return;
       const log = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-log]"));
-      log.innerHTML = (state.entries ?? []).map(entryHtml).join("");
+      log.innerHTML = logHtml(state.entries ?? []);
       log.scrollTop = log.scrollHeight;
       paintState();
     }
@@ -7405,6 +7677,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const res = await fetch(`/api/build?week=${m.week}`, { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null);
       if (mounted !== m) return;
       buildList = res?.steps ?? [];
+      ahead = Number(res?.ahead) || 0;
       filesTab.refresh(); // the folder may have changed with it
       paintBuild();
       // Steps already green (written another way, or in one go with an earlier one) are skipped.
@@ -7414,6 +7687,11 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       return buildList.find((st) => !stepDone(st)) ?? null;
     }
     /** The components, in order, each with its steps. */
+    /** A step's number within its component, as the top bar counts: [n, of]. @param {any} st */
+    function stepOf(st) {
+      const part = components().find((x) => x.steps.includes(st));
+      return part ? [part.steps.indexOf(st) + 1, part.steps.length] : [st.n, buildList.length];
+    }
     function components() {
       /** @type {{ c: any, steps: any[] }[]} */
       const out = [];
@@ -7441,21 +7719,40 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       if (!r) return st.stubbed ? `<p class="muted">Press Send to the agent. Read what Codex changes; the studio checks it when Codex finishes.</p>` : `<p class="muted">Written, not checked yet: press Run its tests.</p>`;
       if (r.phase === "running") return `<div class="status run"><i class="spin"></i><div><b>Checking ${esc(st.id)}…</b></div></div>`;
       if (r.phase === "error") return `<div class="status bad"><span class="icon">!</span><div><b>The tests couldn't run.</b></div></div>`;
-      if (r.phase === "failed") return `<div class="status bad"><span class="icon">!</span><div><b>${esc(r.failed)} of its tests fail.</b><div class="sub">${esc(r.failures?.[0]?.test ?? "")}: ${esc(String(r.failures?.[0]?.message ?? "").split("\n")[0])}</div><div class="sub">Tell Codex what you see (Ask the agent something else, below), or press Run its tests after a change.</div></div></div>`;
-      const todo = r.waiting?.length ? ` Waiting on: ${r.waiting.join(", ")}.` : "";
-      return `<div class="status ok"><span class="icon">✓</span><div><b>${r.passed ? `${esc(r.passed)} test${r.passed === 1 ? "" : "s"} pass.` : "Nothing fails."}</b>${todo ? `<div class="sub">${esc(todo)}</div>` : ""}</div></div>
-        <div class="row"><button class="btn primary" data-build-commit="${esc(st.id)}" data-w="${esc(st.week)}">Commit it</button><span class="muted">It commits the whole file.</span></div>`;
+      if (r.phase === "failed")
+        return `${testsCard(st, r)}<div class="row"><span class="muted">Commit it unlocks when the tests pass.</span><button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">↻ Run again</button></div>`;
+      return `${testsCard(st, r)}
+        <div class="row"><button class="btn primary" data-build-commit="${esc(st.id)}" data-w="${esc(st.week)}">✓ Commit it</button><span class="muted">It commits the whole file.</span><button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">↻ Run again</button></div>`;
+    }
+    /**
+     * The studio's verdict on a step's tests, as a card: which pass and which fail, by name, the
+     * first failure's message. All of it from the test run, escaped.
+     * @param {any} st @param {any} r
+     */
+    function testsCard(st, r) {
+      const names = /** @type {string[]} */ (r.passedTests ?? []);
+      const failures = /** @type {any[]} */ (r.failures ?? []);
+      const total = (r.passed ?? 0) + (r.failed ?? 0);
+      const ok = (/** @type {string} */ n) => `<li class="ok"><span>✓</span>${esc(n)}</li>`;
+      const passedList = names.length ? `${names.slice(0, 3).map(ok).join("")}${names.length > 3 || r.passed > names.length ? `<li class="more"><details><summary>+ ${esc(r.passed - Math.min(3, names.length))} more</summary><ul>${names.slice(3).map(ok).join("")}</ul></details></li>` : ""}` : r.passed ? `<li class="ok"><span>✓</span>${esc(r.passed)} pass</li>` : "";
+      const failedList = failures.map((f) => `<li class="bad"><span>✗</span><div>${esc(f.test)}<div class="sub">${esc(String(f.message ?? "").split("\n")[0].slice(0, 240))}</div></div></li>`).join("");
+      const more = r.failed > failures.length ? `<li class="bad more"><span>✗</span>${esc(r.failed - failures.length)} more</li>` : "";
+      const todo = r.waiting?.length ? `<div class="sub">Waiting on: ${esc(r.waiting.join(", "))}.</div>` : "";
+      const blocked = r.blocked ? `<div class="sub">${esc(r.blocked)} more open a local socket: press Run again to check them outside the sandbox.</div>` : "";
+      const head = r.phase === "failed" ? `✗ ${esc(r.failed)} of Step ${esc(stepOf(st)[0])}'s tests fail` : r.passed ? `✓ Step ${esc(stepOf(st)[0])}'s tests pass` : "✓ Nothing fails";
+      const sub = total ? `${r.phase === "failed" ? `${esc(r.passed)} of ${esc(total)} pass` : `${esc(r.passed)} of ${esc(total)}`} · checked by the studio` : "checked by the studio";
+      return `<div class="tcard ${r.phase === "failed" ? "bad" : "ok"}"><div class="tch"><b>${head}</b><span class="sub">${sub}</span></div><ul>${failedList}${more}${passedList}</ul>${todo}${blocked}</div>`;
     }
     /** Its tests pass as the code is now (left to commit, if it isn't done): no Send. @param {any} st */
     const greenNow = (st) => snap?.code?.[st.id]?.phase === "passed" && snap.code[st.id].rev === st.rev;
     /** @param {any} st */
     function stepCard(st) {
       return `<section class="bcard">
-          <p class="eyebrow">Step ${esc(st.n)} · ${esc(String(st.id).toUpperCase())}${st.week !== mounted?.week ? ` · from week ${esc(st.week)}` : ""} · <code>${esc(st.id)}</code>${st.file ? ` in <code>${esc(st.file)}</code>` : ""}</p>
+          <p class="eyebrow">Step ${esc(stepOf(st)[0])} of ${esc(stepOf(st)[1])} · ${esc(String(st.id).toUpperCase())}${st.week !== mounted?.week ? ` · from week ${esc(st.week)}` : ""} · <code>${esc(st.id)}</code>${st.file ? ` in <code>${esc(st.file)}</code>` : ""}</p>
           <h2>${esc(st.title || st.id)}</h2>
           ${st.concept ? `<p class="lesson">${esc(st.concept).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")}</p>` : ""}
           ${st.prompt ? `<details class="bprompt"><summary>What it sends to the agent</summary><pre>${esc(st.prompt)}</pre></details>` : ""}
-          <div class="row">${st.prompt && st.found && !stepDone(st) && !greenNow(st) ? `<button class="btn primary" data-build-send="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>Send to the agent</button>` : ""}${st.found && !stepDone(st) ? `<button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">Run its tests</button>` : ""}</div>
+          <div class="row">${st.prompt && st.found && !stepDone(st) && !greenNow(st) ? `<button class="btn primary" data-build-send="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>Send to the agent</button>` : ""}${st.found && !stepDone(st) && !["passed", "failed"].includes(snap?.code?.[st.id]?.phase) ? `<button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">Run its tests</button>` : ""}</div>
           ${st.found ? buildResult(st) : `<p class="muted">This step's code isn't in your folder yet.</p>`}
           ${st.stuck ? `<p class="${snap?.code?.[st.id]?.phase === "failed" ? "stuck bad" : "muted"}"><b>Stuck?</b> ${esc(st.stuck).replace(/`([^`\n]+)`/g, "<code>$1</code>")}</p>${snap?.code?.[st.id]?.phase === "failed" ? `<div class="row"><button class="btn" data-build-hint="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>➤ Send this hint</button></div>` : ""}` : ""}
           ${st.found && st.file ? `<div class="bchips"><button class="chip" data-open-file="${esc(st.file)}" title="Open it in the Files tab">✎ ${esc(st.file)}</button></div>` : ""}
@@ -7493,7 +7790,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         card = `<section class="bcard bfinish"><h2>✓ ${esc(finished.c.title)} works.</h2>
           ${finished.c.works ? `<p class="lesson">${esc(finished.c.works)}</p>` : ""}
           <div class="row">${finished.steps[0]?.found ? `<button class="btn" data-build-test="${esc(finished.steps[finished.steps.length - 1].id)}" data-w="${esc(finished.steps[finished.steps.length - 1].week)}">Run its tests again</button>` : ""}${finished.c.board ? `<button class="btn" data-do="tab" data-tab="board">See it on the board</button>` : ""}<button class="btn primary" data-build-seen="${esc(finished.c.id)}">${next ? `Next: ${esc(next.c.title || "the next part")}` : "Done"}</button></div></section>`;
-      } else if (!st) card = `<section class="bcard bfinish"><h2>✓ Everything this week is built.</h2><p class="lesson">Push your work with <code>git push</code> (or run npm start again: it pushes for you).</p></section>`;
+      } else if (!st) card = `<section class="bcard bfinish"><h2>✓ Everything this week is built.</h2><p class="lesson">Press Push (top right) to send your work to GitHub.</p></section>`;
       else card = `${now.steps.filter(stepDone).map((x) => `<p class="bdoneline">✓ ${esc(x.title || x.id)}, done</p>`).join("")}${stepCard(st)}`;
       const notes = /** @type {HTMLElement | null} */ (document.querySelector("[data-bnotes]"));
       // Notes HTML is rendered by the studio from the student's own guide (escaped markdown).
@@ -7511,6 +7808,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           if (x && x.textContent !== text) x.textContent = text;
         };
         set("[data-ctitle]", now.c.title || "This week's build");
+        set("[data-cahead]", ahead ? ` · ${ahead}` : "");
         set("[data-csub]", ` · Component ${ci + 1} of ${all.length}${st ? ` · step ${now.steps.indexOf(st) + 1} of ${now.steps.length}` : ""}`);
         set("[data-cpct]", `${pct}% of steps done · ${totalDone} of ${buildList.length}`);
         const bar = /** @type {HTMLElement | null} */ (ui.querySelector("[data-cbar]"));
@@ -7518,7 +7816,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         set('[data-ccount="steps"]', ` (${buildList.length})`);
         const list = /** @type {HTMLElement | null} */ (ui.querySelector("[data-bsteplist]"));
         const listHtml = all
-          .map((x) => `<h4>${esc(x.c.title || "This week's build")}</h4>${x.steps.map((y) => `<div class="crow ${stepDone(y) ? "done" : y === st ? "now" : "locked"}"><span>${stepDone(y) ? "✓" : y === st ? "▸" : "🔒"}</span><div><b>${esc(y.n)}. ${esc(y.title || y.id)}</b><div class="muted">${esc(y.test || y.testNote || "")}</div></div></div>`).join("")}`)
+          .map((x) => `<h4>${esc(x.c.title || "This week's build")}</h4>${x.steps.map((y) => `<div class="crow ${stepDone(y) ? "done" : y === st ? "now" : "locked"}"><span>${stepDone(y) ? "✓" : y === st ? "▸" : "🔒"}</span><div><b>${esc(x.steps.indexOf(y) + 1)}. ${esc(y.title || y.id)}</b><div class="muted">${esc(y.test || y.testNote || "")}</div></div></div>`).join("")}`)
           .join("");
         if (list && list.dataset.html !== listHtml) {
           list.innerHTML = listHtml;
@@ -7563,7 +7861,8 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         <form class="agcomposer${chat ? " pinned" : ""}" data-agent-composer hidden>
           <label class="sub" ${week >= 4 ? "hidden" : ""}>Working on <select name="agenttask" data-agent-task><option value="">no particular task</option></select></label>
           <textarea name="agentmessage" rows="${week >= 4 ? 2 : 4}" placeholder="${week >= 4 ? "Ask the agent about this step…" : "Say how you want to approach it, then what you'd like Codex to do."}" spellcheck="true">${esc(draft)}</textarea>
-          <div class="row"><button class="btn primary" type="submit" data-agent-send>Send <kbd>⌘↵</kbd></button><button class="btn" type="button" data-agent-stop hidden>Stop</button></div>
+          <div class="row">${week >= 4 ? `<button class="btn sm ghost" type="button" data-composer-file title="Name a file from your folder in the message">＋ File</button><button class="btn sm ghost" type="button" data-composer-notes title="Add this part's design notes to the message">＃ Design notes</button><span class="sp"></span>` : ""}<button class="btn primary" type="submit" data-agent-send>Send <kbd>⌘↵</kbd></button><button class="btn" type="button" data-agent-stop hidden>Stop</button></div>
+          ${week >= 4 ? `<div class="filepick" data-filepick hidden><input type="search" placeholder="Find a file…" data-filepick-q aria-label="Find a file"><ul data-filepick-list></ul></div>` : ""}
           ${week >= 4 ? `<p class="cdisclaim">The agent can make mistakes. Check its work with the tests.</p>` : ""}
         </form>`;
       const scroller = /** @type {HTMLElement | null} */ (el.querySelector("[data-agscroll]"));
@@ -7596,6 +7895,48 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         }
       }
     }
+
+    /** Text into the message box at the cursor, the box opened and focused. @param {string} text */
+    function insertInBox(text) {
+      const box = /** @type {HTMLTextAreaElement | null} */ (mounted?.el.querySelector("textarea[name=agentmessage]") ?? null);
+      if (!box) return;
+      const at = box.selectionStart ?? box.value.length;
+      const before = box.value.slice(0, at);
+      const pad = before && !/\s$/.test(before) ? " " : "";
+      box.value = `${before}${pad}${text}${box.value.slice(box.selectionEnd ?? at)}`;
+      draft = box.value;
+      box.focus();
+      const end = before.length + pad.length + text.length;
+      box.setSelectionRange(end, end);
+    }
+    /** @type {{ path: string, status?: string }[]} */
+    let pickFiles = [];
+    /** The composer's file list: changed files first, filtered as the student types. */
+    async function openFilePick() {
+      const pick = /** @type {HTMLElement | null} */ (mounted?.el.querySelector("[data-filepick]") ?? null);
+      if (!pick) return;
+      if (!pick.hidden) return void (pick.hidden = true);
+      pick.hidden = false;
+      const q = /** @type {HTMLInputElement} */ (pick.querySelector("[data-filepick-q]"));
+      q.value = "";
+      q.focus();
+      paintFilePick();
+      const res = await fetch("/api/files", { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null);
+      pickFiles = (res?.files ?? []).slice().sort((/** @type {any} */ a, /** @type {any} */ b) => Number(Boolean(b.status)) - Number(Boolean(a.status)));
+      paintFilePick();
+    }
+    function paintFilePick() {
+      const pick = /** @type {HTMLElement | null} */ (mounted?.el.querySelector("[data-filepick]") ?? null);
+      if (!pick) return;
+      const q = /** @type {HTMLInputElement} */ (pick.querySelector("[data-filepick-q]")).value.trim().toLowerCase();
+      const list = pickFiles.filter((f) => !q || f.path.toLowerCase().includes(q)).slice(0, 40);
+      /** @type {HTMLElement} */ (pick.querySelector("[data-filepick-list]")).innerHTML = list.length
+        ? list.map((f) => `<li><button type="button" data-pick-file="${esc(f.path)}">${f.status ? `<span class="mk"></span>` : ""}<code>${esc(f.path)}</code></button></li>`).join("")
+        : `<li class="muted">${pickFiles.length ? "No file matches." : "Loading…"}</li>`;
+    }
+    document.addEventListener("input", (e) => {
+      if (/** @type {HTMLElement} */ (e.target).matches?.("[data-filepick-q]")) paintFilePick();
+    });
 
     async function submit() {
       if (!mounted) return;
@@ -7659,7 +8000,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       }
     });
     document.addEventListener("click", (e) => {
-      const el = /** @type {HTMLElement} */ (e.target).closest("[data-cpane-tab],[data-md-copy],[data-agent-answer],[data-agent-stop],[data-agent-login],[data-agent-open],[data-agent-recheck],[data-agent-commit],[data-agent-test],[data-build-send],[data-build-hint],[data-build-test],[data-build-commit],[data-build-seen],[data-agent-more]");
+      const el = /** @type {HTMLElement} */ (e.target).closest("[data-cpane-tab],[data-build-push],[data-course-toggle],[data-composer-file],[data-composer-notes],[data-pick-file],[data-md-copy],[data-agent-answer],[data-agent-stop],[data-agent-login],[data-agent-open],[data-agent-recheck],[data-agent-commit],[data-agent-test],[data-build-send],[data-build-hint],[data-build-test],[data-build-commit],[data-build-seen],[data-agent-more]");
       if (!(el instanceof HTMLElement)) return;
       if (el.dataset.mdCopy !== undefined) {
         const code = el.closest(".mdcode")?.querySelector("code")?.textContent ?? "";
@@ -7677,6 +8018,28 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         });
       } else if (el.dataset.agentRecheck !== undefined) {
         void act({ type: "agent-recheck" });
+      } else if (el.dataset.buildPush !== undefined) {
+        /** @type {HTMLButtonElement} */ (el).disabled = true;
+        void ask({ type: "work-push" }).then((/** @type {any} */ r) => {
+          /** @type {HTMLButtonElement} */ (el).disabled = false;
+          toast(r.ok ? (r.said ?? "Pushed.") : (r.error ?? "The push didn't go through."));
+          if (r.ok && mounted) void loadBuild(mounted);
+        });
+      } else if (el.dataset.courseToggle !== undefined) {
+        document.querySelector(".work")?.classList.toggle("showcourse");
+      } else if (el.dataset.composerFile !== undefined) {
+        void openFilePick();
+      } else if (el.dataset.pickFile) {
+        insertInBox(`\`${el.dataset.pickFile}\``);
+        const pick = /** @type {HTMLElement | null} */ (mounted?.el.querySelector("[data-filepick]") ?? null);
+        if (pick) pick.hidden = true;
+      } else if (el.dataset.composerNotes !== undefined) {
+        const st = currentBuildStep();
+        const title = st?.component?.title || "this part";
+        // The notes as written in the guide (Markdown, tables intact), whether or not their tab is open.
+        const notes = String(st?.component?.notesText ?? "").trim().slice(0, 4000);
+        if (!notes) toast("This part has no design notes.");
+        else insertInBox(`Design notes for ${title}:\n${notes}\n`);
       } else if (el.dataset.buildHint !== undefined) {
         // The step's Stuck? line, to the agent, for the same task.
         const st = buildList[Number(el.dataset.buildHint)];
@@ -7735,7 +8098,10 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     return {
       onEvent,
       /** The Build view's current step (its file, its id, its rev), or null. */
-      currentStep: () => (mounted && buildList.length ? currentBuildStep() : null),
+      currentStep: () => {
+        const st = mounted && buildList.length ? currentBuildStep() : null;
+        return st ? { ...st, n: stepOf(st)[0] } : null; // numbered within its component, as the top bar
+      },
       /** After each render: mount the tab when it's shown. */
       sync() {
         const el = /** @type {HTMLElement | null} */ (document.querySelector("[data-agenttab]"));
@@ -7807,7 +8173,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     // tabs only show and hide its panes, so the chat never moves.
     else if (tab === "agent" && building)
       body = `<div class="chatui" data-chatui>
-        <div class="ctop"><div><b data-ctitle>This week's build</b><span class="csub" data-csub></span></div><div class="cprog"><span data-cpct></span><div class="bbar"><i data-cbar style="width:0%"></i></div></div></div>
+        <div class="ctop"><button class="cback" data-course-toggle title="Show or hide the course list">← Week ${esc(g.week)}</button><span class="csep"></span><div class="cname"><b data-ctitle>This week's build</b><span class="csub" data-csub></span></div><div class="cright"><span class="cstatus" data-cstatus>Codex…</span><div class="cprog"><span data-cpct></span><div class="bbar"><i data-cbar style="width:0%"></i></div></div><button class="btn sm cpush" data-build-push title="Send your commits to your fork on GitHub (git push)">Push<span data-cahead></span></button></div></div>
         <div class="cgrid" data-cgrid>
           <div class="ccol"><div class="agenttab" data-agenttab="${esc(g.week)}"></div></div>
           <div class="cdiv" data-cdiv title="Drag to resize"></div>
