@@ -98,7 +98,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 23;
+export const STUDIO_VERSION = 24;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -1137,6 +1137,9 @@ export function courseSteps() {
         // The course's account was signed out of gh: say so, rather than act as another account.
         const gone = chosenSignedOut(ctx);
         if (gone) return { done: false, found: gone };
+        // A returning student whose state doesn't name the account (an older or lost state file):
+        // their copy says which it is, so it isn't asked again (gh's own in use may be another one).
+        adoptCourseAccount(ctx, ctx.state.repoDir ?? findClone(ctx));
         const login = ghLogin(ctx);
         const token = ghTokenVar(ctx);
         if (!login) return { done: false, found: token ? `This terminal's ${token} doesn't sign in to GitHub (an old or wrong token?).` : "You're not signed in to GitHub yet." };
@@ -1412,18 +1415,19 @@ export function courseSteps() {
       // it, which can take minutes. It looks for the program instead, and runs `codex --version`
       // once, visibly, after installing.
       check: async (ctx) => {
-        const version = ctx.state.codexVersion ? ` (${ctx.state.codexVersion})` : "";
         if (!onPath(ctx, "codex")) return { done: false, found: "Codex isn't installed yet." };
         // A version an earlier studio wrote down may be out of date (Codex updates itself, or was
         // updated in a terminal): when it looks too old, ask Codex (it has run before, so no wait).
-        if (ctx.state.codexVersion && versionOlder(ctx.state.codexVersion, CODEX_MIN_VERSION) && !ctx.dryRun) {
+        // None written down (an older or lost state file): ask too, so its sign-in is asked of Codex
+        // (codex login status), not guessed from auth.json (Codex may keep it in the keychain).
+        if ((!ctx.state.codexVersion || versionOlder(ctx.state.codexVersion, CODEX_MIN_VERSION)) && !ctx.dryRun) {
           const now = /\d+\.\d+\.\d+[\w.-]*/.exec(output(ctx, ["codex", ...CODEX_FLAGS, "--version"]) ?? "")?.[0];
           if (now) ctx.state.codexVersion = now;
         }
-        const version2 = ctx.state.codexVersion ? ` (${ctx.state.codexVersion})` : "";
+        const version = ctx.state.codexVersion ? ` (${ctx.state.codexVersion})` : "";
         if (ctx.state.codexVersion && versionOlder(ctx.state.codexVersion, CODEX_MIN_VERSION)) return { done: false, found: `Codex ${ctx.state.codexVersion} is too old for the studio's Agent tab (it needs ${CODEX_MIN_VERSION} or newer).` };
         const signedIn = codexSignedIn(ctx);
-        return { done: signedIn, found: signedIn ? `Codex is installed${version2} and signed in.` : `Codex is installed${version2} but not signed in.` };
+        return { done: signedIn, found: signedIn ? `Codex is installed${version} and signed in.` : `Codex is installed${version} but not signed in.` };
       },
       plan: (ctx) => {
         const installed = onPath(ctx, "codex");
@@ -9045,6 +9049,21 @@ function dryRunStream(argv, cwd, onData) {
  *   setup: week 1, re-checked. done: in work, a later week too. inwork: the newest week in work.
  *   get: the week to get now. later: published, after the one to get. future: not out yet.
  */
+
+/**
+ * The course's account when the state doesn't name one (an older studio's state, or one that was
+ * lost): the owner of the student's copy's origin (their fork), when gh is signed in to it on this
+ * laptop. A token in this terminal decides by itself, as always; an account gh doesn't have is asked.
+ * @param {Context} ctx
+ * @param {string | null | undefined} dir  the course folder, if there is one yet
+ */
+export function adoptCourseAccount(ctx, dir) {
+  if (isGithubUsername(ctx.state.login) || !dir || ctx.dryRun || ghTokenVar(ctx)) return;
+  const owner = parseRemote(output(ctx, ["git", "remote", "get-url", "origin"], dir) ?? "")?.owner;
+  if (!isGithubUsername(owner) || sameLogin(owner, STARTER.split("/")[0])) return;
+  const known = ghAccounts(ctx).find((a) => sameLogin(a.login, owner));
+  if (known) ctx.state.login = known.login;
+}
 
 /**
  * Setup (week 1), or, once setup is done, getting the next week: which one this run is.
