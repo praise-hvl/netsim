@@ -98,7 +98,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 21;
+export const STUDIO_VERSION = 23;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -681,18 +681,25 @@ export function accountEnv(argv, env, token) {
 
 /**
  * The environment of one command the studio runs: accountEnv, and for everything that isn't gh or
- * git talking to GitHub, the course's account's name (NETSIM_GITHUB_ACCOUNT, never a token) so the
- * doctor checks the account the studio pushes as. Not with a token in this terminal: that token
- * picks the account, and the doctor sees it the same way.
+ * git talking to GitHub, the name of the account the studio pushes as (NETSIM_GITHUB_ACCOUNT, never a
+ * token), so the doctor checks that one. With a token in this terminal that's the token's account
+ * (as GitHub said, asked once), marked NETSIM_GITHUB_ACCOUNT_FROM=token: the doctor never gets the
+ * token (accountEnv takes it away), so it can't ask GitHub itself, and gh's own account isn't the
+ * one git pushes as. Without one, it's the course's account (state.login).
  * @param {string[]} argv
  * @param {Record<string, string | undefined>} env
  * @param {string | undefined} login  state.login
  * @param {() => string | null | undefined} token
+ * @param {() => string | null} [tokenLogin]  the terminal token's account, asked of GitHub (once)
  */
-export function commandEnv(argv, env, login, token) {
+export function commandEnv(argv, env, login, token, tokenLogin = () => null) {
   const out = accountEnv(argv, env, token);
-  const terminal = TOKEN_VARS.some((k) => env[k]);
-  return tokenKind(argv) === "other" && !terminal && isGithubUsername(login) ? { ...out, NETSIM_GITHUB_ACCOUNT: login } : out;
+  if (tokenKind(argv) !== "other") return out;
+  if (TOKEN_VARS.some((k) => env[k])) {
+    const as = tokenLogin();
+    return isGithubUsername(as) ? { ...out, NETSIM_GITHUB_ACCOUNT: as, NETSIM_GITHUB_ACCOUNT_FROM: "token" } : out;
+  }
+  return isGithubUsername(login) ? { ...out, NETSIM_GITHUB_ACCOUNT: login } : out;
 }
 
 /**
@@ -1407,9 +1414,16 @@ export function courseSteps() {
       check: async (ctx) => {
         const version = ctx.state.codexVersion ? ` (${ctx.state.codexVersion})` : "";
         if (!onPath(ctx, "codex")) return { done: false, found: "Codex isn't installed yet." };
+        // A version an earlier studio wrote down may be out of date (Codex updates itself, or was
+        // updated in a terminal): when it looks too old, ask Codex (it has run before, so no wait).
+        if (ctx.state.codexVersion && versionOlder(ctx.state.codexVersion, CODEX_MIN_VERSION) && !ctx.dryRun) {
+          const now = /\d+\.\d+\.\d+[\w.-]*/.exec(output(ctx, ["codex", ...CODEX_FLAGS, "--version"]) ?? "")?.[0];
+          if (now) ctx.state.codexVersion = now;
+        }
+        const version2 = ctx.state.codexVersion ? ` (${ctx.state.codexVersion})` : "";
         if (ctx.state.codexVersion && versionOlder(ctx.state.codexVersion, CODEX_MIN_VERSION)) return { done: false, found: `Codex ${ctx.state.codexVersion} is too old for the studio's Agent tab (it needs ${CODEX_MIN_VERSION} or newer).` };
         const signedIn = codexSignedIn(ctx);
-        return { done: signedIn, found: signedIn ? `Codex is installed${version} and signed in.` : `Codex is installed${version} but not signed in.` };
+        return { done: signedIn, found: signedIn ? `Codex is installed${version2} and signed in.` : `Codex is installed${version2} but not signed in.` };
       },
       plan: (ctx) => {
         const installed = onPath(ctx, "codex");
@@ -1478,7 +1492,7 @@ export function courseSteps() {
       explain: "npm install downloads the code the course uses; the doctor checks your whole setup.",
       why: "The last step: install the course's packages, then run the course's own check. Paste its output into docs/notes/week-01.md.",
       example: "doctor: all 8 checks passed",
-      check: async (ctx) => ({ done: ctx.state.doctorOk === true, found: ctx.state.doctorOk ? "doctor: all 8 checks passed" : "The doctor hasn't run yet." }),
+      check: async (ctx) => doctorCheck(ctx, ctx.state.repoDir ?? findClone(ctx)),
       plan: (ctx) => {
         const dir = repoDir(ctx);
         const installed = ctx.exists(join(dir, "node_modules", "zod", "package.json")) && ctx.exists(join(dir, "node_modules", "vitest", "package.json"));
@@ -1512,11 +1526,10 @@ function doctorCommand(ctx, dir) {
     what: "Runs the course's checks of your setup (8 must pass; a couple more are only advice). It must end with: doctor: all 8 checks passed.",
     words: [["run", "run one of the course's scripts, from package.json"], ["doctor", "the setup check"]],
     judge: (result) => {
-      const text = `${result.stdout}\n${result.stderr}`;
-      const ok = /doctor: all 8 checks passed/.test(text);
-      ctx.state.doctorOk = ok;
-      if (ok) return { done: true, found: "doctor: all 8 checks passed" };
-      const items = doctorFailures(text);
+      const r = judgeDoctor(ctx, dir, `${result.stdout}\n${result.stderr}`);
+      ctx.state.doctorOk = r.done;
+      if (r.done) return { done: true, found: r.found };
+      const items = r.items;
       return {
         done: false,
         found: items.length === 0 ? "The doctor didn't pass (Show full output has what it printed)." : items.length === 1 ? "One of the doctor's checks didn't pass:" : `${items.length} of the doctor's checks didn't pass:`,
@@ -1524,6 +1537,61 @@ function doctorCommand(ctx, dir) {
       };
     },
   });
+}
+
+/** The doctor's push check, by name. */
+const PUSH_CHECK = "you can push to your fork";
+
+/**
+ * What the doctor's output means. It passed when it says so, or when the only check that failed is
+ * the push check and the studio can push to the fork itself: the push check is the studio's own
+ * (the folder's doctor may be an older copy, or check another account than the one the studio pushes as).
+ * @param {Context} ctx
+ * @param {string} dir
+ * @param {string} text  what the doctor printed
+ * @returns {{ done: boolean, found: string, items: { check: string, found: string, fix: string }[] }}
+ */
+export function judgeDoctor(ctx, dir, text) {
+  if (/doctor: all 8 checks passed/.test(text)) return { done: true, found: "doctor: all 8 checks passed", items: [] };
+  const items = doctorFailures(text);
+  if (items.length === 1 && items[0].check === PUSH_CHECK && studioCanPush(ctx, dir)) {
+    return { done: true, found: `doctor: all 8 checks passed (you can push to your fork: checked by the studio, as ${ghActiveAccount(ctx) ?? "your account"})`, items: [] };
+  }
+  return { done: false, found: "", items };
+}
+
+/**
+ * The doctor's step when the studio doesn't remember a pass (an earlier studio's state file, an
+ * account change, a reset): run the doctor quietly, as a check, and remember a pass. A student who
+ * finished setup is never sent back to type it again when it passes. Only in a course folder with its
+ * packages in (else the step's own commands install them first).
+ * @param {Context} ctx
+ * @param {string | null | undefined} dir
+ * @returns {{ done: boolean, found: string }}
+ */
+export function doctorCheck(ctx, dir) {
+  if (ctx.state.doctorOk === true) return { done: true, found: "doctor: all 8 checks passed" };
+  const ready = dir && ctx.exists(join(dir, "node_modules", "zod", "package.json")) && ctx.exists(join(dir, "node_modules", "vitest", "package.json"));
+  if (!ready || ctx.dryRun) return { done: false, found: "The doctor hasn't passed yet." };
+  const r = ctx.capture(["npm", "run", "-s", "doctor"], dir, { timeout: 120_000 });
+  const judged = r ? judgeDoctor(ctx, dir, `${r.stdout}\n${r.stderr}`) : null;
+  if (!judged?.done) return { done: false, found: "The doctor hasn't passed yet." };
+  ctx.state.doctorOk = true;
+  ctx.save?.();
+  return { done: true, found: judged.found };
+}
+
+/**
+ * Can the studio push to the student's fork from this folder, as the account it pushes as? A push
+ * that changes nothing (--dry-run), the studio's own guarded git (networkGit: the course's account's
+ * token, no hooks, GitHub only). Refused folders, or no gh outside the course folder: no.
+ * @param {Context} ctx
+ * @param {string} dir
+ */
+export function studioCanPush(ctx, dir) {
+  if (ctx.ghMissing || networkRefusal(ctx, dir, { push: true })) return false;
+  const argv = networkGit(ctx, "origin", ["push", "--dry-run", "--porcelain", "origin", "HEAD:refs/heads/work"], { ssh: originKind(originUrl(ctx, dir)) === "ssh" });
+  return ctx.capture(argv, dir, { timeout: 30_000 })?.code === 0;
 }
 
 /**
@@ -8720,7 +8788,7 @@ const WINDOWS_SHIMS = new Set(["npm", "npx", "codex", "code"]);
 function widenPath(platform) {
   const extra =
     platform === "mac"
-      ? ["/opt/homebrew/bin", "/usr/local/bin", dirname(process.execPath)]
+      ? ["/opt/homebrew/bin", "/usr/local/bin", join(homedir(), ".local", "bin"), dirname(process.execPath)]
       : platform === "windows"
         ? [
             join(process.env.APPDATA ?? "", "npm"),
@@ -8801,7 +8869,19 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
   };
   /** One command's environment (commandEnv): the course's account's token only where it's needed, asked for now. @param {string[]} argv */
   // No gh outside the course folder: no command gets a token.
-  const envFor = (argv) => commandEnv(argv, env, state.login, () => (ghPath() ? chosenToken(askGh, state.login) : undefined));
+  /** This terminal's token's account, as GitHub says (asked once, by gh with that token; null without one). @type {string | null | undefined} */
+  let tokenAccount;
+  const terminalLogin = () => {
+    if (tokenAccount !== undefined) return tokenAccount;
+    tokenAccount = null;
+    const gh = ghPath();
+    if (!gh || !TOKEN_VARS.some((k) => env[k])) return tokenAccount;
+    const r = spawnSync(gh, ["api", "user", "--jq", ".login"], { env, encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "ignore"] });
+    const login = r.status === 0 ? (r.stdout ?? "").trim() : "";
+    tokenAccount = isGithubUsername(login) ? login : null;
+    return tokenAccount;
+  };
+  const envFor = (argv) => commandEnv(argv, env, state.login, () => (ghPath() ? chosenToken(askGh, state.login) : undefined), terminalLogin);
   /** @param {string} program @param {string[]} args */
   const detached = (program, args) => {
     try {
@@ -9097,7 +9177,7 @@ export function inWorkSteps(week) {
   return weekSteps(week).map((step) => {
     if (inAlready.has(step.id)) return { ...step, check: async () => ({ done: true, found: `Done: week ${week} is in your work.` }) };
     if (step.id === "doctor-week")
-      return { ...step, check: async (/** @type {Context} */ ctx) => ({ done: ctx.state.doctorOk === true, found: ctx.state.doctorOk ? "doctor: all 8 checks passed" : "The doctor hasn't passed yet." }) };
+      return { ...step, check: async (/** @type {Context} */ ctx) => doctorCheck(ctx, ctx.state.repoDir ?? null) };
     return step;
   });
 }

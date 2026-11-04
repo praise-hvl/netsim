@@ -212,9 +212,27 @@ describe("the push check, for the account NetSim Studio uses", () => {
     expect(pushCheck(origin, pushIdentity(origin, run, "ada"))).toMatchObject({ status: "fail", detail: "ada isn't signed in to gh on this laptop" });
   });
 
-  it("the studio's account is gh's own, or none is given: exactly as before", () => {
+  it("a terminal token's account that isn't gh's own (from=token): the doctor takes the studio's word, and passes", () => {
     const { run, calls } = twoAccounts();
-    expect(pushIdentity(origin, run, "bob")).toEqual({ kind: "account", login: "bob", via: "gh" });
+    expect(pushIdentity(origin, run, "ada", "token")).toEqual({ kind: "account", login: "ada", via: "studio" });
+    expect(pushCheck(origin, pushIdentity(origin, run, "ada", "token"))).toMatchObject({ status: "pass", detail: "as ada" });
+    expect(calls.filter((c) => c.line.startsWith("gh "))).toEqual([]); // it asked gh nothing: the token is the terminal's, not gh's
+  });
+
+  it("run by the studio, a mismatch never says gh auth switch: it points at step 5", () => {
+    const { run } = twoAccounts();
+    const other = parseRemote("https://github.com/carol/netsim.git")!;
+    for (const [account, from] of [["bob", undefined], ["ada", "token"]] as const) {
+      const push = pushCheck(other, pushIdentity(other, run, account, from));
+      expect(push.status).toBe("fail");
+      expect(push.fix).not.toContain("gh auth switch");
+      expect(push.fix).toContain("step 5");
+    }
+  });
+
+  it("the studio's account is gh's own: gh's answer, as the studio's; none given: exactly as before", () => {
+    const { run, calls } = twoAccounts();
+    expect(pushIdentity(origin, run, "bob")).toEqual({ kind: "account", login: "bob", via: "studio" });
     expect(pushIdentity(origin, run)).toEqual({ kind: "account", login: "bob", via: "gh" });
     expect(pushIdentity(origin, run, "not a login;rm")).toEqual({ kind: "account", login: "bob", via: "gh" });
     expect(calls.some((c) => c.env?.GH_TOKEN)).toBe(false);
