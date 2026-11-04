@@ -98,7 +98,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 25;
+export const STUDIO_VERSION = 26;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -2413,8 +2413,11 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     return { kind: "none" };
   }
 
+  /** A newer Mac app is out (macAppUpdate): the page blocks the studio with its download. @type {{ current: string, version: string, dmg: string } | null} */
+  let appUpdate = null;
   function snapshot() {
     return {
+      ...(appUpdate ? { appUpdate } : {}),
       dryRun: ctx.dryRun,
       fresh: Boolean(ctx.fresh),
       platform: ctx.platform,
@@ -3506,7 +3509,15 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
   }
 
   return {
-    start: () => enter(0),
+    start: () => {
+      void macAppUpdate(ctx).then((u) => {
+        if (u) {
+          appUpdate = u;
+          publish();
+        }
+      });
+      return enter(0);
+    },
     act,
     snapshot,
     /**
@@ -8804,6 +8815,24 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
 
   function render() {
     if (!snap) return;
+    // An older Mac app: nothing else until it's updated (the page under it can't be used).
+    const upd = /** @type {{ current: string, version: string, dmg: string } | undefined} */ (/** @type {any} */ (snap).appUpdate);
+    let block = /** @type {HTMLElement | null} */ (document.querySelector("[data-app-update]"));
+    if (upd && !block) {
+      block = document.createElement("div");
+      block.dataset.appUpdate = "";
+      block.setAttribute("role", "dialog");
+      block.setAttribute("aria-modal", "true");
+      block.style.cssText = "position:fixed;inset:0;z-index:9999;display:grid;place-items:center;background:var(--bg,#f6f8f7);";
+      block.innerHTML = `<div style="max-width:560px;padding:36px 40px;border:1px solid var(--line,#dfe5e1);border-radius:16px;background:var(--panel,#fff)"><h1 style="font-size:24px;margin:0 0 10px">Update required: download the new app</h1><p>NetSim Studio <span data-app-update-version></span> is out, and the course needs it (this is <span data-app-update-current></span>).</p><p>Download it, open it, and drag NetSim Studio into Applications (replace the old one). Your work is safe in your course folder, and the new app opens where you left off.</p><p style="margin-top:22px"><a class="btn primary" data-app-update-link target="_blank" rel="noopener noreferrer">Download NetSim Studio</a></p></div>`;
+      document.body.append(block);
+    }
+    if (upd && block) {
+      /** @type {HTMLElement} */ (block.querySelector("[data-app-update-version]")).textContent = upd.version;
+      /** @type {HTMLElement} */ (block.querySelector("[data-app-update-current]")).textContent = upd.current;
+      /** @type {HTMLAnchorElement} */ (block.querySelector("[data-app-update-link]")).href = /^https:\/\/github\.com\//.test(upd.dmg) ? upd.dmg : "https://github.com/praiseisaac/netsim/releases";
+      return;
+    }
     if (snap.current !== outputFor) {
       outputFor = snap.current;
       showOutput = false;
@@ -9615,6 +9644,97 @@ async function runStudio(ctx, { open = true, port = 0, forceSetup = false, weekL
  * The newest week published on the course's repository (GitHub), or null offline / without git.
  * @param {Context} ctx
  */
+// ── The Mac app, when it's older than the newest release (apps without their own updater) ──
+
+/**
+ * The Mac app's version, from its bundle (this node runs inside it: …/NetSim Studio.app/Contents/
+ * Resources/node/bin/node), or null when the studio isn't running in the app.
+ * @param {string} execPath
+ * @param {(path: string) => string | null} readText
+ */
+export function appVersionFromBundle(execPath, readText) {
+  const at = execPath.lastIndexOf(".app/Contents/");
+  if (at < 0) return null;
+  const plist = readText(`${execPath.slice(0, at)}.app/Contents/Info.plist`) ?? "";
+  return /<key>CFBundleShortVersionString<\/key>\s*<string>(\d+\.\d+\.\d+)<\/string>/.exec(plist)?.[1] ?? null;
+}
+
+/** Is a.b.c newer than x.y.z? @param {string} a @param {string} b */
+const versionNewer = (a, b) => {
+  const x = a.split(".").map(Number);
+  const y = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+};
+
+/**
+ * The newest Mac release, from where GitHub's latest-release address landed
+ * (https://github.com/praiseisaac/netsim/releases/tag/mac-vX.Y.Z), with its DMG's address (built here,
+ * always GitHub's), or null (not a Mac release, not GitHub).
+ * A release has a DMG per chip: this one is for `chip` (the Mac's own: macChip).
+ * @param {string} finalUrl
+ * @param {"arm64" | "x64"} [chip]
+ * @returns {{ version: string, dmg: string } | null}
+ */
+export function macReleaseFromLatest(finalUrl, chip = "arm64") {
+  const version = new RegExp(`^https://github\\.com/${STARTER.replace("/", "\\/")}/releases/tag/mac-v(\\d+\\.\\d+\\.\\d+)$`).exec(finalUrl)?.[1];
+  return version ? { version, dmg: `https://github.com/${STARTER}/releases/download/mac-v${version}/NetSim-Studio-${chip === "x64" ? "x64" : "arm64"}.dmg` } : null;
+}
+
+/** This Mac's chip, as the hardware says (not this process's: Rosetta would say Intel). */
+export function macChip() {
+  const r = spawnSync("/usr/sbin/sysctl", ["-n", "hw.optional.arm64"], { encoding: "utf8", timeout: 5000 });
+  return r.stdout?.trim() === "1" ? "arm64" : "x64";
+}
+
+/**
+ * The newest Mac release: where GitHub's latest-release address redirects (a plain page, not the
+ * API, so no 60-an-hour limit), remembered for an hour next to the studio's state. Offline, GitHub not
+ * answering, or not a Mac release: null.
+ */
+async function newestMacRelease() {
+  const cache = join(dirname(STATE_FILE), "mac-release.json");
+  try {
+    const c = JSON.parse(readFileSync(cache, "utf8"));
+    if (Date.now() - c.at < 60 * 60 * 1000 && typeof c.url === "string") return macReleaseFromLatest(c.url, macChip());
+  } catch {
+    // nothing remembered
+  }
+  try {
+    const res = await fetch(`https://github.com/${STARTER}/releases/latest`, { method: "HEAD", headers: { "user-agent": "NetSim-Studio" }, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    try {
+      mkdirSync(dirname(cache), { recursive: true });
+      writeFileSync(cache, JSON.stringify({ at: Date.now(), url: res.url }));
+    } catch {
+      // not remembered: asked again next time
+    }
+    return macReleaseFromLatest(res.url, macChip());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * In a Mac app without its own updater (1.0.0 to 1.0.2; a newer app says NETSIM_APP_UPDATER=1), and
+ * older than the newest release: what to tell the student (the new app's version and its DMG), else
+ * null. Never for npm start (no NETSIM_APP), and never offline (a student is never locked out for
+ * want of a network).
+ * @param {Context} ctx
+ * @param {() => Promise<{ version: string, dmg: string } | null>} [latest]
+ */
+export async function macAppUpdate(ctx, latest = newestMacRelease) {
+  if (process.env.NETSIM_APP !== "1" || process.env.NETSIM_APP_UPDATER === "1" || ctx.platform !== "mac" || ctx.dryRun) return null;
+  const current = appVersionFromBundle(process.execPath, ctx.readText);
+  if (!current) return null;
+  try {
+    const rel = await latest();
+    return rel && versionNewer(rel.version, current) ? { current, version: rel.version, dmg: rel.dmg } : null;
+  } catch {
+    return null;
+  }
+}
+
 export function newestPublishedWeek(ctx) {
   const tags = output(ctx, ["git", "ls-remote", "--tags", STARTER_URL, "week-*"]) ?? "";
   const weeks = [...tags.matchAll(/refs\/tags\/week-(\d+)$/gm)].map((m) => Number(m[1]));
