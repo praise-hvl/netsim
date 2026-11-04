@@ -4,7 +4,11 @@
 
 ### On a Mac: the NetSim Studio app
 
-1. Download **[NetSim-Studio-1.0.2.dmg](https://github.com/praiseisaac/netsim/releases/download/mac-v1.0.2/NetSim-Studio-1.0.2.dmg)** ([release notes](https://github.com/praiseisaac/netsim/releases/tag/mac-v1.0.2)) and open it.
+1. Download the one for your Mac, and open it ([release notes](https://github.com/praiseisaac/netsim/releases/latest)):
+   - **[Apple Silicon (M1 and later)](https://github.com/praiseisaac/netsim/releases/latest/download/NetSim-Studio-arm64.dmg)**
+   - **[Intel](https://github.com/praiseisaac/netsim/releases/latest/download/NetSim-Studio-x64.dmg)**
+
+   Not sure which? Apple menu  > **About This Mac**: "Chip: Apple M…" is Apple Silicon; "Processor: … Intel" is Intel.
 2. Drag **NetSim Studio** into **Applications**, then open it from there.
 3. The first time, follow its setup steps. It needs no Terminal and no Node.js: Node, npm and the
    GitHub CLI are built in, and it asks to install Apple's developer tools (they include git) if
@@ -12,7 +16,7 @@
 
 **Every class after**, open NetSim Studio. It gets the new week's work, then opens on the Build view.
 
-It's one app for every Mac (Apple Silicon and Intel), on macOS 13 or newer. Already set up with
+It needs macOS 13 or newer. It keeps itself up to date: when a new version is out, it asks you to update (one click). Already set up with
 `npm start`? The app finds your course folder and carries on; you can use either.
 
 ### On Windows, Linux, or a Mac from the terminal
