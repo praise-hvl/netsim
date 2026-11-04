@@ -26,14 +26,16 @@ Do as much of the setup below as you can at home, on the laptop you'll bring eve
 Anything you get stuck on, we finish in class. At minimum, before you arrive:
 
 1. Create your **GitHub account** (Setup, 1a) and send me your username so I can find your work.
-2. Create your **ChatGPT account** (Setup, 1b). Install **Node.js 22** (Setup, 2), and if
-   you can, run the setup tool (Setup, 3). Claiming the student offer can take a day if
+2. Create your **ChatGPT account** (Setup, 1b). Then, if you can: on a Mac, install and open
+   the **NetSim Studio** app (Setup, 2); on Windows or Linux, install **Node.js 22** and run the
+   setup tool (Setup, 3). Claiming the student offer can take a day if
    verification needs documents, so start early.
 3. Charge your laptop and make sure you have ~5 GB free disk space.
 
 ## Setup
 
-Three parts: accounts and Node you do by hand, then a setup tool walks you through the rest.
+Accounts first, by hand. Then the rest is guided: **on a Mac, the NetSim Studio app** (2); on
+Windows, Linux, or a Mac from the terminal, Node.js and the setup tool (3).
 
 ### 1. Accounts (by hand)
 
@@ -74,7 +76,25 @@ the free ChatGPT plan or Copilot; the offer just gives you more Codex use.
 
 ✅ **Check:** you can sign in at chatgpt.com.
 
-### 2. Node.js 22 (by hand)
+### 2. On a Mac: the NetSim Studio app
+
+1. Download **[NetSim-Studio-1.0.0.dmg](https://github.com/praiseisaac/netsim/releases/download/mac-v1.0.0/NetSim-Studio-1.0.0.dmg)** ([release notes](https://github.com/praiseisaac/netsim/releases/tag/mac-v1.0.0)) and open it.
+2. Drag **NetSim Studio** into **Applications**, then open it from there.
+3. The first time, follow its setup steps. It needs no Terminal and no Node.js: Node, npm and the
+   GitHub CLI are built in, and it asks to install Apple's developer tools (they include git) if
+   your Mac doesn't have them yet. When it asks where to keep the course, press **Choose…** and
+   pick a folder.
+
+**Every class after**, open NetSim Studio. It gets the new week's work, then opens on the Build view.
+
+It's one app for every Mac (Apple Silicon and Intel), on macOS 13 or newer. Already set up with
+`npm start`? The app finds your course folder and carries on; you can use either.
+
+✅ **Check:** the app's last setup step says `doctor: all 8 checks passed`. You can skip part 3.
+
+### 3. On Windows, Linux, or a Mac from the terminal
+
+#### 3a. Node.js 22 (by hand)
 
 Node runs all of this course's code, and the setup tool itself, so it's the one thing you
 install by hand.
@@ -92,7 +112,7 @@ node --version   # v22.x or higher
 npm --version
 ```
 
-### 3. The setup tool
+#### 3b. The setup tool
 
 Everything else (git, the GitHub CLI and signing in, your fork, the clone, the `work` branch,
 VS Code, Codex, the course's packages) is done by a guided setup tool. In **Terminal** (macOS)
@@ -180,7 +200,7 @@ doctor: all 8 checks passed
 
 ## If the setup tool doesn't work for you
 
-Do the same setup by hand. You've already done the accounts (1) and Node (2).
+Do the same setup by hand. You've already done the accounts (1) and Node (3a).
 
 **M1. git.**
 
