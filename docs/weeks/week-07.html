@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="glossary" content="">
+<meta name="glossary" content="IRET">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NetSim Week 7 · Build: many cores on the board</title>
 <style>
@@ -71,12 +71,19 @@ ul.checklist{list-style:none;padding-left:0}
   a{color:#000}
 }
 </style>
+<style data-glossary>
+.term{border-bottom:1.5px dotted currentColor;cursor:help;position:relative;outline-offset:2px}
+.term:focus-visible{outline:2px solid #1f7a55;border-radius:2px}
+.term>.tip{position:absolute;left:0;top:calc(100% + 6px);z-index:30;width:max-content;max-width:min(300px,calc(100vw - 32px));padding:8px 11px;border-radius:8px;background:#16201b;color:#f3f7f4;font:400 15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif;letter-spacing:0;text-transform:none;white-space:normal;text-align:left;box-shadow:0 4px 14px rgba(0,0,0,.22);display:none;pointer-events:none}
+.term:hover>.tip,.term:focus>.tip,.term.open>.tip{display:block}
+@media (prefers-color-scheme:dark){.term>.tip{background:#e8efeb;color:#0f1512}.term:focus-visible{outline-color:#6fd3a7}}
+</style>
 </head>
 <body>
 <header class="hero"><div class="wrap">
 <div class="tag">Week 7 · Build</div>
-<h1>Many cores on the board</h1>
-<p>Your computer runs programs, takes turns and handles interrupts. These steps put all of it on the board, on 1 to 8 cores: one lane per core, the scheduler's moves, and interrupts arriving. Do them at home after weeks 5 and 6 (the Build tab lists anything still open first). Monday 16 Nov is a check-in: bring what's stuck, show where you are, and I introduce many cores.</p>
+<h1>Interrupts, and many cores on the board</h1>
+<p>Your computer runs programs and takes turns. These steps let a core take an interrupt between two instructions and add a timer that raises one, then put all of it on the board, on 1 to 8 cores: one lane per core, the scheduler's moves, and interrupts arriving. Do them at home after weeks 5 and 6 (the Build tab lists anything still open first). Monday 16 Nov is a check-in: bring what's stuck, show where you are, and I introduce many cores.</p>
 </div></header>
 <main class="wrap">
 <section id="s1">
@@ -96,14 +103,81 @@ ul.checklist{list-style:none;padding-left:0}
 
 </section>
 <section id="s3">
-<h2>Component 1 · Many cores on the board</h2>
+<h2>Component 1 · Interrupts on the core</h2>
+<p>A core stops between two instructions, saves everything, runs the handler and puts everything back. When it's done, a button press is handled without disturbing the running program.</p>
+<p class="note"><b>When it works:</b> the interrupt tests go green: a core saves, runs the handler, and <span class="term" tabindex="0" aria-describedby="tip-1"><code>IRET</code><span class="tip" role="tooltip" id="tip-1">The instruction that ends an interrupt handler: it pops the saved frame and puts the registers, PC, flags and phase back as they were.</span></span> puts everything back exactly.<br>Check: <code>npx vitest run tests/week-07/cpu-core-irq.test.ts -t "only happens between|saves the registers|IRET"</code></p>
+<details class="notes"><summary>Design notes</summary>
+<div class="table-wrap"><table><thead><tr><th>Step</th><th>What happens</th></tr></thead><tbody><tr><td>A core may take one</td><td>only in <code>IDLE</code> or <code>FETCH</code> (between instructions), and not already in a handler</td></tr><tr><td>Enter</td><td>push a frame, set <code>PC = vector</code>, go to <code>FETCH</code></td></tr><tr><td>The handler runs</td><td>its own instructions, ending in <code>IRET</code></td></tr><tr><td><code>IRET</code></td><td>pop the frame and put everything back; back to <code>IDLE</code> if the core was idle</td></tr><tr><td><code>IRET</code> outside a handler</td><td><code>FAULT</code></td></tr></tbody></table></div>
+<p>The frame: registers, PC, flags, the count of instructions so far, and whether the core was idle.</p>
+<p>Pressing the button during a <code>LOAD</code>: the <code>LOAD</code> finishes, then at the next <code>FETCH</code> the core takes the interrupt, runs the handler, and <code>IRET</code> puts the program back as if nothing happened.</p>
+</details>
+<h3 class="round">Step 1 · When a core may take an interrupt</h3>
+<p>A core takes an interrupt only between instructions (<code>IDLE</code> or <code>FETCH</code>), and never while it's already running a handler.</p>
+<pre><code>Use this approach: return true only when the phase is IDLE or FETCH and the core isn't already in a
+handler.
+
+In core/cpu-core.ts only, fill in TODO(week 7, can-take-interrupt) in canTakeInterrupt. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it, and
+explain each line you write. Its test also needs the next step, so don't try to make it pass yet.</code></pre>
+<p class="check">Test: none yet: the next step's test covers it · Commit: <code>week 7: can-take-interrupt</code><br>Ask: what would go wrong if a core took an interrupt in the middle of a <code>LOAD</code>?<br><b>Stuck?</b> Nothing to test yet: the next step's test covers both. An error naming <code>TODO(week 7: enter-interrupt)</code> is expected.</p>
+<h3 class="round">Step 2 · Enter the handler</h3>
+<p>Taking an interrupt saves everything the program needs to carry on (registers, PC, flags, the count of instructions so far, and whether it was idle) as a frame, then jumps to the handler's address, the vector.</p>
+<pre><code>Use this approach: push one frame with the registers, pc, flags, retired count and whether the core
+was IDLE, then set pc to the vector and go to FETCH.
+
+In core/cpu-core.ts only, fill in TODO(week 7, enter-interrupt) in enterInterrupt. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it, and
+explain each line you write. Then run:
+npx vitest run tests/week-07/cpu-core-irq.test.ts -t "only happens between|saves the registers"</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-07/cpu-core-irq.test.ts -t "only happens between|saves the registers"</code> · Commit: <code>week 7: enter-interrupt</code><br>Ask: what's in the frame, and why does each part need saving?<br><b>Stuck?</b> If the test sees changed registers later, the frame holds the same object, not a copy.</p>
+<h3 class="round">Step 3 · Return from the handler</h3>
+<p><code>IRET</code> pops the frame and puts everything back exactly as it was, so the program carries on as if nothing happened. <code>IRET</code> outside a handler is a fault.</p>
+<pre><code>Use this approach: if there's no frame, go to FAULT; otherwise pop it and put the registers, pc,
+flags and retired count back, going to IDLE if the core was idle and FETCH otherwise.
+
+In core/cpu-core.ts only, fill in TODO(week 7, iret) in returnFromInterrupt. Don't change anything
+outside that region, or any test. Tell me what you'll change before you change it, and explain each
+line you write. Then run: npx vitest run tests/week-07/cpu-core-irq.test.ts -t "IRET"</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-07/cpu-core-irq.test.ts -t "IRET"</code> · Commit: <code>week 7: iret</code><br>Ask: what would break if <code>IRET</code> forgot to put the flags back? Name a program.<br><b>Stuck?</b> If the test says the phase is wrong after <code>IRET</code>, the frame's "was it idle" part isn't being used to go back to <code>IDLE</code> or <code>FETCH</code>.</p>
+
+</section>
+<section id="s4">
+<h2>Component 2 · The timer</h2>
+<p>The timer is a device that raises an interrupt every few ticks. When it's done, your computer has a clock that cuts in on its own.</p>
+<p class="note"><b>When it works:</b> the timer tests go green, and on the Board, <b>Load demo</b> then <b>Start</b>: a core takes the timer's interrupts while the programs carry on.<br>Check: <code>npx vitest run tests/week-07/timer.test.ts -t "raises an irq|fires every|does nothing|counts the|starts and stops"</code></p>
+<details class="notes"><summary>Design notes</summary>
+<div class="table-wrap"><table><thead><tr><th>From</th><th>When…</th><th>To</th><th>What it does</th></tr></thead><tbody><tr><td><code>STOPPED</code></td><td>the dashboard sends start</td><td><code>COUNTING</code></td><td></td></tr><tr><td><code>COUNTING</code></td><td><code>interval</code> ticks have gone by</td><td><code>COUNTING</code></td><td>raises one interrupt, starts counting again</td></tr><tr><td><code>COUNTING</code></td><td>the dashboard sends stop</td><td><code>STOPPED</code></td><td>forgets the ticks counted so far</td></tr></tbody></table></div>
+<p>With interval 3, it raises an interrupt on ticks 3, 6, 9… Its priority (2) is lower than the button's (0).</p>
+</details>
+<h3 class="round">Step 4 · The timer ticks</h3>
+<p>The timer is a device that raises one interrupt every <code>interval</code> ticks while it's <code>COUNTING</code>. It does nothing while <code>STOPPED</code>.</p>
+<pre><code>Use this approach: while COUNTING, add 1 to elapsed; when it reaches interval, set it back to 0, add
+1 to count and return one irq effect.
+
+In components/peripherals/timer.ts only, fill in TODO(week 7, timer-tick) in onTick. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it, and
+explain each line you write. Then run:
+npx vitest run tests/week-07/timer.test.ts -t "raises an irq|fires every|does nothing|counts the"</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-07/timer.test.ts -t "raises an irq|fires every|does nothing|counts the"</code> · Commit: <code>week 7: timer-tick</code><br>Ask: with interval 3, on which ticks does it raise an interrupt?<br><b>Stuck?</b> If it fires on tick 1, it's raising before <code>interval</code> ticks have gone by.</p>
+<h3 class="round">Step 5 · Start and stop the timer</h3>
+<p>The dashboard starts and stops the timer. Stopping forgets the ticks counted so far, so the next start counts a full interval.</p>
+<pre><code>Use this approach: start goes to COUNTING; stop goes to STOPPED and sets elapsed back to 0.
+
+In components/peripherals/timer.ts only, fill in TODO(week 7, timer-input) in onInput. Don't change
+anything outside that region, or any test. Tell me what you'll change before you change it, and
+explain each line you write. Then run: npx vitest run tests/week-07/timer.test.ts -t "starts and stops"</code></pre>
+<p class="check">Test: <code>npx vitest run tests/week-07/timer.test.ts -t "starts and stops"</code> · Commit: <code>week 7: timer-input</code><br>Ask: why reset the count when it stops?<br><b>Stuck?</b> If a restart fires at once, stopping didn't reset the count.</p>
+
+</section>
+<section id="s5">
+<h2>Component 3 · Many cores on the board</h2>
 <p>The board shows every core: one lane each, the scheduler moving programs between them, and interrupts arriving. When it's done, you can watch your computer on 1 to 8 cores.</p>
 <p class="note"><b>When it works:</b> on the Board, press play on 2 cores and then 8: one lane per core, with moves and interrupts shown.<br>Check: <code>npx vitest run tests/week-07/board-cores.test.ts</code></p>
 <details class="notes"><summary>Design notes</summary>
 <div class="table-wrap"><table><thead><tr><th>Part</th><th>What it shows</th></tr></thead><tbody><tr><td>Lanes</td><td>one per core, top to bottom, inside the CPU area, never overlapping</td></tr><tr><td>A core's lane</td><td>your core view: its steps, program and PC</td></tr><tr><td>Moves</td><td>a program whose core changed since the last tick: landed, left or switched</td></tr><tr><td>"raised"</td><td>an interrupt packet on the bus this tick, from its device</td></tr><tr><td>"taken"</td><td>a core that started a handler this tick (it wasn't in one a tick ago)</td></tr></tbody></table></div>
 <p>On 2 cores and on 8 cores, the programs end with the same memory: a program's result doesn't depend on which core ran it.</p>
 </details>
-<h3 class="round">Step 1 · One lane per core</h3>
+<h3 class="round">Step 6 · One lane per core</h3>
 <p>The CPU area is split into one lane per core, top to bottom: every lane inside the area, none overlapping, for any count from 1 to 8.</p>
 <pre><code>Use this approach: split the area's height evenly by the count, one rect per core from top to
 bottom, with a small gap between lanes.
@@ -112,7 +186,7 @@ In board/student/cores.tsx only, fill in TODO(week 7, board-lane-rects) in laneR
 anything outside that region, or any test. Tell me what you'll change before you change it, and
 explain each line you write. Then run: npx vitest run tests/week-07/board-cores.test.ts -t "laneRects"</code></pre>
 <p class="check">Test: <code>npx vitest run tests/week-07/board-cores.test.ts -t "laneRects"</code> · Commit: <code>week 7: board-lane-rects</code><br>Ask: 8 cores in an area 160 high: how tall is each lane?<br><b>Stuck?</b> If lanes overlap or spill out, add up their heights and gaps: they have to fit in the area.</p>
-<h3 class="round">Step 2 · The scheduler's moves</h3>
+<h3 class="round">Step 7 · The scheduler's moves</h3>
 <p>Compare which core each program is on between the last tick and this one. Every program whose core changed is a move: it landed, left, or switched.</p>
 <pre><code>Use this approach: for each process in this frame, compare its core with that process's core in the
 previous frame, and list it when they differ.
@@ -122,7 +196,7 @@ Don't change anything outside that region, or any test. Tell me what you'll chan
 it, and explain each line you write. Then run:
 npx vitest run tests/week-07/board-cores.test.ts -t "schedulerMoves"</code></pre>
 <p class="check">Test: <code>npx vitest run tests/week-07/board-cores.test.ts -t "schedulerMoves"</code> · Commit: <code>week 7: board-scheduler-moves</code><br>Ask: a program stays on core 1 for ten ticks. How many moves is that?<br><b>Stuck?</b> If every program shows up every tick, compare with the previous tick: only a change of core is a move.</p>
-<h3 class="round">Step 3 · Interrupts arriving</h3>
+<h3 class="round">Step 8 · Interrupts arriving</h3>
 <p>Two kinds of marker: "raised" for each interrupt packet on the bus this tick, and "taken" for each core that started a handler this tick (it wasn't in one a tick ago).</p>
 <pre><code>Use this approach: a raised marker for each irq packet this tick, and a taken marker for each core
 in a handler now that wasn't in one in the previous frame.
@@ -132,7 +206,7 @@ Don't change anything outside that region, or any test. Tell me what you'll chan
 it, and explain each line you write. Then run:
 npx vitest run tests/week-07/board-cores.test.ts -t "interruptMarkers"</code></pre>
 <p class="check">Test: <code>npx vitest run tests/week-07/board-cores.test.ts -t "interruptMarkers"</code> · Commit: <code>week 7: board-interrupt-markers</code><br>Ask: why can "taken" come a few ticks after "raised"?<br><b>Stuck?</b> If "taken" shows every tick a core is in a handler, check it wasn't already in one a tick ago.</p>
-<h3 class="round">Step 4 · Draw every core</h3>
+<h3 class="round">Step 9 · Draw every core</h3>
 <p>Put it together: a lane for each core with your <code>CoreView</code> in it, the scheduler's moves, and the interrupt markers. Open the <b>Board</b> tab and press <b>play</b> (scroll down if you don't see the controls), on 2 cores and then on 8.</p>
 <pre><code>Use this approach: laneRects for the lanes, your CoreView in each lane, and the moves and markers
 from schedulerMoves and interruptMarkers.
@@ -143,12 +217,13 @@ explain each line you write. No test checks this one: I'll check it on the board
 <p class="check">Test: none yet: check it on the board, on 2 cores and on 8 · Commit: <code>week 7: board-draw-cores</code><br>Ask: what's one thing you told the agent to change on the board, and why?<br><b>Stuck?</b> If the board sits at tick 0, press play (scroll down to the controls).</p>
 
 </section>
-<section id="s4">
+<section id="s6">
 <h2>When the steps are done</h2>
+<p>In the Board tab, press <b>Load demo</b>, then <b>Start</b>, then the button: a core runs the handler and the program carries on.</p>
 <p>Go back to the Build tab's list: anything not green yet, from any week, in order. When everything is green, run the demo on 2 cores and then on 8. Be ready to say what changed on the board, what didn't, and why the final memory is the same: it's part of your demo.</p>
 
 </section>
-<section id="s5">
+<section id="s7">
 <h2>Get ready to demo</h2>
 <p>Before the demo on 23 Nov, do the steps on Week 8's page, "Get ready to demo" (your board on the web, your portfolio README, and one rehearsal).</p>
 <p><b>Explain it back</b> before the demo, no notes or AI: a 5-minute slot with me, or a 3-minute video answering two of the Ask questions above, which I post in the class chat.</p>
@@ -156,5 +231,43 @@ explain each line you write. No test checks this one: I'll check it on the board
 </section>
 </main>
 <script>addEventListener('beforeprint',()=>document.querySelectorAll('details').forEach(d=>d.open=true));</script>
+<script data-glossary>
+(function () {
+  var terms = document.querySelectorAll(".term");
+  // Keep the explanation inside the viewport (16px gutter), near the right edge too.
+  function place(t) {
+    var tip = t.querySelector(".tip");
+    // Hidden tips are display:none (so they never widen the page): show it to measure it.
+    tip.style.left = "0px";
+    tip.style.display = "block";
+    var r = tip.getBoundingClientRect(), dx = 0, max = document.documentElement.clientWidth - 16;
+    tip.style.display = "";
+    if (r.right > max) dx = max - r.right;
+    if (r.left + dx < 16) dx = 16 - r.left;
+    tip.style.left = dx + "px";
+  }
+  function closeAll(except) {
+    terms.forEach(function (t) { if (t !== except) t.classList.remove("open"); });
+  }
+  terms.forEach(function (t) {
+    t.addEventListener("mouseenter", function () { place(t); });
+    t.addEventListener("focus", function () { place(t); });
+    // Tap (touch) toggles; hover and keyboard focus are pure CSS.
+    t.addEventListener("click", function (e) {
+      e.stopPropagation();
+      closeAll(t);
+      place(t);
+      t.classList.toggle("open");
+    });
+  });
+  document.addEventListener("click", function () { closeAll(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    closeAll();
+    var a = document.activeElement;
+    if (a && a.classList.contains("term")) a.blur();
+  });
+})();
+</script>
 </body>
 </html>
