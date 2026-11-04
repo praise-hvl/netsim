@@ -4,7 +4,7 @@
 
 ### On a Mac: the NetSim Studio app
 
-1. Download **[NetSim-Studio-1.0.0.dmg](https://github.com/praiseisaac/netsim/releases/download/mac-v1.0.0/NetSim-Studio-1.0.0.dmg)** ([release notes](https://github.com/praiseisaac/netsim/releases/tag/mac-v1.0.0)) and open it.
+1. Download **[NetSim-Studio-1.0.1.dmg](https://github.com/praiseisaac/netsim/releases/download/mac-v1.0.1/NetSim-Studio-1.0.1.dmg)** ([release notes](https://github.com/praiseisaac/netsim/releases/tag/mac-v1.0.1)) and open it.
 2. Drag **NetSim Studio** into **Applications**, then open it from there.
 3. The first time, follow its setup steps. It needs no Terminal and no Node.js: Node, npm and the
    GitHub CLI are built in, and it asks to install Apple's developer tools (they include git) if
