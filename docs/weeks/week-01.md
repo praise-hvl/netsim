@@ -89,7 +89,7 @@ the free ChatGPT plan or Copilot; the offer just gives you more Codex use.
    your Mac doesn't have them yet. When it asks where to keep the course, press **Choose…** and
    pick a folder.
 
-**Every class after**, open NetSim Studio. It gets the new week's work, then opens on the Build view.
+**Every class after**, open NetSim Studio. It opens where you left off; when a new week is out, press **Get week N** to bring it in (whenever you're ready, a week at a time).
 
 It needs macOS 13 or newer. It keeps itself up to date: when a new version is out, it asks you to update (one click). Already set up with
 `npm start`? The app finds your course folder and carries on; you can use either.
