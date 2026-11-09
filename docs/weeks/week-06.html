@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="glossary" content="quantum, vector, IRET">
+<meta name="glossary" content="quantum, vector">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NetSim Week 6 · Build: taking turns and interrupts</title>
 <style>
@@ -83,7 +83,7 @@ ul.checklist{list-style:none;padding-left:0}
 <header class="hero"><div class="wrap">
 <div class="tag">Week 6 · Build</div>
 <h1>Taking turns and interrupts</h1>
-<p>These steps give your computer the heart of an operating system: programs take turns on the cores, and a device can cut in between two instructions. Do them at home, in order, after week 5's steps (the Build tab lists anything still open from week 5 first). Monday 9 Nov is a check-in: bring what's stuck, show where you are, and I introduce interrupts.</p>
+<p>These steps give your computer the heart of an operating system: programs take turns on the cores, and interrupts wait in a queue, most urgent first (week 7 lets a core take them). Do them at home, in order, after week 5's steps (the Build tab lists anything still open from week 5 first). Monday 9 Nov is a check-in: bring what's stuck, show where you are, and I introduce interrupts.</p>
 </div></header>
 <main class="wrap">
 <section id="s1">
@@ -155,75 +155,8 @@ explain each line you write. Then run: npx vitest run tests/week-06/scheduler.te
 
 </section>
 <section id="s5">
-<h2>Component 3 · Interrupts on the core</h2>
-<p>A core stops between two instructions, saves everything, runs the handler and puts everything back. When it's done, a button press is handled without disturbing the running program.</p>
-<p class="note"><b>When it works:</b> the interrupt tests go green: a core saves, runs the handler, and <span class="term" tabindex="0" aria-describedby="tip-3"><code>IRET</code><span class="tip" role="tooltip" id="tip-3">The instruction that ends an interrupt handler: it pops the saved frame and puts the registers, PC, flags and phase back as they were.</span></span> puts everything back exactly.<br>Check: <code>npx vitest run tests/week-07/cpu-core-irq.test.ts -t "only happens between|saves the registers|IRET"</code></p>
-<details class="notes"><summary>Design notes</summary>
-<div class="table-wrap"><table><thead><tr><th>Step</th><th>What happens</th></tr></thead><tbody><tr><td>A core may take one</td><td>only in <code>IDLE</code> or <code>FETCH</code> (between instructions), and not already in a handler</td></tr><tr><td>Enter</td><td>push a frame, set <code>PC = vector</code>, go to <code>FETCH</code></td></tr><tr><td>The handler runs</td><td>its own instructions, ending in <code>IRET</code></td></tr><tr><td><code>IRET</code></td><td>pop the frame and put everything back; back to <code>IDLE</code> if the core was idle</td></tr><tr><td><code>IRET</code> outside a handler</td><td><code>FAULT</code></td></tr></tbody></table></div>
-<p>The frame: registers, PC, flags, the count of instructions so far, and whether the core was idle.</p>
-<p>Pressing the button during a <code>LOAD</code>: the <code>LOAD</code> finishes, then at the next <code>FETCH</code> the core takes the interrupt, runs the handler, and <code>IRET</code> puts the program back as if nothing happened.</p>
-</details>
-<h3 class="round">Step 4 · When a core may take an interrupt</h3>
-<p>A core takes an interrupt only between instructions (<code>IDLE</code> or <code>FETCH</code>), and never while it's already running a handler.</p>
-<pre><code>Use this approach: return true only when the phase is IDLE or FETCH and the core isn't already in a
-handler.
-
-In core/cpu-core.ts only, fill in TODO(week 7, can-take-interrupt) in canTakeInterrupt. Don't change
-anything outside that region, or any test. Tell me what you'll change before you change it, and
-explain each line you write. Its test also needs the next step, so don't try to make it pass yet.</code></pre>
-<p class="check">Test: none yet: the next step's test covers it · Commit: <code>week 7: can-take-interrupt</code><br>Ask: what would go wrong if a core took an interrupt in the middle of a <code>LOAD</code>?<br><b>Stuck?</b> Nothing to test yet: the next step's test covers both. An error naming <code>TODO(week 7: enter-interrupt)</code> is expected.</p>
-<h3 class="round">Step 5 · Enter the handler</h3>
-<p>Taking an interrupt saves everything the program needs to carry on (registers, PC, flags, the count of instructions so far, and whether it was idle) as a frame, then jumps to the handler's address, the vector.</p>
-<pre><code>Use this approach: push one frame with the registers, pc, flags, retired count and whether the core
-was IDLE, then set pc to the vector and go to FETCH.
-
-In core/cpu-core.ts only, fill in TODO(week 7, enter-interrupt) in enterInterrupt. Don't change
-anything outside that region, or any test. Tell me what you'll change before you change it, and
-explain each line you write. Then run:
-npx vitest run tests/week-07/cpu-core-irq.test.ts -t "only happens between|saves the registers"</code></pre>
-<p class="check">Test: <code>npx vitest run tests/week-07/cpu-core-irq.test.ts -t "only happens between|saves the registers"</code> · Commit: <code>week 7: enter-interrupt</code><br>Ask: what's in the frame, and why does each part need saving?<br><b>Stuck?</b> If the test sees changed registers later, the frame holds the same object, not a copy.</p>
-<h3 class="round">Step 6 · Return from the handler</h3>
-<p><code>IRET</code> pops the frame and puts everything back exactly as it was, so the program carries on as if nothing happened. <code>IRET</code> outside a handler is a fault.</p>
-<pre><code>Use this approach: if there's no frame, go to FAULT; otherwise pop it and put the registers, pc,
-flags and retired count back, going to IDLE if the core was idle and FETCH otherwise.
-
-In core/cpu-core.ts only, fill in TODO(week 7, iret) in returnFromInterrupt. Don't change anything
-outside that region, or any test. Tell me what you'll change before you change it, and explain each
-line you write. Then run: npx vitest run tests/week-07/cpu-core-irq.test.ts -t "IRET"</code></pre>
-<p class="check">Test: <code>npx vitest run tests/week-07/cpu-core-irq.test.ts -t "IRET"</code> · Commit: <code>week 7: iret</code><br>Ask: what would break if <code>IRET</code> forgot to put the flags back? Name a program.<br><b>Stuck?</b> If the test says the phase is wrong after <code>IRET</code>, the frame's "was it idle" part isn't being used to go back to <code>IDLE</code> or <code>FETCH</code>.</p>
-
-</section>
-<section id="s6">
-<h2>Component 4 · The timer</h2>
-<p>The timer is a device that raises an interrupt every few ticks. When it's done, your computer has a clock that cuts in on its own.</p>
-<p class="note"><b>When it works:</b> the timer tests go green, and on the Board, <b>Load demo</b> then <b>Start</b>: a core takes the timer's interrupts while the programs carry on.<br>Check: <code>npx vitest run tests/week-07/timer.test.ts -t "raises an irq|fires every|does nothing|counts the|starts and stops"</code></p>
-<details class="notes"><summary>Design notes</summary>
-<div class="table-wrap"><table><thead><tr><th>From</th><th>When…</th><th>To</th><th>What it does</th></tr></thead><tbody><tr><td><code>STOPPED</code></td><td>the dashboard sends start</td><td><code>COUNTING</code></td><td></td></tr><tr><td><code>COUNTING</code></td><td><code>interval</code> ticks have gone by</td><td><code>COUNTING</code></td><td>raises one interrupt, starts counting again</td></tr><tr><td><code>COUNTING</code></td><td>the dashboard sends stop</td><td><code>STOPPED</code></td><td>forgets the ticks counted so far</td></tr></tbody></table></div>
-<p>With interval 3, it raises an interrupt on ticks 3, 6, 9… Its priority (2) is lower than the button's (0).</p>
-</details>
-<h3 class="round">Step 7 · The timer ticks</h3>
-<p>The timer is a device that raises one interrupt every <code>interval</code> ticks while it's <code>COUNTING</code>. It does nothing while <code>STOPPED</code>.</p>
-<pre><code>Use this approach: while COUNTING, add 1 to elapsed; when it reaches interval, set it back to 0, add
-1 to count and return one irq effect.
-
-In components/peripherals/timer.ts only, fill in TODO(week 7, timer-tick) in onTick. Don't change
-anything outside that region, or any test. Tell me what you'll change before you change it, and
-explain each line you write. Then run:
-npx vitest run tests/week-07/timer.test.ts -t "raises an irq|fires every|does nothing|counts the"</code></pre>
-<p class="check">Test: <code>npx vitest run tests/week-07/timer.test.ts -t "raises an irq|fires every|does nothing|counts the"</code> · Commit: <code>week 7: timer-tick</code><br>Ask: with interval 3, on which ticks does it raise an interrupt?<br><b>Stuck?</b> If it fires on tick 1, it's raising before <code>interval</code> ticks have gone by.</p>
-<h3 class="round">Step 8 · Start and stop the timer</h3>
-<p>The dashboard starts and stops the timer. Stopping forgets the ticks counted so far, so the next start counts a full interval.</p>
-<pre><code>Use this approach: start goes to COUNTING; stop goes to STOPPED and sets elapsed back to 0.
-
-In components/peripherals/timer.ts only, fill in TODO(week 7, timer-input) in onInput. Don't change
-anything outside that region, or any test. Tell me what you'll change before you change it, and
-explain each line you write. Then run: npx vitest run tests/week-07/timer.test.ts -t "starts and stops"</code></pre>
-<p class="check">Test: <code>npx vitest run tests/week-07/timer.test.ts -t "starts and stops"</code> · Commit: <code>week 7: timer-input</code><br>Ask: why reset the count when it stops?<br><b>Stuck?</b> If a restart fires at once, stopping didn't reset the count.</p>
-
-</section>
-<section id="s7">
 <h2>When the steps are done</h2>
-<p>In the Board tab, press <b>Load demo</b>, then <b>Start</b>, then the button: a core runs the handler and the program carries on.</p>
+<p>Run the week's checks (the Checks tab, or <code>npx vitest run tests/week-06</code>): the interrupt queue and round robin's rule are green. Week 7 builds on them: a core takes an interrupt between two instructions.</p>
 <p><b>Explain it back</b> before the next check-in, no notes or AI: a 5-minute slot with me, or a 3-minute video answering two of the Ask questions above, which I post in the class chat.</p>
 <p class="note">If the Build tab won't start: press <b>Copy the prompt</b> on the step, run <code>codex</code> in a terminal in your course folder, and paste it.</p>
 </section>

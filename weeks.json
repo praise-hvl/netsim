@@ -50,7 +50,7 @@
     {
       "week": 6,
       "title": "Build: taking turns and interrupts",
-      "kind": "design",
+      "kind": "build",
       "guide": "docs/weeks/week-06.md",
       "page": "docs/weeks/week-06.html",
       "note": null,
@@ -58,7 +58,7 @@
     },
     {
       "week": 7,
-      "title": "Build: many cores on the board",
+      "title": "Build: interrupts and many cores",
       "kind": "build",
       "guide": "docs/weeks/week-07.md",
       "page": "docs/weeks/week-07.html",

@@ -222,12 +222,14 @@
     <h2>On a Mac: the NetSim Studio app</h2>
     <div class="step">
       <ol>
-        <li>Download <b><a href="https://github.com/praiseisaac/netsim/releases/download/mac-v1.0.1/NetSim-Studio-1.0.1.dmg">NetSim-Studio-1.0.1.dmg</a></b> (<a href="https://github.com/praiseisaac/netsim/releases/tag/mac-v1.0.1">release notes</a>) and open it.</li>
+        <li>Download the one for your Mac, and open it (<a href="https://github.com/praiseisaac/netsim/releases/latest">release notes</a>):
+          <div style="margin:8px 0"><a style="display:inline-block;padding:8px 16px;border-radius:9px;border:1px solid #1f7a55;text-decoration:none;margin-right:8px;background:#1f7a55;color:#fff" href="https://github.com/praiseisaac/netsim/releases/latest/download/NetSim-Studio-arm64.dmg"><b>Apple Silicon</b> (M1 and later)</a><a style="display:inline-block;padding:8px 16px;border-radius:9px;border:1px solid #1f7a55;text-decoration:none;margin-right:8px;color:#1f7a55" href="https://github.com/praiseisaac/netsim/releases/latest/download/NetSim-Studio-x64.dmg"><b>Intel</b></a></div>
+          Not sure which? Apple menu  &gt; <b>About This Mac</b>: "Chip: Apple M…" is Apple Silicon; "Processor: … Intel" is Intel.</li>
         <li>Drag <b>NetSim Studio</b> into <b>Applications</b>, then open it from there.</li>
         <li>The first time, follow its setup steps. It needs no Terminal and no Node.js: Node, npm and the GitHub CLI are built in, and it asks to install Apple's developer tools (they include git) if your Mac doesn't have them yet. When it asks where to keep the course, press <b>Choose…</b> and pick a folder.</li>
       </ol>
-      <p><b>Every class after</b>, open NetSim Studio. It gets the new week's work, then opens on the Build view.</p>
-      <p>It's one app for every Mac (Apple Silicon and Intel), on macOS 13 or newer. Already set up with <code>npm start</code>? The app finds your course folder and carries on; you can use either.</p>
+      <p><b>Every class after</b>, open NetSim Studio. It opens where you left off; when a new week is out, press <b>Get week N</b> to bring it in (whenever you're ready, a week at a time).</p>
+      <p>It needs macOS 13 or newer. It keeps itself up to date: when a new version is out, it asks you to update (one click). Already set up with <code>npm start</code>? The app finds your course folder and carries on; you can use either.</p>
       <p class="check"><b>Done when:</b> the app's last setup step says <span class="ok">doctor: all 8 checks passed</span>. You can skip part B.</p>
     </div>
   </section>

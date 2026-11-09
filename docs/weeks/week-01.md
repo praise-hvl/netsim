@@ -78,16 +78,20 @@ the free ChatGPT plan or Copilot; the offer just gives you more Codex use.
 
 ### 2. On a Mac: the NetSim Studio app
 
-1. Download **[NetSim-Studio-1.0.1.dmg](https://github.com/praiseisaac/netsim/releases/download/mac-v1.0.1/NetSim-Studio-1.0.1.dmg)** ([release notes](https://github.com/praiseisaac/netsim/releases/tag/mac-v1.0.1)) and open it.
+1. Download the one for your Mac, and open it ([release notes](https://github.com/praiseisaac/netsim/releases/latest)):
+   - **[Apple Silicon (M1 and later)](https://github.com/praiseisaac/netsim/releases/latest/download/NetSim-Studio-arm64.dmg)**
+   - **[Intel](https://github.com/praiseisaac/netsim/releases/latest/download/NetSim-Studio-x64.dmg)**
+
+   Not sure which? Apple menu  > **About This Mac**: "Chip: Apple M…" is Apple Silicon; "Processor: … Intel" is Intel.
 2. Drag **NetSim Studio** into **Applications**, then open it from there.
 3. The first time, follow its setup steps. It needs no Terminal and no Node.js: Node, npm and the
    GitHub CLI are built in, and it asks to install Apple's developer tools (they include git) if
    your Mac doesn't have them yet. When it asks where to keep the course, press **Choose…** and
    pick a folder.
 
-**Every class after**, open NetSim Studio. It gets the new week's work, then opens on the Build view.
+**Every class after**, open NetSim Studio. It opens where you left off; when a new week is out, press **Get week N** to bring it in (whenever you're ready, a week at a time).
 
-It's one app for every Mac (Apple Silicon and Intel), on macOS 13 or newer. Already set up with
+It needs macOS 13 or newer. It keeps itself up to date: when a new version is out, it asks you to update (one click). Already set up with
 `npm start`? The app finds your course folder and carries on; you can use either.
 
 ✅ **Check:** the app's last setup step says `doctor: all 8 checks passed`. You can skip part 3.

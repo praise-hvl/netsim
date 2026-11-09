@@ -4,15 +4,19 @@
 
 ### On a Mac: the NetSim Studio app
 
-1. Download **[NetSim-Studio-1.0.1.dmg](https://github.com/praiseisaac/netsim/releases/download/mac-v1.0.1/NetSim-Studio-1.0.1.dmg)** ([release notes](https://github.com/praiseisaac/netsim/releases/tag/mac-v1.0.1)) and open it.
+1. Download the one for your Mac, and open it ([release notes](https://github.com/praiseisaac/netsim/releases/latest)):
+   - **[Apple Silicon (M1 and later)](https://github.com/praiseisaac/netsim/releases/latest/download/NetSim-Studio-arm64.dmg)**
+   - **[Intel](https://github.com/praiseisaac/netsim/releases/latest/download/NetSim-Studio-x64.dmg)**
+
+   Not sure which? Apple menu  > **About This Mac**: "Chip: Apple M…" is Apple Silicon; "Processor: … Intel" is Intel.
 2. Drag **NetSim Studio** into **Applications**, then open it from there.
 3. The first time, follow its setup steps. It needs no Terminal and no Node.js: Node, npm and the
    GitHub CLI are built in, and it asks to install Apple's developer tools (they include git) if
    your Mac doesn't have them yet.
 
-**Every class after**, open NetSim Studio. It gets the new week's work, then opens on the Build view.
+**Every class after**, open NetSim Studio. It opens where you left off; when a new week is out, press **Get week N** to bring it in (whenever you're ready, a week at a time).
 
-It's one app for every Mac (Apple Silicon and Intel), on macOS 13 or newer. Already set up with
+It needs macOS 13 or newer. It keeps itself up to date: when a new version is out, it asks you to update (one click). Already set up with
 `npm start`? The app finds your course folder and carries on; you can use either.
 
 ### On Windows, Linux, or a Mac from the terminal
@@ -49,8 +53,8 @@ It is also an 8-week course. Each week you build one piece of it, and each piece
 pieces you built before. By week 8 the computer on the screen is one you wrote.
 
 `npm start` opens **NetSim Studio**, the whole course in one app: it gets you set up, brings in
-each new week, and shows each week's lesson page, your design note, the board and the week's
-checks. Its sidebar lists every week (the ones not out yet are greyed).
+each new week when you ask for it, and shows each week's lesson page, your design note, the board
+and the week's checks. Every week is open to read; you get each one into your work at your own pace.
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)
 ![Next.js](https://img.shields.io/badge/Next.js-16-black)

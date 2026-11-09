@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
@@ -23,6 +25,8 @@ export default defineConfig({
     testTimeout: 10_000,
     // A GitHub token in the terminal that runs the tests makes gh (and the studio) act as its
     // account; the tests use their own fake gh accounts, so it's cleared here (empty = not set).
-    env: { GH_TOKEN: "", GITHUB_TOKEN: "" },
+    // The studio's remembered state (setup-state.json) goes to a folder of the test run's own, never
+    // ~/.netsim: tests on a laptop where the course is set up neither read it nor change it.
+    env: { GH_TOKEN: "", GITHUB_TOKEN: "", NETSIM_HOME: mkdtempSync(join(tmpdir(), "netsim-test-home-")) },
   },
 });

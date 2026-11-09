@@ -111,9 +111,11 @@ const firstLine = (text: string) => text.split("\n")[0];
  * Who git pushes to the fork as. `account`: the GitHub account NetSim Studio uses for the course
  * (NETSIM_GITHUB_ACCOUNT, a name, set by the studio when it runs the doctor). The studio pushes as
  * that account even when it isn't gh's own in use, so that's the one to check: its token is asked
- * of gh here and given only to the one gh command that asks GitHub who it is.
+ * of gh here and given only to the one gh command that asks GitHub who it is. `from`: "token" when
+ * that account is a token in the terminal the studio runs in (NETSIM_GITHUB_ACCOUNT_FROM): the studio
+ * asked GitHub whose it is, and git pushes with it, so that's the answer (the doctor never gets the token).
  */
-export function pushIdentity(origin: Remote, run: Runner, account?: string): PushIdentity {
+export function pushIdentity(origin: Remote, run: Runner, account?: string, from?: string): PushIdentity {
   if (origin.protocol === "ssh") {
     const port = origin.sshPort ? ["-p", origin.sshPort] : [];
     const ssh = run("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", ...port, origin.sshTarget]);
@@ -130,7 +132,9 @@ export function pushIdentity(origin: Remote, run: Runner, account?: string): Pus
   if (!hasCredentialHelper(origin.host, run)) return { kind: "no-helper" };
 
   // The studio's account, when it isn't gh's own in use: the one the studio pushes as.
-  if (account && /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/.test(account)) {
+  const named = Boolean(account && /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/.test(account));
+  if (named && from === "token") return { kind: "account", login: account as string, via: "studio" };
+  if (named && account) {
     const own = run("gh", ["config", "get", "-h", "github.com", "user"]);
     if (own && own.code === 0 && own.stdout && own.stdout.toLowerCase() !== account.toLowerCase()) {
       const token = run("gh", ["auth", "token", "-h", "github.com", "--user", account]);
@@ -144,7 +148,8 @@ export function pushIdentity(origin: Remote, run: Runner, account?: string): Pus
 
   // Ask the GitHub CLI who is logged in, if it's installed and logged in...
   const gh = run("gh", ["api", "user", "--jq", ".login"]);
-  if (gh && gh.code === 0 && gh.stdout) return { kind: "account", login: gh.stdout, via: "gh" };
+  // Run by the studio, the account is changed in its step 5, never with gh auth switch.
+  if (gh && gh.code === 0 && gh.stdout) return { kind: "account", login: gh.stdout, via: named ? "studio" : "gh" };
   if (gh && OFFLINE.test(gh.stderr)) return { kind: "offline", why: firstLine(gh.stderr) };
 
   // ...otherwise try a push that doesn't change anything, without ever prompting for a password.
@@ -278,7 +283,7 @@ export function runChecks(root: string = process.cwd(), run: Runner = commandRun
   );
 
   const fork = origin !== null && !isStarter ? origin : null;
-  checks.push({ name: "you can push to your fork", required: true, ...pushCheck(fork, fork ? pushIdentity(fork, run, process.env.NETSIM_GITHUB_ACCOUNT) : null) });
+  checks.push({ name: "you can push to your fork", required: true, ...pushCheck(fork, fork ? pushIdentity(fork, run, process.env.NETSIM_GITHUB_ACCOUNT, process.env.NETSIM_GITHUB_ACCOUNT_FROM) : null) });
 
   const installed = existsSync(join(root, "node_modules", "zod", "package.json")) && existsSync(join(root, "node_modules", "vitest", "package.json"));
   add("dependencies installed", installed, installed ? "node_modules present" : "node_modules missing", "Run `npm install` in the course folder.");
