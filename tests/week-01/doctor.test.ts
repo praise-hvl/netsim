@@ -239,3 +239,19 @@ describe("the push check, for the account NetSim Studio uses", () => {
     expect(calls.some((c) => c.line.startsWith("gh auth token"))).toBe(false);
   });
 });
+
+describe("the AI assistant check: Codex or Claude, either will do", () => {
+  const noCodex = Object.fromEntries(Object.entries(setUp).filter(([k]) => k !== "codex --version"));
+  const assistant = (extra: Record<string, ReturnType<typeof ok>>) => check(runChecks(process.cwd(), laptop({ ...noCodex, ...keychain, ...extra })), "AI assistant installed");
+  it("Codex installed: passes, as before", () => {
+    expect(assistant({ "codex --version": ok("codex-cli 0.166.0") })).toMatchObject({ status: "pass", detail: "codex-cli 0.166.0" });
+  });
+  it("only Claude Code installed: passes", () => {
+    expect(assistant({ "claude --version": ok("2.1.321 (Claude Code)") })).toMatchObject({ status: "pass", detail: "Claude Code 2.1.321" });
+  });
+  it("neither: fails, and says how to get either one", () => {
+    const c = assistant({});
+    expect(c).toMatchObject({ status: "fail", detail: "neither Codex nor Claude found" });
+    expect(c.fix).toMatch(/Install and sign in to your AI assistant.*Codex.*Claude/);
+  });
+});

@@ -167,7 +167,7 @@ Ctrl+C there stops it). The studio goes through the 15 steps **one at a time**:
 11. Make your work branch
 12. Put your branch on GitHub
 13. Install VS Code (optional)
-14. Install and sign in to Codex
+14. Install and sign in to your AI assistant
 15. Get the course's packages, then check everything
 
 It asks you which folder the course should go in (step 9) and clones your fork into a `netsim`

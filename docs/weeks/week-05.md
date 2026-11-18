@@ -12,7 +12,7 @@ together.
    Codex: https://learn.chatgpt.com/docs/pricing. Sign in at chatgpt.com and check your plan first.
 2. **Open the app.** In your course folder, run `npm start`. It brings in everything you're missing
    from earlier weeks by itself.
-3. **Codex installed and signed in.** In the app, press **Run** on "Install and sign in to Codex",
+3. **Codex installed and signed in.** In the app, press **Run** on "Install and sign in to your AI assistant",
    then sign in with that ChatGPT account in the browser window it opens. Week 5's **Build** tab says
    when Codex is ready.
 4. **Step 1 together,** at the same time, so everyone has done the loop once.

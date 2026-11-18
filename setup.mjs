@@ -18,7 +18,7 @@
 // No dependencies: only Node's built-in modules, so it runs before the course repo exists.
 // @ts-check
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
@@ -98,7 +98,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 26;
+export const STUDIO_VERSION = 27;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -192,6 +192,7 @@ const CODEX_FLAGS = ["-c", "check_for_update_on_startup=false"];
  *   preview?: string[],
  *   changeable?: boolean,
  *   accountChange?: (ctx: Context) => boolean,
+ *   alt?: (ctx: Context) => { label: string, apply: (ctx: Context) => void } | null,
  *   plan: (ctx: Context) => Action[],
  *   hint: (ctx: Context) => string,
  * }} Step
@@ -236,7 +237,7 @@ const CODEX_FLAGS = ["-c", "check_for_update_on_startup=false"];
  *   save?: () => void,
  *   ghPath?: string,
  *   ghMissing?: boolean,
- *   state: { madeFolder?: string, movedOld?: string, login?: string, seenLogin?: string, parent?: string, repoDir?: string, chatgpt?: string, doctorOk?: boolean, doctorOkAs?: string, refused?: { dir: string, why: string }, codexVersion?: string, agentThreads?: Record<string, string>, dryDone?: Record<string, boolean>, dryFound?: Record<string, string> },
+ *   state: { madeFolder?: string, movedOld?: string, login?: string, seenLogin?: string, parent?: string, repoDir?: string, chatgpt?: string, doctorOk?: boolean, doctorOkAs?: string, refused?: { dir: string, why: string }, codexVersion?: string, agentThreads?: Record<string, string>, agentProvider?: "codex" | "claude", claudeSessions?: Record<string, string>, dryDone?: Record<string, boolean>, dryFound?: Record<string, string> },
  * }} Context
  */
 
@@ -1031,6 +1032,72 @@ function cloneFresh() {
 
 // ── The 15 steps ───────────────────────────────────────────────────────────
 
+/**
+ * Codex: installed, new enough, and signed in (asked of Codex itself).
+ * @param {Context} ctx
+ * @returns {Promise<CheckResult>}
+ */
+async function codexReady(ctx) {
+    if (!onPath(ctx, "codex")) return { done: false, found: "Codex isn't installed yet." };
+    // A version an earlier studio wrote down may be out of date (Codex updates itself, or was
+    // updated in a terminal): when it looks too old, ask Codex (it has run before, so no wait).
+    // None written down (an older or lost state file): ask too, so its sign-in is asked of Codex
+    // (codex login status), not guessed from auth.json (Codex may keep it in the keychain).
+    if ((!ctx.state.codexVersion || versionOlder(ctx.state.codexVersion, CODEX_MIN_VERSION)) && !ctx.dryRun) {
+      const now = /\d+\.\d+\.\d+[\w.-]*/.exec(output(ctx, ["codex", ...CODEX_FLAGS, "--version"]) ?? "")?.[0];
+      if (now) ctx.state.codexVersion = now;
+    }
+    const version = ctx.state.codexVersion ? ` (${ctx.state.codexVersion})` : "";
+    if (ctx.state.codexVersion && versionOlder(ctx.state.codexVersion, CODEX_MIN_VERSION)) return { done: false, found: `Codex ${ctx.state.codexVersion} is too old for the studio's Agent tab (it needs ${CODEX_MIN_VERSION} or newer).` };
+    const signedIn = codexSignedIn(ctx);
+    return { done: signedIn, found: signedIn ? `Codex is installed${version} and signed in.` : `Codex is installed${version} but not signed in.` };
+  }
+
+/**
+ * Claude Code: installed, new enough, and signed in with a Claude subscription (asked of claude itself,
+ * never its files).
+ * @param {Context} ctx
+ * @returns {CheckResult}
+ */
+function claudeReady(ctx) {
+  if (!onPath(ctx, "claude")) return { done: false, found: "Claude isn't installed yet." };
+  if (ctx.dryRun) return { done: false, found: "Claude is installed." };
+  const version = /\d+\.\d+\.\d+[\w.-]*/.exec(output(ctx, ["claude", "--version"]) ?? "")?.[0] ?? "";
+  if (version && versionOlder(version, CLAUDE_MIN_VERSION)) return { done: false, found: `Claude ${version} is too old for the studio's Agent tab (it needs ${CLAUDE_MIN_VERSION} or newer).` };
+  const a = claudeAccount((argv) => ctx.capture(argv));
+  const v = version ? ` (${version})` : "";
+  if (a.signedIn) return { done: true, found: `Claude is installed${v} and signed in${a.plan ? ` (Claude ${a.plan[0].toUpperCase()}${a.plan.slice(1)})` : ""}.` };
+  return { done: false, found: a.method && a.method !== "none" ? `Claude is installed${v}, but signed in with an API key: the studio uses a Claude Pro or Max subscription.` : `Claude is installed${v} but not signed in.` };
+}
+
+/**
+ * Claude's commands: the official installer (when it isn't installed), a newer version (when it's too
+ * old), then its own browser sign-in with the student's Claude subscription.
+ * @param {Context} ctx
+ * @returns {Action[]}
+ */
+function claudePlan(ctx) {
+  const installed = onPath(ctx, "claude");
+  const version = installed && !ctx.dryRun ? (/\d+\.\d+\.\d+[\w.-]*/.exec(output(ctx, ["claude", "--version"]) ?? "")?.[0] ?? "") : "";
+  return [
+    ...(installed
+      ? version && versionOlder(version, CLAUDE_MIN_VERSION)
+        ? [cmd(CLAUDE_UPDATE, ["claude", "update"], { what: "Updates Claude Code to the newest version.", words: [["update", "get the newest version"]] })]
+        : []
+      : [
+          cmd(CLAUDE_INSTALL, ["bash", "-c", CLAUDE_INSTALL], {
+            what: "Downloads Claude Code's official installer from claude.ai and runs it. It installs the claude command for you.",
+            words: [["curl", "downloads a file from the internet"], ["-fsSL", "quietly, following redirects, failing on errors"], ["| bash", "runs what was downloaded"]],
+          }),
+        ]),
+    cmd("claude auth login", ["claude", "auth", "login", "--claudeai"], {
+      what: "Opens claude.ai in your browser to sign Claude in with your Claude Pro or Max subscription.",
+      words: [["auth", "sign-in (authentication)"], ["login", "sign in"]],
+      waitFor: "browser",
+    }),
+  ];
+}
+
 /** @returns {Step[]} */
 export function courseSteps() {
   return [
@@ -1406,30 +1473,34 @@ export function courseSteps() {
     },
     {
       id: "codex",
-      title: "Install and sign in to Codex",
-      technical: "Codex CLI",
-      explain: "the course's AI assistant, in the terminal. You lead the design; it can help write code.",
-      why: "You'll use Codex in class. It signs in with your ChatGPT account (step 7).",
+      title: "Install and sign in to your AI assistant",
+      technical: "Codex or Claude",
+      explain: "the course's AI assistant, in the terminal and in the studio's Agent tab. You lead the design; it can help write code.",
+      why: "You'll use it in class. Codex signs in with ChatGPT (step 7); Claude with a Claude Pro or Max subscription. Either works; you can switch in the Agent tab.",
       example: "Codex is installed and signed in.",
-      // The studio never runs codex just to look: on a Mac its first run waits for macOS to check
-      // it, which can take minutes. It looks for the program instead, and runs `codex --version`
-      // once, visibly, after installing.
+      // Done when either assistant is installed and signed in. The plan is for the one this student
+      // uses (state.agentProvider, else Codex unless only Claude is installed); "Use … instead" switches.
+      alt: (ctx) => {
+        const other = agentProvider(ctx) === "claude" ? "codex" : "claude";
+        return { label: `Use ${AGENT_PROVIDERS[other].label} instead`, apply: (c) => {
+          c.state.agentProvider = other;
+        } };
+      },
       check: async (ctx) => {
-        if (!onPath(ctx, "codex")) return { done: false, found: "Codex isn't installed yet." };
-        // A version an earlier studio wrote down may be out of date (Codex updates itself, or was
-        // updated in a terminal): when it looks too old, ask Codex (it has run before, so no wait).
-        // None written down (an older or lost state file): ask too, so its sign-in is asked of Codex
-        // (codex login status), not guessed from auth.json (Codex may keep it in the keychain).
-        if ((!ctx.state.codexVersion || versionOlder(ctx.state.codexVersion, CODEX_MIN_VERSION)) && !ctx.dryRun) {
-          const now = /\d+\.\d+\.\d+[\w.-]*/.exec(output(ctx, ["codex", ...CODEX_FLAGS, "--version"]) ?? "")?.[0];
-          if (now) ctx.state.codexVersion = now;
+        // Codex first (the course's default), then Claude when it's installed: either one, ready, will do.
+        const codex = await codexReady(ctx);
+        if (codex.done) return codex;
+        const claude = onPath(ctx, "claude") || agentProvider(ctx) === "claude" ? claudeReady(ctx) : null;
+        if (claude?.done) {
+          // No choice made yet, and only Claude is ready: Claude it is (recorded, so it's worked out once).
+          if (ctx.state.agentProvider === undefined) ctx.state.agentProvider = "claude";
+          return claude;
         }
-        const version = ctx.state.codexVersion ? ` (${ctx.state.codexVersion})` : "";
-        if (ctx.state.codexVersion && versionOlder(ctx.state.codexVersion, CODEX_MIN_VERSION)) return { done: false, found: `Codex ${ctx.state.codexVersion} is too old for the studio's Agent tab (it needs ${CODEX_MIN_VERSION} or newer).` };
-        const signedIn = codexSignedIn(ctx);
-        return { done: signedIn, found: signedIn ? `Codex is installed${version} and signed in.` : `Codex is installed${version} but not signed in.` };
+        if (!onPath(ctx, "codex") && !onPath(ctx, "claude")) return { done: false, found: "Neither Codex nor Claude is installed yet." };
+        return agentProvider(ctx) === "claude" && claude ? claude : codex;
       },
       plan: (ctx) => {
+        if (agentProvider(ctx) === "claude") return claudePlan(ctx);
         const installed = onPath(ctx, "codex");
         const old = installed && ctx.state.codexVersion && versionOlder(ctx.state.codexVersion, CODEX_MIN_VERSION);
         if (old)
@@ -1545,6 +1616,8 @@ function doctorCommand(ctx, dir) {
 
 /** The doctor's push check, by name. */
 const PUSH_CHECK = "you can push to your fork";
+/** An older doctor's assistant check (Codex only), by name. */
+const OLD_CODEX_CHECK = "Codex CLI installed";
 
 /**
  * What the doctor's output means. It passed when it says so, or when the only check that failed is
@@ -1557,10 +1630,19 @@ const PUSH_CHECK = "you can push to your fork";
  */
 export function judgeDoctor(ctx, dir, text) {
   if (/doctor: all 8 checks passed/.test(text)) return { done: true, found: "doctor: all 8 checks passed", items: [] };
-  const items = doctorFailures(text);
-  if (items.length === 1 && items[0].check === PUSH_CHECK && studioCanPush(ctx, dir)) {
-    return { done: true, found: `doctor: all 8 checks passed (you can push to your fork: checked by the studio, as ${ghActiveAccount(ctx) ?? "your account"})`, items: [] };
+  // A doctor from before Claude (the week a student has) checks for Codex only: with Claude as the
+  // assistant, installed and signed in, the studio checks that one itself.
+  let items = doctorFailures(text);
+  const notes = [];
+  if (items.some((i) => i.check === OLD_CODEX_CHECK) && agentProvider(ctx) === "claude" && claudeReady(ctx).done) {
+    items = items.filter((i) => i.check !== OLD_CODEX_CHECK);
+    notes.push("the AI assistant: Claude, checked by the studio");
   }
+  if (items.length === 1 && items[0].check === PUSH_CHECK && studioCanPush(ctx, dir)) {
+    items = [];
+    notes.push(`you can push to your fork: checked by the studio, as ${ghActiveAccount(ctx) ?? "your account"}`);
+  }
+  if (!items.length && notes.length) return { done: true, found: `doctor: all 8 checks passed (${notes.join("; ")})`, items: [] };
   return { done: false, found: "", items };
 }
 
@@ -2475,7 +2557,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
         ran: ran[i],
         preview: previewsNow()[i],
       })),
-      view: current < steps.length ? { ...view, attempt, outputId, actions: plan.map(describe), canChangeAccount: canChange, canPickFolder: Boolean(ctx.pickFolder) && !ctx.dryRun, canCheckAll: canCheckAll() } : null,
+      view: current < steps.length ? { ...view, attempt, outputId, actions: plan.map(describe), alt: view.phase !== "passed" && !ctx.dryRun ? (steps[current]?.alt?.(ctx)?.label ?? "") : "", canChangeAccount: canChange, canPickFolder: Boolean(ctx.pickFolder) && !ctx.dryRun, canCheckAll: canCheckAll() } : null,
     };
   }
 
@@ -2942,7 +3024,16 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     publish();
     const report = join(tmpdir(), `netsim-studio-${process.pid}-${id}.json`);
     const vitest = [process.execPath, join(dir, "node_modules", "vitest", "vitest.mjs"), "run", ...task.tests, "--reporter=json", `--outputFile=${report}`];
-    const argv = sandboxed ? ["codex", ...CODEX_FLAGS, "-c", `sandbox_mode="${AGENT_SANDBOX_MODE}"`, "-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=false", "sandbox", "--", ...vitest] : vitest;
+    const argv = sandboxed ? sandboxedArgv(ctx, dir, vitest) : vitest;
+    if (!argv) {
+      // No sandbox on this laptop (no codex, and not a Mac): never run them outside one by itself.
+      // The student's own press runs them (outside it, as always).
+      code = { ...code };
+      delete code[id];
+      if (!quiet) agent.testOffer(week, id);
+      publish();
+      return then(false);
+    }
     let text = "";
     codeRun = /** @type {NonNullable<Context["stream"]>} */ (ctx.stream)(argv, dir, (t) => (text = (text + t).slice(-20_000)));
     codeRunFor = { id, from, superseded: false };
@@ -3330,6 +3421,16 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
         publish();
         return ok;
       }
+      case "alt": {
+        // The step's other way (the other AI assistant): its plan, from the top.
+        const other = step.alt?.(ctx);
+        if (!other || view.phase === "passed") return reject(409, "This step has no other way right now.");
+        if (view.phase === "running" || view.phase === "checking") return reject(409, "Wait for this step to finish first.");
+        other.apply(ctx);
+        if (!ctx.dryRun) ctx.save?.();
+        void enter(current);
+        return ok;
+      }
       case "check-all":
         if (view.phase === "checking" || (view.phase === "running" && view.waitFor !== "browser")) return reject(409, "Wait for this step to finish first.");
         void checkAll();
@@ -3632,6 +3733,40 @@ export function focusedTestCommand(task) {
   return pattern.length > 600 ? `npx vitest run ${files.join(" ")}` : `npx vitest run ${files.join(" ")} -t ${quote(pattern)}`;
 }
 
+/**
+ * macOS's sandbox for the studio's own quiet test runs when Codex (whose sandbox they use) isn't
+ * installed: no network (local sockets aside), and writes only in the course folder (COURSE) and the
+ * temp folder (TMP: vitest's report). Both are real paths, given with sandbox-exec -D. The Mac app reads
+ * this profile from meta.json.
+ */
+export const SANDBOX_PROFILE = [
+  "(version 1)",
+  "(allow default)",
+  "(deny network*)",
+  "(allow network* (local unix-socket) (remote unix-socket))",
+  "(deny file-write*)",
+  '(allow file-write* (subpath (param "COURSE")) (subpath (param "TMP")) (literal "/dev/null") (literal "/dev/zero") (subpath "/dev/fd") (literal "/dev/tty") (literal "/dev/dtracehelper"))',
+].join("\n");
+
+/**
+ * A command (the task's tests), sandboxed: in Codex's sandbox when Codex is installed, else macOS's
+ * (sandboxProfile), else null: never unsandboxed by itself.
+ * @param {Context} ctx @param {string} dir @param {string[]} argv
+ * @returns {string[] | null}
+ */
+export function sandboxedArgv(ctx, dir, argv) {
+  if (onPath(ctx, "codex")) return ["codex", ...CODEX_FLAGS, "-c", `sandbox_mode="${AGENT_SANDBOX_MODE}"`, "-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=false", "sandbox", "--", ...argv];
+  const real = (/** @type {string} */ p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  if (ctx.platform === "mac" && ctx.exists("/usr/bin/sandbox-exec")) return ["/usr/bin/sandbox-exec", "-D", `COURSE=${real(dir)}`, "-D", `TMP=${real(tmpdir())}`, "-p", SANDBOX_PROFILE, ...argv];
+  return null;
+}
+
 /** The oldest Codex the bridge has been run against. Older ones get the update command. */
 export const CODEX_MIN_VERSION = "0.166.0";
 const CODEX_UPDATE = "npm install -g @openai/codex@latest";
@@ -3767,6 +3902,443 @@ export function codexTransport(ctx, cwd) {
   };
 }
 
+// ── Claude as the agent: the same app-server messages, driven over Claude Code's stream-json ─────────
+// The bridge above speaks Codex's app-server JSON-RPC. claudeTransport answers that same protocol and
+// drives `claude -p` (stream-json in and out) underneath, so the bridge, its approval cards and the page
+// don't change. Checked on Claude Code 2.1.321:
+// - --restricted: the student's own Claude settings (permission modes, hooks, plugins, MCP servers) don't
+//   apply; file tools stay inside the course folder (writes outside are refused, not asked); bypassing
+//   permissions is refused.
+// - Claude's sandbox (--settings): commands run without asking inside the course folder, like Codex's
+//   workspace-write; a command writing outside it, or any network use, asks here first.
+// - --permission-prompt-tool stdio: those questions reach the studio (without it they're denied silently).
+// - --permission-mode acceptEdits: edits inside the folder go ahead, as with Codex.
+
+/** The oldest Claude Code the bridge has been run against. Older ones get the update command. */
+export const CLAUDE_MIN_VERSION = "2.1.321";
+/** The official native installer (as typed; the studio runs it with bash -c). */
+export const CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash";
+export const CLAUDE_UPDATE = "claude update";
+/** The tools Claude gets: files and the shell. No web fetch or search, no MCP, no sub-agents. */
+export const CLAUDE_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "Bash"];
+export const CLAUDE_PERMISSION_MODE = "acceptEdits";
+/** failIfUnavailable: no sandbox, no Claude (never unsandboxed). An escape from it (dangerouslyDisableSandbox) asks here as a command. */
+export const CLAUDE_SETTINGS = { sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: true } };
+export const CLAUDE_PERMISSIONS_LINE = "Without asking, Claude can read and change files and run commands in your course folder (in its sandbox). It asks here before using the internet (the course's bus tests count) or running a command outside its sandbox. It can't change files outside the course folder at all: those are refused, with nothing to approve.";
+/** The fixed part of Claude's command line (the Mac app reads it from meta.json). Then --append-system-prompt and --session-id or --resume. */
+export const CLAUDE_FLAGS = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--restricted", "--strict-mcp-config", "--tools", CLAUDE_TOOLS.join(","), "--permission-mode", CLAUDE_PERMISSION_MODE, "--permission-prompts", "host", "--permission-prompt-tool", "stdio", "--settings", JSON.stringify(CLAUDE_SETTINGS)];
+
+/**
+ * The command line for one Claude conversation in a course folder: fixed arguments only (the student's
+ * words go over stdin), never --dangerously-skip-permissions (a shell alias can add it: the binary is
+ * started directly, without a shell).
+ * @param {{ sessionId: string, resume: boolean, policy: string }} o
+ */
+export function claudeArgs({ sessionId, resume, policy }) {
+  return [...CLAUDE_FLAGS, "--append-system-prompt", policy, ...(resume ? ["--resume", sessionId] : ["--session-id", sessionId])];
+}
+
+/** Claude's environment: the agent's (no GitHub token), and no Anthropic API key either: the student's subscription signs it in. @param {Record<string, string | undefined>} env */
+export function claudeEnv(env) {
+  const out = agentEnv(env);
+  // A Claude session around the studio (Claude Code running npm start) mustn't be inherited either.
+  // Nor another endpoint, provider or config folder: the student's own claude.ai subscription, as
+  // `claude auth status` reported it, is the only way Claude signs in here.
+  for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CONFIG_DIR"]) delete out[k];
+  // The student's claude.ai connectors (mail, calendar, documents) aren't tools in the course.
+  out.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
+  return out;
+}
+
+/**
+ * Who Claude is signed in as, from Claude itself (`claude auth status --json`), never from its files.
+ * A subscription sign-in only (claude.ai): an API key or console sign-in doesn't count.
+ * @param {(argv: string[]) => { code: number, stdout: string } | null} capture
+ * @returns {{ signedIn: boolean, email?: string, plan?: string, method?: string }}
+ */
+export function claudeAccount(capture) {
+  const r = capture(["claude", "auth", "status", "--json"]);
+  let s = null;
+  try {
+    s = r ? JSON.parse(r.stdout) : null;
+  } catch {
+    s = null;
+  }
+  if (!s?.loggedIn) return { signedIn: false };
+  const method = String(s.authMethod ?? "");
+  const subscription = method === "claude.ai" || Boolean(s.subscriptionType);
+  return { signedIn: subscription, method, ...(s.email ? { email: String(s.email) } : {}), ...(s.subscriptionType ? { plan: String(s.subscriptionType) } : {}) };
+}
+
+/** A unified-style diff for one Edit or Write, for the page's diff card. @param {any} input @param {string} tool */
+function claudeDiff(input, tool) {
+  const lines = (/** @type {unknown} */ s) => (String(s ?? "") ? String(s ?? "").split("\n") : []);
+  if (tool === "Write") {
+    const added = lines(input?.content);
+    return `@@ -0,0 +1,${added.length} @@\n${added.map((l) => `+${l}`).join("\n")}\n`;
+  }
+  const edits = Array.isArray(input?.edits) ? input.edits : [{ old_string: input?.old_string, new_string: input?.new_string }];
+  return edits
+    .map((e) => {
+      const removed = lines(e?.old_string);
+      const added = lines(e?.new_string);
+      return `@@ -1,${removed.length} +1,${added.length} @@\n${[...removed.map((l) => `-${l}`), ...added.map((l) => `+${l}`)].join("\n")}\n`;
+    })
+    .join("");
+}
+
+/** A tool call as a row the page already shows: a command (with what it runs or reads), or a file change. @param {string} name @param {any} input @param {string} cwd */
+function claudeItem(name, input, cwd) {
+  const rel = (/** @type {unknown} */ p) => {
+    const s = String(p ?? "");
+    return s.startsWith(`${cwd}/`) ? s.slice(cwd.length + 1) : s;
+  };
+  if (name === "Bash") return { type: "commandExecution", command: String(input?.command ?? "") };
+  if (name === "Read") return { type: "commandExecution", command: `read ${rel(input?.file_path)}` };
+  if (name === "Grep") return { type: "commandExecution", command: `grep ${JSON.stringify(String(input?.pattern ?? ""))}${input?.path ? ` ${rel(input.path)}` : ""}` };
+  if (name === "Glob") return { type: "commandExecution", command: `find ${String(input?.pattern ?? "")}${input?.path ? ` in ${rel(input.path)}` : ""}` };
+  if (name === "Edit" || name === "Write" || name === "MultiEdit") {
+    const path = String(input?.file_path ?? "");
+    return { type: "fileChange", changes: [{ path, kind: { type: name === "Write" ? "add" : "update" }, diff: claudeDiff(input, name) }] };
+  }
+  return { type: "dynamicToolCall", tool: name };
+}
+
+/**
+ * Claude Code, answering the bridge's app-server protocol. One `claude -p` per conversation, started on
+ * the first turn (new: --session-id, picked up: --resume) and kept for the next turns.
+ * @param {Context} ctx
+ * @param {string} cwd
+ * @param {{ bin?: string, spawnClaude?: (argv: string[], options: object) => import("node:child_process").ChildProcess }} [options]  (tests: a fake claude)
+ * @returns {AgentTransport}
+ */
+export function claudeTransport(ctx, cwd, { bin = "claude", spawnClaude } = {}) {
+  /** @type {(message: any) => void} */
+  let message = () => {};
+  /** @type {(line: string) => void} */
+  let bad = () => {};
+  /** @type {(why: { code: number | null, signal: string | null, error?: string, stderr: string }) => void} */
+  let closed = () => {};
+  let done = false;
+  let stderr = "";
+  /** @type {import("node:child_process").ChildProcess | null} */
+  let child = null;
+  let sessionId = "";
+  let resume = false;
+  let policy = "";
+  /** @type {{ id: string, interrupted: boolean } | null} */
+  let turn = null;
+  let turnNo = 0;
+  /** tool_use id → the row it became */
+  const tools = new Map();
+  /** text being written, by message id + block index */
+  const writing = new Map();
+  /** message id → its streamed text rows not finished yet, in order */
+  const streamed = new Map();
+  /** permission questions waiting: our request id → Claude's request (and the input to allow) */
+  const asks = new Map();
+  let nextAsk = 1;
+  let limit = "";
+  let accountError = ""; // an assistant message's "error" (rate_limit, billing_error, authentication_failed…)
+  const reply = (/** @type {unknown} */ id, /** @type {unknown} */ result) => queueMicrotask(() => message({ id, result }));
+  const refuse = (/** @type {unknown} */ id, /** @type {string} */ text) => queueMicrotask(() => message({ id, error: { code: -32601, message: text } }));
+  const notify = (/** @type {string} */ method, /** @type {object} */ params) => message({ method, params });
+  const run = (/** @type {string[]} */ argv, /** @type {number} */ timeout) =>
+    new Promise((resolve) => {
+      const r = spawn(bin, argv.slice(1), { cwd, env: claudeEnv(process.env), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      let out = "";
+      r.stdout?.setEncoding("utf8").on("data", (t) => (out += t));
+      const timer = setTimeout(() => r.kill(), timeout);
+      r.on("error", () => resolve(null));
+      r.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({ code: code ?? 1, stdout: out });
+      });
+    });
+  const finish = (/** @type {number | null} */ code, /** @type {string | null} */ signal, /** @type {string | undefined} */ error) => {
+    if (done) return;
+    done = true;
+    closed({ code, signal, ...(error ? { error } : {}), stderr });
+  };
+  const toClaude = (/** @type {object} */ m) => {
+    if (child && !done) child.stdin?.write(`${JSON.stringify(m)}\n`);
+  };
+
+  /** One message from Claude. @param {any} m */
+  function fromClaude(m) {
+    if (!m || typeof m !== "object") return;
+    if (m.type === "system" && m.subtype === "init") {
+      // What it really runs with: anything looser than asked, and the studio won't drive it.
+      // Tools it doesn't list (missing, or none) can't be checked: that's loose too.
+      const tools = Array.isArray(m.tools) ? m.tools : [];
+      const loose = m.permissionMode !== CLAUDE_PERMISSION_MODE || !tools.length || tools.some((/** @type {unknown} */ t) => typeof t !== "string" || !CLAUDE_TOOLS.includes(t)) || (Array.isArray(m.mcp_servers) && m.mcp_servers.length > 0);
+      if (loose) {
+        notify("error", { threadId: sessionId, willRetry: false, error: { message: "Claude started with looser permissions than the studio asks for (a managed setting?), so the studio won't drive it. Ask Praise." } });
+        child?.kill();
+      }
+      return;
+    }
+    if (m.type === "system" && m.subtype === "api_retry") return notify("error", { threadId: sessionId, willRetry: true, error: { message: `Claude couldn't reach its service (try ${m.attempt ?? ""}).` } });
+    if (m.type === "rate_limit_event") {
+      const info = m.rate_limit_info ?? {};
+      if (info.status === "rejected") {
+        const at = Number(info.resetsAt) ? new Date(Number(info.resetsAt) * 1000).toLocaleString() : "";
+        limit = `usage limit reached${at ? `; it resets ${at}` : ""}`;
+      }
+      return;
+    }
+    if (m.type === "stream_event" && turn) {
+      const e = m.event ?? {};
+      if (e.type === "message_start") writing.set("msg", String(e.message?.id ?? `m${turnNo}`));
+      if (e.type === "content_block_delta" && e.delta?.type === "text_delta") {
+        const msgId = writing.get("msg") ?? `m${turnNo}`;
+        const itemId = `${msgId}:${e.index ?? 0}`;
+        // The finished message comes back with its blocks counted differently: remember the order.
+        const open = streamed.get(msgId) ?? [];
+        if (!open.includes(itemId)) streamed.set(msgId, [...open, itemId]);
+        notify("item/agentMessage/delta", { threadId: sessionId, turnId: turn.id, itemId, delta: String(e.delta.text ?? "") });
+      }
+      return;
+    }
+    if (m.type === "system" && m.subtype === "permission_denied" && turn) {
+      return notify("studio/note", { threadId: sessionId, tone: "info", text: `Claude wasn't allowed to do that: ${String(m.message ?? "").slice(0, 240)}` });
+    }
+    if (m.type === "assistant" && turn && m.error) {
+      // Claude's own refusal for the account: the turn's error (said once, at its end).
+      accountError = String(m.error);
+    }
+    if (m.type === "assistant" && turn) {
+      const msgId = String(m.message?.id ?? `m${turnNo}`);
+      (m.message?.content ?? []).forEach((/** @type {any} */ block, /** @type {number} */ i) => {
+        if (block?.type === "text" && String(block.text ?? "").trim()) {
+          // The row its streamed words went into (the first not finished yet), else a new one.
+          const open = streamed.get(msgId) ?? [];
+          const id = open.shift() ?? `${msgId}:${i}`;
+          streamed.set(msgId, open);
+          notify("item/completed", { threadId: sessionId, turnId: turn?.id, item: { type: "agentMessage", id, text: String(block.text) } });
+        } else if (block?.type === "tool_use") {
+          const item = { id: String(block.id), status: "inProgress", ...claudeItem(String(block.name), block.input, cwd) };
+          tools.set(item.id, item);
+          notify("item/started", { threadId: sessionId, turnId: turn?.id, item });
+        }
+      });
+      return;
+    }
+    if (m.type === "user" && turn) {
+      for (const block of m.message?.content ?? []) {
+        if (block?.type !== "tool_result") continue;
+        const item = tools.get(String(block.tool_use_id));
+        if (!item) continue;
+        const text = Array.isArray(block.content) ? block.content.map((/** @type {any} */ c) => c?.text ?? "").join("") : String(block.content ?? "");
+        const failed = Boolean(block.is_error);
+        const exit = /^Exit code (\d+)/.exec(text)?.[1];
+        const doneItem = item.type === "commandExecution" ? { ...item, status: failed ? "failed" : "completed", exitCode: exit !== undefined ? Number(exit) : failed ? 1 : 0, aggregatedOutput: text } : { ...item, status: failed ? "failed" : "completed" };
+        tools.set(item.id, doneItem);
+        notify("item/completed", { threadId: sessionId, turnId: turn.id, item: doneItem });
+      }
+      return;
+    }
+    if (m.type === "control_request" && m.request?.subtype === "can_use_tool") return askStudent(m);
+    if (m.type === "control_request") return toClaude({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "NetSim Studio doesn't support this request." } });
+    if (m.type === "result" && turn) {
+      const t = turn;
+      turn = null;
+      for (const [id] of asks) asks.delete(id);
+      const text = `${m.result ?? ""} ${(m.errors ?? []).join(" ")}`;
+      const status = t.interrupted ? "interrupted" : m.is_error || String(m.subtype ?? "").startsWith("error") ? "failed" : "completed";
+      const usage = limit || accountError === "rate_limit" || /usage limit|rate.?limit|limit reached|out of (usage|credits)/i.test(text) ? limit || text.trim() || "usage limit reached" : "";
+      const plan = ["billing_error", "oauth_org_not_allowed", "account_on_hold"].includes(accountError);
+      const signedOut = accountError === "authentication_failed";
+      const failedTurn = status === "failed" || Boolean(accountError);
+      const error = failedTurn ? { message: usage ? `Claude: ${usage}` : text.trim() || "Claude didn't say why.", codexErrorInfo: usage ? "usageLimitExceeded" : plan ? "planRequired" : signedOut ? "unauthorized" : undefined } : undefined;
+      limit = "";
+      accountError = "";
+      notify("turn/completed", { threadId: sessionId, turn: { id: t.id, status: failedTurn && status === "completed" ? "failed" : status, ...(error ? { error } : {}) } });
+    }
+  }
+
+  /** A question Claude would ask a person: a card in the studio, as Codex's approvals are. @param {any} m */
+  function askStudent(m) {
+    const r = m.request ?? {};
+    const name = String(r.tool_name ?? "");
+    const deny = (/** @type {string} */ why) => toClaude({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { behavior: "deny", message: why } } });
+    if (!turn) return deny("No turn is running.");
+    const id = `claude-ask-${nextAsk++}`;
+    const itemId = String(r.tool_use_id ?? "");
+    asks.set(id, { requestId: m.request_id, input: r.input ?? {} });
+    if (name === "Bash" || name === "SandboxNetworkAccess") {
+      const command = name === "Bash" ? String(r.input?.command ?? "") : `connect to ${String(r.input?.host ?? "?")} (network)`;
+      const reason = name === "Bash" ? String(r.input?.description ?? r.decision_reason ?? "") : "Claude wants to use the internet from a command.";
+      // A network question has no row of its own: give it one, so the card has something to show.
+      if (!tools.has(itemId)) {
+        const item = { id: itemId || id, type: "commandExecution", command, status: "inProgress" };
+        tools.set(item.id, item);
+        asks.get(id).row = item; // finished when the student answers
+        notify("item/started", { threadId: sessionId, turnId: turn.id, item });
+      }
+      return message({ id, method: "item/commandExecution/requestApproval", params: { threadId: sessionId, turnId: turn.id, itemId: itemId || id, approvalId: "", command, cwd, reason } });
+    }
+    if (name === "Edit" || name === "Write" || name === "MultiEdit") {
+      if (!tools.has(itemId)) notify("item/started", { threadId: sessionId, turnId: turn.id, item: { id: itemId, status: "inProgress", ...claudeItem(name, r.input, cwd) } });
+      return message({ id, method: "item/fileChange/requestApproval", params: { threadId: sessionId, turnId: turn.id, itemId, approvalId: "", reason: String(r.decision_reason ?? "") } });
+    }
+    asks.delete(id);
+    deny("NetSim Studio only lets Claude read, edit and run commands in the course folder.");
+  }
+
+  /** Start claude for this conversation, if it isn't running. */
+  function ensureChild() {
+    if (child) return;
+    const argv = claudeArgs({ sessionId, resume, policy });
+    const options = { cwd, env: claudeEnv(process.env), stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: ctx.platform !== "windows" };
+    child = spawnClaude ? spawnClaude(argv, options) : spawn(bin, argv, /** @type {any} */ (options));
+    let buffer = "";
+    child.stdout?.setEncoding("utf8").on("data", (chunk) => {
+      buffer += chunk;
+      if (buffer.length > AGENT_MAX_LINE) {
+        buffer = "";
+        return bad("(a message too long to read)");
+      }
+      for (let at = buffer.indexOf("\n"); at >= 0; at = buffer.indexOf("\n")) {
+        const line = buffer.slice(0, at).trim();
+        buffer = buffer.slice(at + 1);
+        if (!line) continue;
+        try {
+          fromClaude(JSON.parse(line));
+        } catch {
+          bad(line);
+        }
+      }
+    });
+    child.stderr?.setEncoding("utf8").on("data", (chunk) => (stderr = (stderr + chunk).slice(-4000)));
+    child.stdin?.on("error", () => {});
+    child.on("error", (error) => finish(null, null, /** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT" ? "ENOENT" : error.message));
+    child.on("close", (code, signal) => {
+      // It ended mid-turn: say so as Codex's would (the bridge notes it and sends nothing again).
+      finish(code, signal);
+    });
+    toClaude({ type: "control_request", request_id: "init", request: { subtype: "initialize" } });
+  }
+
+  /** A request from the bridge. @param {any} m */
+  async function fromBridge(m) {
+    if (m.id === undefined) return; // notifications ("initialized"): nothing to do
+    if (m.method === undefined) {
+      // The student's answer to a card.
+      const ask = asks.get(String(m.id));
+      if (!ask) return;
+      asks.delete(String(m.id));
+      const allow = m.result?.decision === "accept";
+      if (ask.row && turn) notify("item/completed", { threadId: sessionId, turnId: turn.id, item: { ...ask.row, status: allow ? "completed" : "declined", exitCode: allow ? 0 : 1, aggregatedOutput: allow ? "allowed" : "declined" } });
+      return toClaude({ type: "control_response", response: { subtype: "success", request_id: ask.requestId, response: allow ? { behavior: "allow", updatedInput: ask.input } : { behavior: "deny", message: "The student declined this in NetSim Studio." } } });
+    }
+    const p = m.params ?? {};
+    switch (m.method) {
+      case "initialize": {
+        const r = await run([bin, "--version"], 60_000);
+        const version = /\d+\.\d+\.\d+[\w.-]*/.exec(String(/** @type {any} */ (r)?.stdout ?? ""))?.[0] ?? "";
+        if (!r) return finish(null, null, "ENOENT");
+        return reply(m.id, { userAgent: `claude-code/${version}`, platformFamily: ctx.platform === "windows" ? "windows" : "unix" });
+      }
+      case "account/read": {
+        const r = /** @type {any} */ (await run([bin, "auth", "status", "--json"], 90_000));
+        const a = claudeAccount(() => r);
+        return reply(m.id, a.signedIn ? { account: { type: "claude", ...(a.email ? { email: a.email } : {}), ...(a.plan ? { planType: a.plan } : {}) }, requiresOpenaiAuth: true } : { account: null, requiresOpenaiAuth: true });
+      }
+      case "account/login/start": {
+        // Claude's own sign-in (a Claude subscription, not an API key), in the student's browser.
+        const login = spawn(bin, ["auth", "login", "--claudeai"], { cwd, env: claudeEnv(process.env), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+        let said = "";
+        let answered = false;
+        const onText = (/** @type {string} */ t) => {
+          said += t;
+          const url = /https:\/\/\S+/.exec(said)?.[0];
+          if (url && !answered) {
+            answered = true;
+            reply(m.id, { type: "claude", loginId: "claude-login", authUrl: url });
+          }
+        };
+        login.stdout?.setEncoding("utf8").on("data", onText);
+        login.stderr?.setEncoding("utf8").on("data", onText);
+        login.on("error", () => !answered && refuse(m.id, "Claude's sign-in didn't start."));
+        login.on("close", (code) => {
+          if (!answered) refuse(m.id, "Claude didn't give a sign-in page. Run `claude auth login` in a terminal, then press Check again.");
+          notify("account/login/completed", { loginId: "claude-login", success: code === 0, error: code === 0 ? null : "Signing in to Claude didn't finish." });
+        });
+        return;
+      }
+      case "thread/start":
+      case "thread/resume": {
+        if (child) return refuse(m.id, "A conversation is already open.");
+        sessionId = m.method === "thread/resume" ? String(p.threadId ?? "") : randomUUID();
+        resume = m.method === "thread/resume";
+        policy = String(p.developerInstructions ?? "");
+        if (resume && !/^[0-9a-f-]{36}$/i.test(sessionId)) return refuse(m.id, "That isn't a Claude conversation.");
+        // What it'll run with (checked again when it starts: see "init").
+        return reply(m.id, { thread: { id: sessionId, cwd, turns: [] }, cwd, approvalPolicy: p.approvalPolicy, approvalsReviewer: "user", sandbox: { type: "workspaceWrite", writableRoots: [], networkAccess: false } });
+      }
+      case "turn/start": {
+        if (String(p.threadId ?? "") !== sessionId) return refuse(m.id, "That isn't this conversation.");
+        if (turn) return refuse(m.id, "A turn is already running.");
+        ensureChild();
+        turn = { id: `claude-turn-${++turnNo}`, interrupted: false };
+        const text = (p.input ?? []).filter((/** @type {any} */ x) => x?.type === "text").map((/** @type {any} */ x) => String(x.text ?? "")).join("\n\n");
+        toClaude({ type: "user", message: { role: "user", content: [{ type: "text", text }] } });
+        reply(m.id, { turn: { id: turn.id, status: "inProgress", items: [] } });
+        return notify("turn/started", { threadId: sessionId, turn: { id: turn.id, status: "inProgress" } });
+      }
+      case "turn/interrupt": {
+        if (turn) {
+          turn.interrupted = true;
+          toClaude({ type: "control_request", request_id: `stop-${turnNo}`, request: { subtype: "interrupt" } });
+        }
+        return reply(m.id, {});
+      }
+      case "thread/backgroundTerminals/clean":
+        return reply(m.id, {});
+      default:
+        return refuse(m.id, `NetSim Studio's Claude bridge doesn't support ${String(m.method).slice(0, 60)}.`);
+    }
+  }
+
+  return {
+    send: (m) => {
+      if (!done) void fromBridge(m);
+    },
+    onMessage: (fn) => (message = fn),
+    onBadLine: (fn) => (bad = fn),
+    onClose: (fn) => (closed = fn),
+    // End of stdin asks claude to finish; then a bounded wait, then its process group.
+    stop: (graceMs = 2500) =>
+      new Promise((resolve) => {
+        if (done || !child) {
+          finish(0, null);
+          return resolve();
+        }
+        const c = child;
+        c.stdin?.end();
+        const signal = (/** @type {NodeJS.Signals} */ s) => {
+          try {
+            if (ctx.platform !== "windows" && c.pid !== undefined) process.kill(-c.pid, s);
+            else c.kill(s);
+          } catch {
+            // already gone
+          }
+        };
+        const term = setTimeout(() => signal("SIGTERM"), graceMs * 0.8);
+        const kill = setTimeout(() => {
+          signal("SIGKILL");
+          resolve();
+        }, graceMs);
+        c.on("close", () => {
+          clearTimeout(term);
+          clearTimeout(kill);
+          resolve();
+        });
+      }),
+  };
+}
+
 /** What an approval is about, in a form that changes when any of it changes. @param {string} method @param {any} params @param {unknown} changes */
 function approvalFingerprint(method, params, changes) {
   const rest = { ...(params ?? {}) };
@@ -3775,12 +4347,36 @@ function approvalFingerprint(method, params, changes) {
 }
 
 /**
+ * The two agents the Agent tab can run. state.agentProvider says which (both engines read it);
+ * each keeps its own saved conversations (Codex: agentThreads, Claude: claudeSessions, by course folder).
+ */
+export const AGENT_PROVIDERS = {
+  codex: { name: "Codex", label: "Codex (ChatGPT)", bin: "codex", minVersion: CODEX_MIN_VERSION, install: CODEX_INSTALL, update: CODEX_UPDATE, saved: "agentThreads", permissions: AGENT_PERMISSIONS_LINE, plan: "ChatGPT" },
+  claude: { name: "Claude", label: "Claude", bin: "claude", minVersion: CLAUDE_MIN_VERSION, install: CLAUDE_INSTALL, update: CLAUDE_UPDATE, saved: "claudeSessions", permissions: CLAUDE_PERMISSIONS_LINE, plan: "Claude" },
+};
+
+/**
+ * Which agent this student uses: the one they picked (state.agentProvider), else Codex, unless Codex
+ * isn't installed and Claude is (then Claude).
+ * @param {Context} ctx
+ * @returns {"codex" | "claude"}
+ */
+export function agentProvider(ctx) {
+  const picked = ctx.state.agentProvider;
+  if (picked === "codex" || picked === "claude") return picked;
+  return !onPath(ctx, "codex") && onPath(ctx, "claude") ? "claude" : "codex";
+}
+
+/**
  * The bridge. Everything about the child, the thread, the turn and the pending approvals lives here,
  * so a browser refresh only re-reads it.
  * @param {Context} ctx
- * @param {{ transport?: (cwd: string) => AgentTransport, emit?: (event: object) => void, weekTasks?: (dir: string, week: number) => { id: string, file: string, description: string, tests: string[] }[], weekTitle?: (week: number) => string, stopWaitMs?: number, afterTurn?: (done: { week: number, taskId: unknown, status: string, commands: { command: string, exitCode: unknown, status: string, output: string }[] }) => void }} [options]
+ * @param {{ provider?: () => "codex" | "claude", transport?: (cwd: string) => AgentTransport, emit?: (event: object) => void, weekTasks?: (dir: string, week: number) => { id: string, file: string, description: string, tests: string[] }[], weekTitle?: (week: number) => string, stopWaitMs?: number, afterTurn?: (done: { week: number, taskId: unknown, status: string, commands: { command: string, exitCode: unknown, status: string, output: string }[] }) => void }} [options]
  */
-export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd), emit = () => {}, weekTasks = () => [], weekTitle = (week) => `Week ${week}`, stopWaitMs = 15_000, afterTurn = () => {} } = {}) {
+export function createAgent(ctx, { provider = () => agentProvider(ctx), transport = (cwd) => (provider() === "claude" ? claudeTransport(ctx, cwd) : codexTransport(ctx, cwd)), emit = () => {}, weekTasks = () => [], weekTitle = (week) => `Week ${week}`, stopWaitMs = 15_000, afterTurn = () => {} } = {}) {
+  /** The agent in use, as the student knows it ("Codex", "Claude"). */
+  const who = () => AGENT_PROVIDERS[provider()].name;
+  const P = () => AGENT_PROVIDERS[provider()];
   /** @type {"off" | "starting" | "missing" | "too-old" | "signed-out" | "signing-in" | "ready" | "failed" | "unavailable"} */
   let phase = "off";
   let seq = 0;
@@ -3839,16 +4435,19 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     phase,
     generation,
     version,
-    minVersion: CODEX_MIN_VERSION,
+    minVersion: P().minVersion,
+    provider: provider(),
+    providerName: who(),
+    providers: Object.fromEntries(Object.entries(AGENT_PROVIDERS).map(([id, v]) => [id, { label: v.label, installed: onPath(ctx, v.bin) }])),
     account: account && { type: account.type, ...(account.email ? { email: account.email } : {}), ...(account.planType ? { planType: account.planType } : {}) },
     problem,
     loginUrl,
     threadId,
     turn: turn && { id: turn.id, status: turn.status },
     fix,
-    fixCommand: phase === "missing" ? CODEX_INSTALL : phase === "too-old" ? CODEX_UPDATE : "",
+    fixCommand: phase === "missing" ? P().install : phase === "too-old" ? P().update : "",
     cards: cards.map((c) => ({ key: c.key, kind: c.kind, command: c.command, cwd: c.cwd, reason: c.reason, grantRoot: c.grantRoot, changes: c.changes })),
-    permissions: AGENT_PERMISSIONS_LINE,
+    permissions: P().permissions,
   });
   const snapshot = () => ({ seq, ...stateNow(), entries });
   const event = (/** @type {object} */ e) => emit({ seq: ++seq, ...e });
@@ -3870,12 +4469,12 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
   /** @param {string} method @param {unknown} params @returns {Promise<any>} */
   function rpc(method, params) {
     const current = link;
-    if (!current) return Promise.reject(new Error("Codex isn't running."));
+    if (!current) return Promise.reject(new Error(`${who()} isn't running.`));
     const id = nextRpc++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         rpcs.delete(id);
-        const err = /** @type {Error & { ambiguous?: boolean }} */ (new Error(`Codex didn't answer ${method} in time.`));
+        const err = /** @type {Error & { ambiguous?: boolean }} */ (new Error(`${who()} didn't answer ${method} in time.`));
         err.ambiguous = true;
         reject(err);
       }, method === "initialize" ? RPC_TIMEOUT_MS.initialize : RPC_TIMEOUT_MS.default);
@@ -3892,7 +4491,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
       if (!waiting) return;
       rpcs.delete(m.id);
       clearTimeout(waiting.timer);
-      if (m.error) waiting.reject(new Error(String(m.error.message ?? "Codex refused that.")));
+      if (m.error) waiting.reject(new Error(String(m.error.message ?? `${who()} refused that.`)));
       else waiting.resolve(m.result);
       return;
     }
@@ -3925,7 +4524,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
       // Another thread's request (one this studio didn't start), or no turn of ours: no.
       if (params.threadId !== threadId || !turn || (turn.id && params.turnId !== turn.id)) {
         current.send({ id, result: { decision: "decline" } });
-        return note("info", "Codex asked for an approval outside this conversation's current turn, so it was declined.");
+        return note("info", `${who()} asked for an approval outside this conversation's current turn, so it was declined.`);
       }
       const kind = method === "item/commandExecution/requestApproval" ? "command" : "file";
       const itemId = String(params.itemId ?? "");
@@ -3947,7 +4546,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
             : "";
       if (hidden) {
         current.send({ id, result: { decision: "decline" } });
-        return note("info", `Codex asked to approve ${hidden}, which the studio can't show on a card, so it was declined.`);
+        return note("info", `${who()} asked to approve ${hidden}, which the studio can't show on a card, so it was declined.`);
       }
       const fingerprint = approvalFingerprint(method, params, changes);
       // A new request for the same item replaces its card: the old one can't be answered any more.
@@ -3971,7 +4570,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     // messages, questions): a clear no, so the turn doesn't hang, and the student hears about it.
     if (method === "applyPatchApproval" || method === "execCommandApproval") current.send({ id, result: { decision: "denied" } });
     else current.send({ id, error: { code: -32601, message: "NetSim Studio doesn't support this request." } });
-    note("info", `Codex asked for something the studio can't show here (${method.slice(0, 80)}), so it was declined.`);
+    note("info", `${who()} asked for something the studio can't show here (${method.slice(0, 80)}), so it was declined.`);
   }
 
   /**
@@ -3982,9 +4581,9 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
   function answer(a) {
     if (a.decision !== "accept" && a.decision !== "decline") return fail(400, "That isn't an answer the studio knows.");
     const card = cards.find((c) => c.key === a.key);
-    if (!card || card.generation !== generation || card.threadId !== threadId || !turn) return fail(409, "That approval is out of date: Codex isn't waiting for it any more.");
+    if (!card || card.generation !== generation || card.threadId !== threadId || !turn) return fail(409, `That approval is out of date: ${who()} isn't waiting for it any more.`);
     if (turn.id && card.turnId !== turn.id) return fail(409, "That approval is from an earlier turn.");
-    if (!link) return fail(409, "Codex isn't running.");
+    if (!link) return fail(409, `${who()} isn't running.`);
     cards = cards.filter((c) => c !== card);
     link.send({ id: card.requestId, result: { decision: a.decision } });
     publishState();
@@ -4003,15 +4602,15 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
       put({ id, kind: "command", command: String(item.command ?? ""), status: stoppedRows.has(id) ? "stopped" : String(item.status ?? ""), output: String(output).slice(-AGENT_MAX_OUTPUT), exitCode: item.exitCode ?? null });
       if (/studio[\\/]hints/.test(String(item.command ?? "")) && !notedHints) {
         notedHints = true;
-        note("info", "Codex opened the course's hints file (studio/hints). The course asks it not to copy answers from there: check you can explain what it writes.");
+        note("info", `${who()} opened the course's hints file (studio/hints). The course asks it not to copy answers from there: check you can explain what it writes.`);
       }
     } else if (item.type === "fileChange") {
       const changes = fileChanges(item.changes);
       put({ id, kind: "file", changes, status: String(item.status ?? "") });
     } else if (item.type === "webSearch") {
-      put({ id, kind: "note", tone: "info", text: "Codex searched the web." });
+      put({ id, kind: "note", tone: "info", text: `${who()} searched the web.` });
     } else if (item.type === "mcpToolCall" || item.type === "dynamicToolCall") {
-      put({ id, kind: "note", tone: "info", text: `Codex used a tool: ${String(item.tool ?? "").slice(0, 80)}.` });
+      put({ id, kind: "note", tone: "info", text: `${who()} used a tool: ${String(item.tool ?? "").slice(0, 80)}.` });
     }
   }
 
@@ -4028,6 +4627,8 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
       return;
     }
     if (params.threadId !== undefined && params.threadId !== threadId) return;
+    // A transport's own words for the student (Claude: something it wasn't allowed to do).
+    if (method === "studio/note") return note(params.tone === "bad" ? "bad" : "info", String(params.text ?? "").slice(0, 400));
     switch (method) {
       case "turn/started":
         if (turn && !turn.id && params.turn?.id) {
@@ -4074,8 +4675,8 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
         }
         return;
       case "error":
-        if (params.willRetry) return note("info", `Codex hit a problem and is trying again: ${String(params.error?.message ?? "").slice(0, 300)}`);
-        return note("bad", planWords(params.error) ?? `Codex: ${String(params.error?.message ?? "something went wrong").slice(0, 500)}`);
+        if (params.willRetry) return note("info", `${who()} hit a problem and is trying again: ${String(params.error?.message ?? "").slice(0, 300)}`);
+        return note("bad", planWords(params.error) ?? `${who()}: ${String(params.error?.message ?? "something went wrong").slice(0, 500)}`);
       case "turn/completed":
         return onTurnDone(params.turn);
       default:
@@ -4086,10 +4687,19 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
   function planWords(error) {
     const info = JSON.stringify(error?.codexErrorInfo ?? "");
     const text = `${info} ${String(error?.message ?? "")}`;
-    if (/usageLimit|usage limit|rate.?limit|quota/i.test(text)) return `You've reached your plan's Codex limit (${String(error?.message ?? "").slice(0, 200)}). The course uses ChatGPT Plus: upgrade to Plus at chatgpt.com, or wait until the limit resets, then send again.`;
+    const said = String(error?.message ?? "").slice(0, 200);
+    const other = provider() === "claude" ? "Codex" : "Claude";
+    if (provider() === "claude") {
+      if (/usageLimit|usage limit|rate.?limit|quota/i.test(text)) return `You've reached your Claude plan's limit (${said}). Wait for it to reset, or switch to ${other} above.`;
+      if (/planRequired|billing|plan|subscription|not (available|included)|on hold/i.test(text)) return `Claude refused because of your Claude account: ${said} The studio needs a Claude Pro or Max subscription (claude.ai), or switch to ${other} above.`;
+      if (/unauthori[sz]ed|authentication|401|403/i.test(text)) return `Claude isn't signed in any more (${said}). Press Sign in, or run claude auth login in a terminal.`;
+      return null;
+    }
+    if (/usageLimit|usage limit|rate.?limit|quota/i.test(text)) return `You've reached your plan's Codex limit (${said}). The course uses ChatGPT Plus: upgrade to Plus at chatgpt.com, wait until the limit resets, or switch to ${other} above.`;
     if (/plan|subscription|upgrade|not (available|included)|unauthori[sz]ed|401|403/i.test(text)) return `Codex refused because of your ChatGPT account: ${String(error?.message ?? "").slice(0, 300)} The course needs a paid plan with Codex: upgrade at chatgpt.com, then send again.`;
     return null;
   }
+
 
   /** @param {any} done */
   function onTurnDone(done) {
@@ -4097,13 +4707,13 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     if (stopTimer) clearTimeout(stopTimer);
     stopTimer = null;
     cards = cards.filter((c) => c.turnId !== (done?.id ?? turn?.id));
-    if (done?.status === "failed") note("bad", planWords(done?.error) ?? `This turn failed: ${String(done?.error?.message ?? "Codex didn't say why.").slice(0, 500)}`);
+    if (done?.status === "failed") note("bad", planWords(done?.error) ?? `This turn failed: ${String(done?.error?.message ?? `${who()} didn't say why.`).slice(0, 500)}`);
     else if (done?.status === "interrupted") {
       note("info", "Stopped. Anything it had already changed is still in your folder.");
       // Interrupting a turn leaves a command it started still running (measured on 0.166.0): end those too.
       for (const e of entries.filter((x) => x.kind === "command" && x.status === "inProgress")) put({ ...e, status: "stopped" });
       for (const e of entries) if (e.kind === "command" && e.status === "stopped") stoppedRows.add(e.id);
-      if (link && threadId) rpc("thread/backgroundTerminals/clean", { threadId }).catch(() => note("bad", "A command Codex started may still be running. It ends when the studio stops."));
+      if (link && threadId) rpc("thread/backgroundTerminals/clean", { threadId }).catch(() => note("bad", `A command ${who()} started may still be running. It ends when the studio stops.`));
     }
     // A row Codex never reported finished doesn't say "running" once the turn is over.
     for (const e of entries.filter((x) => x.kind === "command" && x.status === "inProgress")) put({ ...e, status: "finished" });
@@ -4141,7 +4751,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
       } else if (phase !== "signing-in" || !loginUrl) phase = "signed-out";
     } catch (error) {
       phase = "failed";
-      problem = `Codex couldn't say who's signed in: ${/** @type {Error} */ (error).message}`;
+      problem = `${who()} couldn't say who's signed in: ${/** @type {Error} */ (error).message}`;
     }
     publishState();
   }
@@ -4154,7 +4764,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     generation++;
     for (const [, w] of rpcs) {
       clearTimeout(w.timer);
-      const err = /** @type {Error & { ambiguous?: boolean }} */ (new Error("Codex stopped."));
+      const err = /** @type {Error & { ambiguous?: boolean }} */ (new Error(`${who()} stopped.`));
       err.ambiguous = true;
       w.reject(err);
     }
@@ -4171,16 +4781,16 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     }
     if (why.error === "ENOENT") {
       phase = "missing";
-      problem = "Codex isn't installed, or this terminal can't find it.";
+      problem = `${who()} isn't installed, or this terminal can't find it.`;
     } else if (before === "starting" && /unrecognized subcommand|unexpected argument|invalid value/i.test(why.stderr)) {
       phase = "too-old";
-      problem = "This Codex is too old for the studio: it has no app-server.";
+      problem = `This ${who()} is too old for the studio: it has no app-server.`;
     } else {
       phase = "failed";
-      problem = before === "starting" ? `Codex didn't start (${why.error ?? `exit ${why.code ?? why.signal}`}). ${why.stderr.split("\n").filter(Boolean).slice(-2).join(" ").slice(0, 400)}`.trim() : "Codex stopped. Start it again to carry on with this conversation.";
+      problem = before === "starting" ? `${who()} didn't start (${why.error ?? `exit ${why.code ?? why.signal}`}). ${why.stderr.split("\n").filter(Boolean).slice(-2).join(" ").slice(0, 400)}`.trim() : `${who()} stopped. Start it again to carry on with this conversation.`;
     }
     // Never sent again by itself: it may already have changed files.
-    if (wasTurn) note("bad", "Codex stopped during this turn, so it may have changed files before it stopped. Nothing was sent again: check your folder, then decide what to ask next.");
+    if (wasTurn) note("bad", `${who()} stopped during this turn, so it may have changed files before it stopped. Nothing was sent again: check your folder, then decide what to ask next.`);
     publishState();
   }
 
@@ -4201,9 +4811,9 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     }
     const dir = repo();
     if (!dir) return fail(409, "The course folder isn't set up yet.");
-    if (!onPath(ctx, "codex")) {
+    if (!onPath(ctx, P().bin)) {
       phase = "missing";
-      problem = "Codex isn't installed, or this terminal can't find it.";
+      problem = `${who()} isn't installed, or this terminal can't find it.`;
       publishState();
       return good;
     }
@@ -4213,15 +4823,15 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     const t = transport(dir);
     link = t;
     t.onMessage(onMessage);
-    t.onBadLine((line) => note("bad", `Codex sent something the studio couldn't read: ${line.slice(0, 120)}`));
+    t.onBadLine((line) => note("bad", `${who()} sent something the studio couldn't read: ${line.slice(0, 120)}`));
     t.onClose(onClosed);
     try {
       const init = await rpc("initialize", { clientInfo: { name: "netsim_studio", title: "NetSim Studio", version: String(STUDIO_VERSION) }, capabilities: { experimentalApi: true, requestAttestation: false } }); // experimental: Stop needs thread/backgroundTerminals/clean
       version = /\/(\d+\.\d+\.\d+[\w.-]*)/.exec(String(init?.userAgent ?? ""))?.[1] ?? "";
       t.send({ method: "initialized" });
-      if (version && versionOlder(version, CODEX_MIN_VERSION)) {
+      if (version && versionOlder(version, P().minVersion)) {
         phase = "too-old";
-        problem = `This Codex is ${version}; the studio needs ${CODEX_MIN_VERSION} or newer.`;
+        problem = `This ${who()} is ${version}; the studio needs ${P().minVersion} or newer.`;
         closingOnPurpose = true;
         await t.stop();
         link = null;
@@ -4244,7 +4854,8 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
   /** Whether Codex really took the permissions asked for (a managed config can override them). @param {any} r */
   const permissionsHeld = (r) => r?.approvalPolicy === AGENT_APPROVAL_POLICY && r?.sandbox?.type === AGENT_SANDBOX_POLICY.type && r?.approvalsReviewer === "user" && r?.sandbox?.networkAccess === false && Array.isArray(r?.sandbox?.writableRoots) && r.sandbox.writableRoots.length === 0;
 
-  const savedThreads = () => /** @type {Record<string, string>} */ (ctx.state.agentThreads ??= {});
+  /** This provider's saved conversations, by course folder (Codex: agentThreads, Claude: claudeSessions). */
+  const savedThreads = () => /** @type {Record<string, string>} */ ((ctx.state[P().saved] ??= {}));
 
   /** Pick up this folder's saved conversation, if there is one. Nothing is sent. */
   async function resumeSaved() {
@@ -4257,6 +4868,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
       if (realpathOr(String(r?.cwd ?? r?.thread?.cwd ?? "")) !== dir) throw new Error("That conversation belongs to another folder.");
       if (!permissionsHeld(r)) throw new Error("permissions");
       threadId = saved;
+      if (provider() === "claude") note("info", "Carrying on your earlier conversation with Claude. Its earlier messages aren't shown here, but Claude still has them.");
       if (!entries.length) {
         for (const past of r?.thread?.turns ?? []) {
           for (const item of past?.items ?? []) {
@@ -4265,7 +4877,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
               if (text) put({ id: String(item.id), kind: "user", text });
             } else putItem(item, true);
           }
-          if (past?.status === "inProgress") note("info", "The last turn didn't finish before Codex stopped. It may have changed files; nothing was sent again.");
+          if (past?.status === "inProgress") note("info", `The last turn didn't finish before ${who()} stopped. It may have changed files; nothing was sent again.`);
         }
       }
     } catch (error) {
@@ -4273,13 +4885,13 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
       ctx.save?.();
       if (/** @type {Error} */ (error).message === "permissions") {
         phase = "failed";
-        problem = permissionRefusal;
+        problem = permissionRefusal();
         return;
       }
       note("info", "Couldn't pick up your earlier conversation, so the next message starts a new one.");
     }
   }
-  const permissionRefusal = "Codex's settings on this laptop overrode the permissions the studio asks for (workspace-write, ask on request), so the studio won't drive it. Ask Praise.";
+  const permissionRefusal = () => `${who()}'s settings on this laptop overrode the permissions the studio asks for (${provider() === "claude" ? "its sandbox, accept edits, ask the studio" : "workspace-write, ask on request"}), so the studio won't drive it. Ask Praise.`;
   const realpathOr = (/** @type {string} */ p) => {
     try {
       return realpathSync(p);
@@ -4294,11 +4906,11 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     const r = await rpc("thread/start", threadParams(dir));
     if (!permissionsHeld(r)) {
       phase = "failed";
-      problem = permissionRefusal;
-      throw new Error(permissionRefusal);
+      problem = permissionRefusal();
+      throw new Error(permissionRefusal());
     }
     threadId = String(r?.thread?.id ?? "");
-    if (!threadId) throw new Error("Codex didn't start a conversation.");
+    if (!threadId) throw new Error(`${who()} didn't start a conversation.`);
     savedThreads()[dir] = threadId;
     ctx.save?.();
   }
@@ -4326,8 +4938,8 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     if (text.length > AGENT_MAX_MESSAGE) return fail(400, "That message is too long.");
     if (!Number.isInteger(week) || week < 1 || week > 20) return fail(400, "Which week is this for?");
     if (clientId && clientId === lastClientId) return good;
-    if (phase !== "ready" || !link) return fail(409, "Codex isn't ready yet.");
-    if (turn) return fail(409, "Codex is still working: wait for it, or press Stop.");
+    if (phase !== "ready" || !link) return fail(409, `${who()} isn't ready yet.`);
+    if (turn) return fail(409, `${who()} is still working: wait for it, or press Stop.`);
     const dir = repo();
     if (!dir) return fail(409, "The course folder isn't set up yet.");
     if (clientId) lastClientId = clientId;
@@ -4370,7 +4982,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
       stopTimer = null;
       const ambiguous = /** @type {Error & { ambiguous?: boolean }} */ (error).ambiguous;
       turn = null;
-      note("bad", ambiguous ? `${/** @type {Error} */ (error).message} It may have started anyway, so nothing was sent again: check your folder before asking again.` : `Codex didn't take that message: ${/** @type {Error} */ (error).message}`);
+      note("bad", ambiguous ? `${/** @type {Error} */ (error).message} It may have started anyway, so nothing was sent again: check your folder before asking again.` : `${who()} didn't take that message: ${/** @type {Error} */ (error).message}`);
       publishState();
     }
   }
@@ -4388,7 +5000,7 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     publishState();
     interrupt();
     stopTimer = setTimeout(() => {
-      note("bad", "Codex didn't stop in time, so the studio ended it. It may have changed files first.");
+      note("bad", `${who()} didn't stop in time, so the studio ended it. It may have changed files first.`);
       void link?.stop();
     }, stopWaitMs);
     return good;
@@ -4396,11 +5008,11 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
 
   /** Sign in through Codex itself (its login is its own; the studio never sees a token). */
   async function login() {
-    if (phase !== "signed-out" && phase !== "signing-in") return fail(409, "Codex doesn't need signing in right now.");
+    if (phase !== "signed-out" && phase !== "signing-in") return fail(409, `${who()} doesn't need signing in right now.`);
     try {
-      const r = await rpc("account/login/start", { type: "chatgpt" });
+      const r = await rpc("account/login/start", { type: provider() === "claude" ? "claude" : "chatgpt" });
       const url = String(r?.authUrl ?? "");
-      if (!/^https:\/\//.test(url)) throw new Error("Codex didn't give a sign-in page.");
+      if (!/^https:\/\//.test(url)) throw new Error(`${who()} didn't give a sign-in page.`);
       loginUrl = url;
       phase = "signing-in";
     } catch (error) {
@@ -4410,16 +5022,50 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
     return good;
   }
 
+  /**
+   * Switch to the other agent: this one stops, and the conversation starts over on the other (each
+   * keeps its own saved conversation, so switching back picks that one up).
+   * @param {Record<string, unknown>} a
+   */
+  async function switchProvider(a) {
+    if (a.provider !== "codex" && a.provider !== "claude") return fail(400, "Which assistant?");
+    if (a.provider === provider()) return good;
+    if (turn) return fail(409, `${who()} is still working: wait for it, or press Stop, then switch.`);
+    if (fix?.phase === "running") return fail(409, "An install is still running.");
+    ctx.state.agentProvider = a.provider;
+    if (!ctx.dryRun) ctx.save?.();
+    const t = link;
+    if (t) {
+      closingOnPurpose = true;
+      link = null;
+      await t.stop();
+    }
+    generation++;
+    threadId = "";
+    cards = [];
+    account = null;
+    version = "";
+    problem = "";
+    loginUrl = "";
+    fix = null;
+    phase = "off";
+    entries = [];
+    note("info", `Switched to ${who()}. This is a new conversation; your conversation with ${a.provider === "claude" ? "Codex" : "Claude"} is kept, and switching back picks it up.`);
+    publishState();
+    return open();
+  }
+
   /** The one fix this state offers (install or update), typed like any step's command. @param {Record<string, unknown>} a */
   function runFix(a) {
-    const display = phase === "missing" ? CODEX_INSTALL : phase === "too-old" ? CODEX_UPDATE : "";
+    const display = phase === "missing" ? P().install : phase === "too-old" ? P().update : "";
     if (!display) return fail(409, "There's nothing to fix right now.");
     if (fix?.phase === "running") return fail(409, "It's still running.");
     if (typeof a.typed !== "string" || normalizeCommand(a.typed) !== normalizeCommand(display)) return fail(400, "What was typed doesn't match the command.");
     if (!ctx.stream) return fail(409, "The studio can't run that here.");
     fix = { phase: "running", out: "", display };
     publishState();
-    const run = ctx.stream(display.split(" "), undefined, (t) => {
+    // A pipe (Claude's native installer: curl … | bash) runs in bash; the rest as typed, without a shell.
+    const run = ctx.stream(display.includes("|") ? ["bash", "-c", display] : display.split(" "), undefined, (t) => {
       if (fix) fix.out = cleanOutput(fix.out + t).slice(-4000);
       publishState();
     });
@@ -4452,11 +5098,13 @@ export function createAgent(ctx, { transport = (cwd) => codexTransport(ctx, cwd)
           return login();
         case "agent-recheck":
           // After upgrading the plan: ask Codex again who's signed in, and on which plan.
-          if (phase !== "ready" || !link) return fail(409, "Codex isn't running.");
+          if (phase !== "ready" || !link) return fail(409, `${who()} isn't running.`);
           await readAccount();
           return good;
         case "agent-fix":
           return runFix(a);
+        case "agent-provider":
+          return switchProvider(a);
         default:
           return fail(400, "Unknown action.");
       }
@@ -7204,6 +7852,8 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const why = v.phase === "ready" ? `<div class="status wait"><span class="icon">!</span><div><b>${esc(step.found)}</b></div></div>` : "";
       body = snap.account.panel ? `${status}${accountInline()}` : `${noticeBlock()}${why}${body}${accountInline()}`;
     } else if (v.phase !== "passed" && v.phase !== "confirm") body = `${noticeBlock()}${body}`;
+    // The step's other way (the other AI assistant).
+    if (v.alt && v.phase !== "running") body += `<div class="row"><button class="btn ghost" data-do="alt">${esc(v.alt)}</button></div>`;
     return `${head(step, step.optional ? "Optional: you can skip this one" : "")}${body}${doneAllBlock(v)}`;
   }
 
@@ -7935,7 +8585,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     /** @param {any} e */
     function entryHtml(e) {
       if (e.kind === "user") return `<div class="ag you" data-entry="${esc(e.id)}"><div class="who">You</div><div class="said">${md(e.text)}</div></div>`;
-      if (e.kind === "agent") return `<div class="ag bot" data-entry="${esc(e.id)}"><div class="who">Codex</div><div class="said md" data-field="text">${chatMarkdown(e.text)}</div></div>`;
+      if (e.kind === "agent") return `<div class="ag bot" data-entry="${esc(e.id)}"><div class="who">${esc(nm())}</div><div class="said md" data-field="text">${chatMarkdown(e.text)}</div></div>`;
       if (e.kind === "note") return `<div class="ag note ${esc(e.tone)}" data-entry="${esc(e.id)}">${md(e.text)}${e.commit ? `<div class="row"><button class="btn primary" data-agent-commit="${esc(e.commit.id)}" data-w="${esc(e.commit.week)}">Commit it</button></div>` : ""}${e.runTests ? `<div class="row"><button class="btn primary" data-agent-test="${esc(e.runTests.id)}" data-w="${esc(e.runTests.week)}">Run its tests</button></div>` : ""}</div>`;
       if (e.kind === "command") {
         const status = e.status === "completed" ? (e.exitCode ? `exit ${esc(e.exitCode)}` : "done") : e.status === "inProgress" ? "running…" : esc(e.status);
@@ -7950,27 +8600,29 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       return "";
     }
 
+    /** The assistant in use, by name ("Codex", "Claude"). */
+    const nm = () => /** @type {string} */ (state?.providerName ?? "Codex");
     /** @param {any} c */
     function cardHtml(c) {
-      const what = c.kind === "command" ? `<b>Codex wants to run this:</b><pre class="log">${esc(plainCommand(c.command))}</pre>${c.cwd ? `<div class="sub">in <code>${esc(c.cwd)}</code></div>` : ""}` : `<b>Codex wants to change files${c.grantRoot ? ` under ${esc(c.grantRoot)}` : ""}:</b>${(c.changes ?? []).map((/** @type {any} */ f) => `<div><code>${esc(f.path)}</code>${f.movePath ? ` moves to <code>${esc(f.movePath)}</code>` : ""} <em>${esc(f.kind)}</em></div>`).join("")}${(c.changes ?? []).some((/** @type {any} */ f) => f.diff) ? `<pre class="log">${esc(c.changes.map((/** @type {any} */ f) => f.diff).join("\n"))}</pre>` : ""}`;
+      const what = c.kind === "command" ? `<b>${esc(nm())} wants to run this:</b><pre class="log">${esc(plainCommand(c.command))}</pre>${c.cwd ? `<div class="sub">in <code>${esc(c.cwd)}</code></div>` : ""}` : `<b>${esc(nm())} wants to change files${c.grantRoot ? ` under ${esc(c.grantRoot)}` : ""}:</b>${(c.changes ?? []).map((/** @type {any} */ f) => `<div><code>${esc(f.path)}</code>${f.movePath ? ` moves to <code>${esc(f.movePath)}</code>` : ""} <em>${esc(f.kind)}</em></div>`).join("")}${(c.changes ?? []).some((/** @type {any} */ f) => f.diff) ? `<pre class="log">${esc(c.changes.map((/** @type {any} */ f) => f.diff).join("\n"))}</pre>` : ""}`;
       return `<div class="status wait agcard"><span class="icon">?</span><div>${what}${c.reason ? `<div class="sub">Why: ${esc(c.reason)}</div>` : ""}<div class="row"><button class="btn primary" data-agent-answer="accept" data-key="${esc(c.key)}">Approve</button><button class="btn" data-agent-answer="decline" data-key="${esc(c.key)}">Decline</button></div></div></div>`;
     }
 
     /** What's wrong, and the fix right here. */
     function statusHtml() {
       const s = state;
-      if (!s || s.phase === "off" || s.phase === "starting") return `<div class="status run"><i class="spin"></i><div><b>Starting Codex…</b><div class="sub">The first time on a Mac, macOS checks it first: this can take a few minutes.</div></div></div>`;
+      if (!s || s.phase === "off" || s.phase === "starting") return `<div class="status run"><i class="spin"></i><div><b>Starting ${esc(nm())}…</b><div class="sub">The first time on a Mac, macOS checks it first: this can take a few minutes.</div></div></div>`;
       if (s.phase === "missing" || s.phase === "too-old") {
         const running = s.fix?.phase === "running";
         return `<div class="status bad"><span class="icon">!</span><div><b>${esc(s.problem)}</b><div class="sub">Type this to ${s.phase === "missing" ? "install it" : "update it"}, then the studio checks again.</div></div></div>
           <form class="agfix" data-agent-fix><div class="cmd doneline"><span class="p">$</span>${esc(s.fixCommand)}</div><button class="btn primary" type="submit" ${running ? "disabled" : ""}>${running ? "Running…" : "Run it"}</button></form>
           ${s.fix?.out ? `<pre class="log">${esc(s.fix.out)}</pre>` : ""}`;
       }
-      if (s.phase === "signed-out") return `<div class="status bad"><span class="icon">!</span><div><b>Codex isn't signed in.</b>${s.problem ? `<div class="sub">${esc(s.problem)}</div>` : ""}<div class="sub">It signs in with your ChatGPT account, in your browser. The studio never sees your password or token.</div></div></div><div class="row"><button class="btn primary" data-agent-login>Sign in to Codex</button></div>`;
+      if (s.phase === "signed-out") return `<div class="status bad"><span class="icon">!</span><div><b>${esc(nm())} isn't signed in.</b>${s.problem ? `<div class="sub">${esc(s.problem)}</div>` : ""}<div class="sub">It signs in with your ${s.provider === "claude" ? "Claude Pro or Max subscription" : "ChatGPT account"}, in your browser. The studio never sees your password or token.</div></div></div><div class="row"><button class="btn primary" data-agent-login>Sign in to ${esc(nm())}</button></div>`;
       if (s.phase === "signing-in") return `<div class="status wait"><i class="spin"></i><div><b>Finish signing in in your browser.</b><div class="sub"><a href="${esc(s.loginUrl)}" target="_blank" rel="noopener noreferrer">Open the sign-in page</a>. This page carries on by itself once it's done.</div></div></div>`;
       if (s.phase === "ready" && s.account?.type === "chatgpt" && s.account.planType === "free")
         return `<div class="status bad"><span class="icon">!</span><div><b>Your ChatGPT account${s.account.email ? ` (${esc(s.account.email)})` : ""} is on the Free plan.</b><div class="sub">Free includes Codex only for quick tasks, so you'll most likely reach its limit partway through a step. The course uses ChatGPT Plus: upgrade to Plus at <a href="https://chatgpt.com/#pricing" target="_blank" rel="noopener noreferrer">chatgpt.com</a> with this account, then press Check again. You can still send messages below until then. Signed in with the wrong account? Run <code>codex logout</code> in a terminal, then start the studio again.</div></div></div><div class="row"><button class="btn primary" data-agent-recheck>Check again</button></div>`;
-      if (s.phase === "failed") return `<div class="status bad"><span class="icon">!</span><div><b>${esc(s.problem || "Codex stopped.")}</b></div></div><div class="row"><button class="btn primary" data-agent-open>Start Codex again</button></div>`;
+      if (s.phase === "failed") return `<div class="status bad"><span class="icon">!</span><div><b>${esc(s.problem || `${nm()} stopped.`)}</b></div></div><div class="row"><button class="btn primary" data-agent-open>Start ${esc(nm())} again</button></div>`;
       if (s.phase === "unavailable") return `<div class="status bad"><span class="icon">!</span><div><b>${esc(s.problem)}</b></div></div>`;
       return "";
     }
@@ -8018,18 +8670,27 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       stop.textContent = s?.turn?.status === "stopping" ? "Stopping…" : "Stop";
       const line = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-working]"));
       line.hidden = !busy;
+      const working = line.querySelector("[data-agent-name]");
+      if (working) working.textContent = nm();
       const pill = /** @type {HTMLElement | null} */ (document.querySelector("[data-cstatus]"));
       if (pill) {
         // Stopped (it ended, or was stopped): say so, with Start right here, not only at the top of the chat.
         const stopped = s?.phase === "failed";
-        const [cls, text] = busy ? ["busy", "Codex is working"] : ready ? ["ok", "Codex ready"] : s?.phase === "signed-out" || s?.phase === "signing-in" ? ["bad", "Codex isn't signed in"] : stopped ? ["", "Codex stopped"] : s?.phase === "missing" || s?.phase === "too-old" || s?.phase === "unavailable" ? ["bad", "Codex needs a fix"] : ["", "Starting Codex…"];
+        const n = nm();
+        const [cls, text] = busy ? ["busy", `${n} is working`] : ready ? ["ok", `${n} ready`] : s?.phase === "signed-out" || s?.phase === "signing-in" ? ["bad", `${n} isn't signed in`] : stopped ? ["", `${n} stopped`] : s?.phase === "missing" || s?.phase === "too-old" || s?.phase === "unavailable" ? ["bad", `${n} needs a fix`] : ["", `Starting ${n}…`];
         pill.className = `cstatus ${cls}`;
         pill.textContent = text;
         const start = /** @type {HTMLElement | null} */ (document.querySelector("[data-cstart]"));
         if (start) start.hidden = !stopped;
       }
       const who = /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-who]"));
-      who.textContent = ready ? `Codex ${s.version}${s.account?.email ? ` · ${s.account.email}` : ""}` : "";
+      who.textContent = ready ? `${nm()} ${s.version}${s.account?.email ? ` · ${s.account.email}` : ""}` : "";
+      // Which assistant: the switch (not while it works).
+      const pick = /** @type {HTMLSelectElement | null} */ (mounted.el.querySelector("[data-agent-provider]"));
+      if (pick) {
+        if (s?.provider && pick.value !== s.provider) pick.value = s.provider;
+        pick.disabled = busy;
+      }
       /** @type {HTMLElement} */ (mounted.el.querySelector("[data-agent-perms]")).textContent = s?.permissions ?? "";
     }
 
@@ -8222,7 +8883,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const r = snap?.code?.[st.id];
       if (stepDone(st)) return `<div class="status ok"><span class="icon">✓</span><div><b>Done and committed.</b></div></div>`;
       if (!r && !st.stubbed && st.testNote) return `<p class="muted">Written. No test checks this one yet: read the change, then</p><div class="row"><button class="btn primary" data-build-commit="${esc(st.id)}" data-w="${esc(st.week)}">Commit it</button></div>`;
-      if (!r) return st.stubbed ? `<p class="muted">Press Send to the agent. Read what Codex changes; the studio checks it when Codex finishes.</p>` : `<p class="muted">Written, not checked yet: press Run its tests.</p>`;
+      if (!r) return st.stubbed ? `<p class="muted">Press Send to the agent. Read what ${esc(nm())} changes; the studio checks it when ${esc(nm())} finishes.</p>` : `<p class="muted">Written, not checked yet: press Run its tests.</p>`;
       if (r.phase === "running") return `<div class="status run"><i class="spin"></i><div><b>Checking ${esc(st.id)}…</b></div></div>`;
       if (r.phase === "error") return `<div class="status bad"><span class="icon">!</span><div><b>The tests couldn't run.</b></div></div>`;
       if (r.phase === "failed")
@@ -8400,12 +9061,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       mounted = { week, el, tasks: [] };
       const mine = mounted;
       const chat = week >= 4;
-      el.innerHTML = `${chat ? `<div class="agscroll" data-agscroll>` : `<div data-build></div>`}<div class="agbar"><span class="muted" data-agent-who></span></div>
+      el.innerHTML = `${chat ? `<div class="agscroll" data-agscroll>` : `<div data-build></div>`}<div class="agbar"><label class="agprov">Assistant <select data-agent-provider aria-label="Which AI assistant"><option value="codex">Codex (ChatGPT)</option><option value="claude">Claude</option></select></label><span class="muted" data-agent-who></span></div>
         <p class="agperms" data-agent-perms></p>
         <div data-agent-status></div>
         <div class="aglog" data-agent-log></div>
         <div data-agent-cards></div>
-        <div class="agworking muted" data-agent-working hidden><i class="spin"></i> Codex is working…</div>
+        <div class="agworking muted" data-agent-working hidden><i class="spin"></i> <span data-agent-name>Codex</span> is working…</div>
         ${chat ? `<div data-build></div></div>` : ""}
         <form class="agcomposer${chat ? " pinned" : ""}" data-agent-composer hidden>
           <label class="sub" ${week >= 4 ? "hidden" : ""}>Working on <select name="agenttask" data-agent-task><option value="">no particular task</option></select></label>
@@ -8548,6 +9209,16 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     });
     document.addEventListener("change", (e) => {
       const el = /** @type {HTMLSelectElement} */ (e.target);
+      if (el.matches?.("[data-agent-provider]")) {
+        const to = /** @type {HTMLSelectElement} */ (el).value;
+        void ask({ type: "agent-provider", provider: to }).then((/** @type {any} */ r) => {
+          if (!r.ok) {
+            toast(r.error ?? "That didn't switch.");
+            /** @type {HTMLSelectElement} */ (el).value = state?.provider ?? "codex";
+          }
+        });
+        return;
+      }
       if (el.matches?.("[data-week-select]")) {
         const w = document.createElement("button");
         w.dataset.w = el.value;
@@ -9026,6 +9697,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     if (what === "yes") return act({ type: "confirm", stepId: step.id, answer: "yes" });
     if (what === "switch") return act({ type: "account-open" }); // the accounts gh knows, or add one
     if (what === "submit") return act({ type: "submit", stepId: step.id, index: actionIndex(), values: {} });
+    if (what === "alt") return act({ type: "alt", stepId: step.id });
     if (what === "pick-folder") return act({ type: "pick-folder", stepId: step.id, index: actionIndex() });
     if (what === "create-folder") return act({ type: "submit", stepId: step.id, index: actionIndex(), values: { folder: formValues.folder ?? "", create: el?.dataset.path ?? "" } });
     act({ type: what, stepId: step.id });
@@ -9387,8 +10059,8 @@ export function realContext({ dryRun = false, fresh = false, interactive = true 
         mkdirSync(dirname(STATE_FILE), { recursive: true });
         // doctorOk too: the doctor passing can't be checked again without running it, so the next
         // run (and the next week) needs it.
-        const { login, parent, repoDir, chatgpt, codexVersion, doctorOk, doctorOkAs, agentThreads } = state;
-        writeFileSync(STATE_FILE, JSON.stringify({ login, parent, repoDir, chatgpt, codexVersion, doctorOk, doctorOkAs, agentThreads }, null, 2));
+        const { login, parent, repoDir, chatgpt, codexVersion, doctorOk, doctorOkAs, agentThreads, agentProvider, claudeSessions } = state;
+        writeFileSync(STATE_FILE, JSON.stringify({ login, parent, repoDir, chatgpt, codexVersion, doctorOk, doctorOkAs, agentThreads, agentProvider, claudeSessions }, null, 2));
       } catch {
         // Remembering is a convenience; the checks find everything again anyway.
       }

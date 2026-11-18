@@ -288,8 +288,15 @@ export function runChecks(root: string = process.cwd(), run: Runner = commandRun
   const installed = existsSync(join(root, "node_modules", "zod", "package.json")) && existsSync(join(root, "node_modules", "vitest", "package.json"));
   add("dependencies installed", installed, installed ? "node_modules present" : "node_modules missing", "Run `npm install` in the course folder.");
 
+  // The course's AI assistant: Codex (ChatGPT) or Claude Code (a Claude subscription). Either will do.
   const codex = outputOf(run, "codex", ["--version"]);
-  add("Codex CLI installed", codex !== null, codex ?? "not found", "Run `npm install -g @openai/codex`, then run `codex` once and sign in with your ChatGPT account.");
+  const claude = codex === null ? outputOf(run, "claude", ["--version"]) : null;
+  add(
+    "AI assistant installed",
+    codex !== null || claude !== null,
+    codex ?? (claude ? `Claude Code ${claude.split(" ")[0]}` : "neither Codex nor Claude found"),
+    "Run `npm start` and do the step \"Install and sign in to your AI assistant\": Codex (`npm install -g @openai/codex`, ChatGPT) or Claude (`curl -fsSL https://claude.ai/install.sh | bash`, a Claude Pro or Max subscription).",
+  );
 
   const code = outputOf(run, "code", ["--version"]);
   add(
