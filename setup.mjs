@@ -98,7 +98,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 27;
+export const STUDIO_VERSION = 28;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -811,8 +811,9 @@ function originUrl(ctx, dir) {
 }
 
 /**
- * Git talking to GitHub from outside the sandbox: https only (ssh too for a fork reached by ssh, with
- * the system's ssh), no hooks, no fsmonitor, no askpass. The course's repository (upstream) is
+ * Git talking to GitHub from outside the sandbox: https only, no hooks, no fsmonitor, no askpass. A fork
+ * whose address is ssh (gh's git_protocol was ssh when it cloned) is reached at the same owner/repo over
+ * https: the Mac's ssh key may sign in as another account than the course's, so it's never used. The course's repository (upstream) is
  * public: it's reached at its address, never through the folder's remote config, with no
  * credentials. The student's fork (origin) signs in with gh's helper only. A local file:// copy is
  * allowed only in a rehearsal or a test (NETSIM_FILE_REMOTES=1 in the studio's environment): pushing
@@ -820,7 +821,7 @@ function originUrl(ctx, dir) {
  * @param {Context} ctx
  * @param {"upstream" | "origin"} remote
  * @param {string[]} args  with the remote's name where git would take it
- * @param {{ ssh?: boolean }} [options]  ssh: the fork is reached by ssh (originKind)
+ * @param {{ ssh?: boolean }} [options]  ssh: the fork's address is ssh (originKind): it's rewritten to https
  */
 export function networkGit(ctx, remote, args, { ssh = false } = {}) {
   // No gh outside the course folder: nothing signs in to the fork (a bare gh could be the folder's own).
@@ -828,9 +829,17 @@ export function networkGit(ctx, remote, args, { ssh = false } = {}) {
   const none = process.platform === "win32" ? "NUL" : "/dev/null";
   const file = process.env.NETSIM_FILE_REMOTES === "1" ? "always" : "never";
   // Each protocol by name too: the folder's own protocol.ext.allow=always would beat a general "never".
-  const guard = ["-c", "protocol.allow=never", "-c", "protocol.ext.allow=never", "-c", `protocol.ssh.allow=${ssh && remote === "origin" ? "always" : "never"}`, "-c", "protocol.git.allow=never", "-c", "protocol.http.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${file}`, "-c", `core.hooksPath=${none}`, "-c", "core.fsmonitor=false", "-c", "core.askPass=", "-c", "core.sshCommand=ssh", "-c", "credential.helper=", "-c", "http.sslVerify=true", "-c", "http.proxy=", "-c", "http.extraHeader="];
+  const guard = ["-c", "protocol.allow=never", "-c", "protocol.ext.allow=never", "-c", "protocol.ssh.allow=never", "-c", "protocol.git.allow=never", "-c", "protocol.http.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${file}`, "-c", `core.hooksPath=${none}`, "-c", "core.fsmonitor=false", "-c", "core.askPass=", "-c", "core.sshCommand=ssh", "-c", "credential.helper=", "-c", "http.sslVerify=true", "-c", "http.proxy=", "-c", "http.extraHeader="];
   if (remote === "upstream") return ["git", ...guard, ...args.map((a) => (a === "upstream" ? STARTER_URL : a))];
-  return ["git", ...guard, "-c", ghHelper(ctx), ...args];
+  // An ssh address for the fork: the same owner/repo over https, signed in by gh as the course's account.
+  const https = ssh ? ["-c", "url.https://github.com/.insteadOf=git@github.com:", "-c", "url.https://github.com/.insteadOf=ssh://git@github.com/"] : [];
+  return ["git", ...guard, ...https, "-c", ghHelper(ctx), ...args];
+}
+
+/** The https address of a fork reached by ssh (same owner/repo), or null. @param {string} url */
+export function httpsOf(url) {
+  const m = /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/.exec(url);
+  return m ? `https://github.com/${m[1]}/${m[2]}.git` : null;
 }
 
 /**
@@ -847,6 +856,30 @@ function pushArgv(ctx, args) {
 
 /** What a push says when no gh was found outside the course folder (a gh from inside it is never run). */
 export const GH_MISSING = "GitHub's CLI wasn't found outside the course folder, so the studio won't push: install gh (brew install gh), or check that it's on your PATH.";
+
+/** The fork's work branch and this folder's both have commits the other lacks: never pushed over. */
+export const FORK_DIVERGED = "Your fork on GitHub already has a work branch with commits this folder doesn't have, and this folder has commits it doesn't have. The studio won't push over your fork's work (that would lose it). Bring both to class, or ask Praise.";
+
+/**
+ * Where the fork's work branch stands against this folder's, after fetching it (quietly, guarded):
+ * "none" (the fork has none yet, or it couldn't be asked), "same", "ahead" (the fork has everything here
+ * and more: fast-forward), "behind" (this folder is ahead: a plain push), or "diverged".
+ * @param {Context} ctx @param {string} dir
+ * @returns {"none" | "same" | "ahead" | "behind" | "diverged"}
+ */
+export function forkWork(ctx, dir) {
+  if (ctx.dryRun || ctx.ghMissing || networkRefusal(ctx, dir, { push: true })) return "none";
+  const fetched = ctx.capture(networkGit(ctx, "origin", ["fetch", "-q", "--no-tags", "origin", "+refs/heads/work:refs/remotes/origin/work"], { ssh: originKind(originUrl(ctx, dir)) === "ssh" }), dir);
+  if (fetched?.code !== 0) return "none";
+  const local = output(ctx, ["git", "rev-parse", "--verify", "-q", "refs/heads/work"], dir);
+  const remote = output(ctx, ["git", "rev-parse", "--verify", "-q", "refs/remotes/origin/work"], dir);
+  if (!local || !remote) return "none";
+  if (local === remote) return "same";
+  const isAncestor = (/** @type {string} */ a, /** @type {string} */ b) => ctx.capture(["git", "merge-base", "--is-ancestor", a, b], dir)?.code === 0;
+  if (isAncestor(local, remote)) return "ahead";
+  if (isAncestor(remote, local)) return "behind";
+  return "diverged";
+}
 
 /** A command that only says why the studio won't run the real one, and fails. @param {string} why */
 const refusedCommand = (why) => [process.execPath, "-e", `console.error(${JSON.stringify(why)}); process.exit(1)`];
@@ -1369,6 +1402,8 @@ export function courseSteps() {
         // gh links upstream for its main branch only; every released week (a tag) has to come down.
         const refspecs = (output(ctx, ["git", "config", "--get-all", "remote.upstream.fetch"], dir) ?? "").split("\n").map((l) => l.trim());
         if (!refspecs.includes(UPSTREAM_WEEKS)) return { done: false, found: "upstream is linked, but it doesn't bring the course's weeks yet." };
+        // gh clones with ssh addresses when its git_protocol is ssh: the course uses https (gh signs it in as your account).
+        if (httpsOf(originUrl(ctx, dir))) return { done: false, found: "origin is an ssh address: the course uses https, signed in by gh as your account." };
         const fetched = /^upstream\/week-\d+$/m.test(output(ctx, ["git", "for-each-ref", "--format=%(refname:short)", "refs/remotes/upstream/"], dir) ?? "");
         return { done: fetched, found: fetched ? `upstream is linked to the course: github.com/${STARTER}` : "upstream is linked, but the course's weeks haven't been fetched yet." };
       },
@@ -1377,8 +1412,11 @@ export function courseSteps() {
         const url = output(ctx, ["git", "remote", "get-url", "upstream"], dir);
         const remote = url ? parseRemote(url) : null;
         const right = remote !== null && `${remote.owner}/${remote.repo}`.toLowerCase() === STARTER.toLowerCase();
+        const sshOrigin = httpsOf(originUrl(ctx, dir));
         /** @type {Action[]} */
         const automatic = [
+          // An ssh origin (gh's git_protocol): the same fork over https, so pushes sign in as the course's account.
+          ...(sshOrigin ? [{ kind: /** @type {const} */ ("auto"), command: { display: `git remote set-url origin ${sshOrigin}`, argv: ["git", "remote", "set-url", "origin", sshOrigin], cwd: dir, what: "Uses https for your fork (gh signs it in as your course account), not ssh (your Mac's ssh key may be another account's)." } }] : []),
           // Safe to run every time: it only makes sure every released week (week-N tag) is fetched.
           { kind: "auto", command: { display: `git config --replace-all remote.upstream.fetch "${UPSTREAM_WEEKS}"`, argv: ["git", "config", "--replace-all", "remote.upstream.fetch", UPSTREAM_WEEKS], cwd: dir, what: "Makes upstream bring down every released week (week-1, week-2, …)." } },
           { kind: "auto", command: { display: "git config remote.upstream.tagOpt --no-tags", argv: ["git", "config", "remote.upstream.tagOpt", "--no-tags"], cwd: dir, what: "Keeps the course's week tags under upstream/, not mixed in with yours." } },
@@ -1443,13 +1481,56 @@ export function courseSteps() {
         if (remote?.code === 0 && !remote.stdout.includes("refs/heads/work")) return { done: false, found: `Your work branch isn't on ${ctx.state.login ?? "your"}'s copy on GitHub yet.` };
         return { done: true, found: "Your work branch is on GitHub, linked to origin/work." };
       },
-      plan: (ctx) => [
-        cmd("git push -u origin work", pushArgv(ctx, ["push", "-u", "origin", "work"]), {
-          cwd: repoDir(ctx),
-          what: "Sends your work branch to your fork, and remembers the link, so later a plain git push is enough.",
-          words: [["push", "send commits to GitHub"], ["-u", "from now on, work goes to origin/work, so later a plain git push is enough"], ["origin", "your fork on GitHub"], ["work", "the branch to send"]],
-        }),
-      ],
+      plan: (ctx) => {
+        const dir = repoDir(ctx);
+        // A new copy of the course on this laptop, with a fork that already has the student's work
+        // (an earlier laptop, a reinstall): bring that work in, never push over it.
+        const fork = forkWork(ctx, dir);
+        if (fork === "ahead" || fork === "same")
+          return [
+            ...(fork === "ahead"
+              ? [
+                  cmd("git merge --ff-only origin/work", ["git", "merge", "--ff-only", "origin/work"], {
+                    cwd: dir,
+                    what: "Your fork on GitHub already has your work from before. This brings it into this folder (only moving forward: nothing here is lost).",
+                    words: [["merge", "bring other commits into your branch"], ["--ff-only", "only if it just moves forward, never mixing"], ["origin/work", "your fork's work branch"]],
+                  }),
+                ]
+              : []),
+            {
+              kind: /** @type {const} */ ("auto"),
+              command: {
+                display: "git branch -u origin/work work",
+                argv: ["git", "branch", "--set-upstream-to=origin/work", "work"],
+                cwd: dir,
+                what: "Links work to your fork's work branch, so later a plain git push is enough.",
+                judge: (/** @type {RunResult} */ r) =>
+                  r.code === 0 ? { done: true, found: "Your fork already has your work: brought it into this folder." } : { done: false, found: "Couldn't link your work branch to your fork's." },
+              },
+            },
+          ];
+        if (fork === "diverged")
+          return [
+            {
+              kind: /** @type {const} */ ("auto"),
+              command: {
+                display: "git push -u origin work",
+                argv: refusedCommand(FORK_DIVERGED),
+                cwd: dir,
+                what: "Checks your fork first: its work branch and this folder's have different commits.",
+                judge: () => ({ done: false, found: FORK_DIVERGED }),
+                stop: true,
+              },
+            },
+          ];
+        return [
+          cmd("git push -u origin work", pushArgv(ctx, ["push", "-u", "origin", "work"]), {
+            cwd: dir,
+            what: "Sends your work branch to your fork, and remembers the link, so later a plain git push is enough.",
+            words: [["push", "send commits to GitHub"], ["-u", "from now on, work goes to origin/work, so later a plain git push is enough"], ["origin", "your fork on GitHub"], ["work", "the branch to send"]],
+          }),
+        ];
+      },
       hint: () => "If GitHub refused, check you're signed in to your own account (step 5) and git uses it (step 6).",
     },
     {
@@ -2075,6 +2156,13 @@ export function diagnose(step, command, text, code, ctx) {
     return { what: "There's already a netsim folder there.", fix: "Try again and pick another folder (or delete the old netsim folder if it's from an earlier attempt)." };
   if (/not logged in|gh auth login|authentication required|HTTP 401|Bad credentials/i.test(text))
     return { what: "GitHub doesn't know who you are yet.", fix: "Sign in again in step 5, then come back.", back: 5 };
+  if (/non-fast-forward|\(fetch first\)|Updates were rejected because the (remote|tip)/i.test(text))
+    return { what: "Your fork on GitHub has commits this folder doesn't: GitHub refused the push so nothing there is lost.", fix: "Press Try again ↵: the studio brings your fork's work into this folder first (it never pushes over it). If both have different work, it says so." };
+  if (/\[remote rejected\].*permission denied|ERROR: Permission to .* denied|denied to [A-Za-z0-9-]+/i.test(text) && command.argv.includes("push")) {
+    const as = /denied to ([A-Za-z0-9-]+)/i.exec(text)?.[1];
+    const course = ctx.state?.login;
+    return { what: `GitHub refused the push: it signed in as ${as ?? "another account"}${course ? `, not ${course} (the account this course uses)` : ""}.`, fix: course ? `Press Try again ↵: the studio pushes over https, signed in by gh as ${course}. Still refused? Check ${course} is signed in to gh (step 5).` : "Check step 5 (the right account) and step 6 (git uses it).", back: 6 };
+  }
   if (/denied to|HTTP 403|Permission to .* denied|could not read Username/i.test(text))
     return { what: "GitHub refused: git isn't using your GitHub account.", fix: "Check step 5 (the right account) and step 6 (git uses it).", back: 6 };
   if (/command not found|ENOENT|is not recognized/i.test(text)) {
