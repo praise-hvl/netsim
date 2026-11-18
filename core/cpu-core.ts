@@ -171,7 +171,11 @@ function decodeStep(core: Core): StepResult {
   // @student week=5 part=class id=decode-step "Decode IR; a valid instruction goes to EXECUTE, anything else is a FAULT"
   // TODO(week 5, decode-step): Decode IR; a valid instruction goes to EXECUTE, anything else is a FAULT
   // Tests: tests/week-05/   Guide: docs/weeks/week-05.md
-  return todo("week 5: decode-step", core);
+  const result = decode(core.ir as [number, number, number, number]);
+  if (result.ok) {
+    return { core: moveTo(core, "EXECUTE", { instruction: result.instruction }), effects: [] };
+  }
+  return faultWith(core, result.error);
   // @end
 }
 
