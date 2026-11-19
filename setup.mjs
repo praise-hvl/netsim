@@ -98,7 +98,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 28;
+export const STUDIO_VERSION = 29;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -7348,6 +7348,18 @@ button.crow.peeking { outline: 2px solid var(--mint); outline-offset: -2px; bord
 .bcard h2 { margin: 0; font-size: 20px; }
 .bcard .stuck.bad { margin: 0; padding: 8px 12px; border-left: 3px solid var(--red); background: var(--well); border-radius: 6px; }
 .bcard .eyebrow { margin: 0; }
+/* Why Send can't go, on the card itself (not only a toast or the header dot). */
+.bsay { margin: 0; font-size: 13.5px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.bsay.bad { padding: 8px 12px; border-left: 3px solid var(--red); background: var(--well); border-radius: 6px; }
+/* While the conversation leads, the step card is a strip under it: the newest message stays in view above. */
+.bstrip { padding: 10px 14px; gap: 6px; box-shadow: 0 -8px 14px -10px rgba(0, 0, 0, .45); }
+.bstrip-top, .bstrip-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
+.bstrip-top .eyebrow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bstrip-row .sp, .bcard .row .sp { flex: 1; }
+.bstrip .ok { color: var(--mint-ink); font-weight: 600; }
+.bstrip .bad { color: var(--red-ink); font-weight: 600; }
+.ccol .agscroll > [data-build].strip { position: sticky; bottom: 0; z-index: 1; }
+.tcard li.more details ul { margin: 6px 0 0; padding: 0; }
 .bprompt pre { white-space: pre-wrap; font: 12.5px/1.5 "JetBrains Mono", monospace; background: var(--well); border-radius: 8px; padding: 10px; }
 .agbar { display: flex; justify-content: flex-end; font-size: 12.5px; min-height: 16px; }
 .agperms { margin: 0; padding: 8px 12px; background: var(--well); border-radius: 8px; font-size: 13px; line-height: 1.45; color: var(--muted); }
@@ -8596,7 +8608,11 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     let focusBox = false;
     let chatPanel = "viz"; // the right panel's tab in the Build view
     let scrolledFor = ""; // the step the chat column last scrolled to
-    let followCard = true; // the chat stays on the step card until the student scrolls it
+    let followCard = true; // the chat stays on the step card (or, while it leads, its newest message) until the student scrolls it
+    // While the agent works on a message, and after it answers, the conversation leads: the step card
+    // shrinks to a strip under it (title, tests, the main button) until the student opens it again.
+    let chatFirst = false;
+    let buildSay = { id: "", text: "" }; // why a Send from the step card didn't go, said on that card
     let actedOn = ""; // the step the student last committed or tested in the Build view
     let ahead = 0; // commits on work that GitHub doesn't have yet
     /** @type {Set<any>} entries with deltas waiting for the next frame */
@@ -8861,6 +8877,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         const entries = state.entries;
         const wasWorking = Boolean(state.turn);
         state = { ...e.state, entries, seq: e.seq };
+        // A turn starting (from the step card or the message box): the conversation is what's on screen.
+        if (!wasWorking && state.turn) {
+          buildSay = { id: "", text: "" };
+          chatFirst = true;
+          followCard = true;
+        }
         paintState();
         if (wasWorking && !state.turn) {
           codeTab.refresh(); // the agent may have changed the file
@@ -8990,15 +9012,18 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const total = (r.passed ?? 0) + (r.failed ?? 0);
       const ok = (/** @type {string} */ n) => `<li class="ok"><span>✓</span>${esc(n)}</li>`;
       const passedList = names.length ? `${names.slice(0, 3).map(ok).join("")}${names.length > 3 || r.passed > names.length ? `<li class="more"><details><summary>+ ${esc(r.passed - Math.min(3, names.length))} more</summary><ul>${names.slice(3).map(ok).join("")}</ul></details></li>` : ""}` : r.passed ? `<li class="ok"><span>✓</span>${esc(r.passed)} pass</li>` : "";
-      const failedList = failures.map((f) => `<li class="bad"><span>✗</span><div>${esc(f.test)}<div class="sub">${esc(String(f.message ?? "").split("\n")[0].slice(0, 240))}</div></div></li>`).join("");
-      const more = r.failed > failures.length ? `<li class="bad more"><span>✗</span>${esc(r.failed - failures.length)} more</li>` : "";
+      const bad = (/** @type {any} */ f) => `<li class="bad"><span>✗</span><div>${esc(f.test)}<div class="sub">${esc(String(f.message ?? "").split("\n")[0].slice(0, 240))}</div></div></li>`;
+      // The first failure in full; the rest behind a disclosure, so the card stays short.
+      const rest = (r.failed ?? 0) - Math.min(1, failures.length);
+      const failedList = failures.slice(0, 1).map(bad).join("");
+      const more = rest > 0 ? `<li class="bad more"><details><summary>+ ${esc(rest)} more failing</summary><ul>${failures.slice(1).map(bad).join("")}${r.failed > failures.length ? `<li class="bad"><span>✗</span>${esc(r.failed - failures.length)} more not listed</li>` : ""}</ul></details></li>` : "";
       const todo = r.waiting?.length && r.passed ? `<div class="sub">Waiting on: ${esc(r.waiting.join(", "))}.</div>` : "";
       const blocked = r.blocked ? `<div class="sub">${esc(r.blocked)} more open a local socket: press Run again to check them outside the sandbox.</div>` : "";
       // Green with no test of its own passing: say what that means, not a ✓.
       const none = r.phase !== "failed" && !r.passed;
       const head = r.phase === "failed" ? `✗ ${esc(r.failed)} of Step ${esc(stepOf(st)[0])}'s tests fail` : r.passed ? `✓ Step ${esc(stepOf(st)[0])}'s tests pass` : r.waiting?.length ? `No tests check this step yet: they run after ${esc(r.waiting.join(", "))}` : "No tests check this step yet: look at it on the board";
       const sub = none ? "read the change, then commit it" : total ? `${r.phase === "failed" ? `${esc(r.passed)} of ${esc(total)} pass` : `${esc(r.passed)} of ${esc(total)}`} · checked by the studio` : "checked by the studio";
-      return `<div class="tcard ${r.phase === "failed" ? "bad" : none ? "info" : "ok"}"><div class="tch"><b>${head}</b><span class="sub">${sub}</span></div><ul>${failedList}${more}${passedList}</ul>${todo}${blocked}</div>`;
+      return `<div class="tcard ${r.phase === "failed" ? "bad" : none ? "info" : "ok"}"><div class="tch"><b>${head}</b><span class="sub">${sub}</span></div><ul>${failedList}${more}${r.phase === "failed" ? "" : passedList}</ul>${todo}${blocked}</div>`;
     }
     /** A step opened from the Steps list, read only: what it is, what it sends, its test; no buttons but Back. @param {any} x @param {any} st */
     function peekCard(x, st) {
@@ -9014,6 +9039,70 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     }
     /** Its tests pass as the code is now (left to commit, if it isn't done): no Send. @param {any} st */
     const greenNow = (st) => snap?.code?.[st.id]?.phase === "passed" && snap.code[st.id].rev === st.rev;
+    /**
+     * Why Send to the agent can't go right now, where the student is looking (the card), with the fix
+     * when there is one. Empty when it can go. @param {any} st
+     */
+    function agentNote(st) {
+      if (buildSay.text && buildSay.id === st.id) return `<p class="bsay bad" data-build-say>${esc(buildSay.text)}</p>`;
+      const s = state;
+      if (!s || s.phase === "off" || s.phase === "starting") return `<p class="bsay" data-build-say><i class="spin"></i> Starting ${esc(nm())}: Send works once it's ready.</p>`;
+      if (s.phase === "signed-out" || s.phase === "signing-in") return `<p class="bsay bad" data-build-say>${esc(nm())} isn't signed in, so nothing can be sent yet. <button class="btn sm" data-agent-login>Sign in to ${esc(nm())}</button></p>`;
+      if (s.phase === "failed") return `<p class="bsay bad" data-build-say>${esc(s.problem || `${nm()} stopped.`)} <button class="btn sm" data-agent-open>Start ${esc(nm())} again</button></p>`;
+      if (s.phase !== "ready") return `<p class="bsay bad" data-build-say>${esc(s.problem || `${nm()} isn't ready.`)} The fix is at the top of this chat.</p>`;
+      if (s.turn) return `<p class="bsay" data-build-say><i class="spin"></i> ${esc(nm())} is working on a message: Send opens when it's done (or press Stop).</p>`;
+      return "";
+    }
+    /**
+     * A Send from the step card: the conversation leads at once (its newest message in view, the card a
+     * strip under it). Refused, the card comes back in full and says why, where the student is looking.
+     * @param {any} st @param {Promise<any>} going
+     */
+    function sent(st, going) {
+      chatFirst = true;
+      followCard = true;
+      buildSay = { id: "", text: "" };
+      paintBuild();
+      void going.then((/** @type {any} */ r) => {
+        if (r?.ok) return;
+        buildSay = { id: st.id, text: r?.error ?? "It didn't send." };
+        chatFirst = false;
+        followCard = true;
+        paintBuild();
+      });
+    }
+    /** The step card as a strip under the conversation while the conversation leads. @param {any} st */
+    function stepStrip(st) {
+      const r = snap?.code?.[st.id];
+      const n = stepOf(st);
+      const total = (r?.passed ?? 0) + (r?.failed ?? 0);
+      const status = stepDone(st)
+        ? `<span class="ok">✓ Done and committed</span>`
+        : state?.turn
+          ? `<span><i class="spin"></i> ${esc(nm())} is working on it</span>`
+          : r?.phase === "running"
+            ? `<span><i class="spin"></i> Checking its tests…</span>`
+            : r?.phase === "failed"
+              ? `<span class="bad">✗ ${esc(r.failed)} of ${esc(total)} tests fail</span>`
+              : r?.phase === "passed"
+                ? `<span class="ok">${r.passed ? `✓ ${esc(r.passed)} of ${esc(total)} tests pass` : "No test checks it yet"}</span>`
+                : r?.phase === "error"
+                  ? `<span class="bad">! The tests couldn't run</span>`
+                  : `<span class="muted">Not checked yet</span>`;
+      const busy = Boolean(state?.turn);
+      const action = busy || stepDone(st)
+        ? ""
+        : greenNow(st) || (r?.phase === "passed" && st.found)
+          ? `<button class="btn sm primary" data-build-commit="${esc(st.id)}" data-w="${esc(st.week)}">Commit it</button>`
+          : r?.phase === "failed"
+            ? `${st.stuck && state?.phase === "ready" ? `<button class="btn sm" data-build-hint="${esc(buildList.indexOf(st))}">➤ Send the hint</button>` : ""}<button class="btn sm" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">↻ Run again</button>`
+            : "";
+      return `<section class="bcard bstrip" aria-label="Your step">
+          <div class="bstrip-top"><p class="eyebrow">Step ${esc(n[0])} of ${esc(n[1])} · ${esc(st.title || st.id)}</p><button class="btn sm ghost" data-build-expand aria-expanded="false">Show the step ▴</button></div>
+          <div class="bstrip-row">${status}<span class="sp"></span>${action}</div>
+          ${busy ? "" : agentNote(st).replace(/<p class="bsay[^"]*" data-build-say><i class="spin"><\/i>[^<]*<\/p>/, "")}
+        </section>`;
+    }
     /** @param {any} st */
     function stepCard(st) {
       // A later week's code in this week's guide (week 6's lists week 7's): its tests come with that
@@ -9031,7 +9120,8 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           <h2>${esc(st.title || st.id)}</h2>
           ${st.concept ? `<p class="lesson">${esc(st.concept).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")}</p>` : ""}
           ${st.prompt ? `<details class="bprompt"><summary>What it sends to the agent</summary><pre>${esc(st.prompt)}</pre></details>` : ""}
-          <div class="row">${st.prompt && st.found && !stepDone(st) && !greenNow(st) ? `<button class="btn primary" data-build-send="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>Send to the agent</button>` : ""}${st.found && !stepDone(st) && !["passed", "failed"].includes(snap?.code?.[st.id]?.phase) ? `<button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">Run its tests</button>` : ""}</div>
+          <div class="row">${st.prompt && st.found && !stepDone(st) && !greenNow(st) ? `<button class="btn primary" data-build-send="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>Send to the agent</button>` : ""}${st.found && !stepDone(st) && !["passed", "failed"].includes(snap?.code?.[st.id]?.phase) ? `<button class="btn" data-build-test="${esc(st.id)}" data-w="${esc(st.week)}">Run its tests</button>` : ""}${state?.entries?.length ? `<span class="sp"></span><button class="btn sm ghost" data-build-collapse title="Make this card a strip and show the conversation">Show the conversation ▾</button>` : ""}</div>
+          ${st.prompt && st.found && !stepDone(st) && !greenNow(st) ? agentNote(st) : ""}
           ${st.found ? buildResult(st) : `<p class="muted">This step's code isn't in your folder yet.</p>`}
           ${st.stuck ? `<p class="${snap?.code?.[st.id]?.phase === "failed" ? "stuck bad" : "muted"}"><b>Stuck?</b> ${esc(st.stuck).replace(/`([^`\n]+)`/g, "<code>$1</code>")}</p>${snap?.code?.[st.id]?.phase === "failed" ? `<div class="row"><button class="btn" data-build-hint="${esc(buildList.indexOf(st))}" ${state?.phase !== "ready" || state?.turn ? "disabled" : ""}>➤ Send this hint</button></div>` : ""}` : ""}
           ${st.found && st.file ? `<div class="bchips"><button class="chip" data-open-file="${esc(st.file)}" title="Open it in the Files tab">✎ ${esc(st.file)}</button></div>` : ""}
@@ -9084,6 +9174,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           ${finished.c.works ? `<p class="lesson">${esc(finished.c.works)}</p>` : ""}
           <div class="row">${finished.steps[0]?.found ? `<button class="btn" data-build-test="${esc(finished.steps[finished.steps.length - 1].id)}" data-w="${esc(finished.steps[finished.steps.length - 1].week)}">Run its tests again</button>` : ""}${finished.c.board ? `<button class="btn" data-do="tab" data-tab="board">See it on the board</button>` : ""}<button class="btn primary" data-build-seen="${esc(finished.c.id)}">${next ? `Next: ${esc(next.c.title || "the next part")}` : "Done"}</button>${next ? "" : getWeekButton("btn")}</div></section>`;
       } else if (!st) card = `<section class="bcard bfinish"><h2>✓ Everything this week is built.</h2><p class="lesson">Press Push (top right) to send your work to GitHub.${snap?.nextGet ? ` Then go on whenever you like: week ${esc(snap.nextGet)} is out.` : ""}</p>${snap?.nextGet ? `<div class="row">${getWeekButton()}</div>` : ""}</section>`;
+      else if (chatFirst && document.querySelector("[data-chatui]")) card = stepStrip(st);
       else card = `${now.steps.filter(stepDone).map((x) => `<p class="bdoneline">✓ ${esc(x.title || x.id)}, done</p>`).join("")}${stepCard(st)}`;
       const notes = /** @type {HTMLElement | null} */ (document.querySelector("[data-bnotes]"));
       // Notes HTML is rendered by the studio from the student's own guide (escaped markdown).
@@ -9126,9 +9217,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         box.innerHTML = html;
         box.dataset.html = html;
       }
-      // The chat opens on the current step card, and moves to the next one when the step changes.
+      box.classList.toggle("strip", Boolean(ui && html.includes('class="bcard bstrip"')));
+      // The chat opens on the current step card, and moves to the next one when the step changes (the
+      // new step's card in full: the conversation no longer leads).
       const at = `${mounted?.week}|${finished ? `finished:${finished.c.id}` : (st?.id ?? "all")}`;
       if (scrolledFor !== at) {
+        if (scrolledFor && !state?.turn) chatFirst = false;
         scrolledFor = at;
         followCard = true;
       }
@@ -9138,7 +9232,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     function toCard() {
       const scroller = /** @type {HTMLElement | null} */ (mounted?.el.querySelector("[data-agscroll]") ?? null);
       const cardEl = scroller?.querySelector("[data-build] .bcard");
-      if (!scroller || !cardEl || !followCard) return;
+      if (!scroller || !followCard) return;
+      // The conversation leads (or there's no card): its newest message, at the bottom, stays in view.
+      if (!cardEl || cardEl.classList.contains("bstrip")) {
+        scroller.scrollTop = scroller.scrollHeight;
+        return;
+      }
       scroller.scrollTop += cardEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 8;
     }
 
@@ -9173,7 +9272,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           settle = window.setTimeout(() => {
             const card = scroller.querySelector("[data-build] .bcard");
             const top = scroller.getBoundingClientRect().top;
-            const cardInView = card ? Math.abs(card.getBoundingClientRect().top - top - 8) < 48 : false;
+            const cardInView = card && !card.classList.contains("bstrip") ? Math.abs(card.getBoundingClientRect().top - top - 8) < 48 : false;
             followCard = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80 || cardInView;
           }, 180);
         };
@@ -9323,7 +9422,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       }
     });
     document.addEventListener("click", (e) => {
-      const el = /** @type {HTMLElement} */ (e.target).closest("[data-cpane-tab],[data-build-peek],[data-build-push],[data-course-toggle],[data-composer-file],[data-composer-notes],[data-pick-file],[data-md-copy],[data-agent-answer],[data-agent-stop],[data-agent-login],[data-agent-open],[data-agent-recheck],[data-agent-commit],[data-agent-test],[data-build-send],[data-build-hint],[data-build-test],[data-build-commit],[data-build-seen],[data-agent-more]");
+      const el = /** @type {HTMLElement} */ (e.target).closest("[data-cpane-tab],[data-build-peek],[data-build-push],[data-course-toggle],[data-composer-file],[data-composer-notes],[data-pick-file],[data-md-copy],[data-agent-answer],[data-agent-stop],[data-agent-login],[data-agent-open],[data-agent-recheck],[data-agent-commit],[data-agent-test],[data-build-send],[data-build-hint],[data-build-test],[data-build-commit],[data-build-seen],[data-build-expand],[data-build-collapse],[data-agent-more]");
       if (!(el instanceof HTMLElement)) return;
       if (el.dataset.mdCopy !== undefined) {
         const code = el.closest(".mdcode")?.querySelector("code")?.textContent ?? "";
@@ -9371,15 +9470,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         const st = buildList[Number(el.dataset.buildHint)];
         if (!st || !mounted) return;
         /** @type {HTMLButtonElement} */ (el).disabled = true;
-        void ask({ type: "agent-send", week: mounted.week, task: st.id, text: `The step's tests fail. The guide's hint: ${st.stuck}\nFix it in the same region only, then run the step's tests again.`, guided: true, clientId: clientId() }).then((/** @type {any} */ r) => r.ok || toast(r.error ?? "It didn't send."));
+        sent(st, ask({ type: "agent-send", week: mounted.week, task: st.id, text: `The step's tests fail. The guide's hint: ${st.stuck}\nFix it in the same region only, then run the step's tests again.`, guided: true, clientId: clientId() }));
       } else if (el.dataset.buildSend !== undefined) {
         const st = buildList[Number(el.dataset.buildSend)];
         if (!st || !mounted) return;
         /** @type {HTMLButtonElement} */ (el).disabled = true;
-        void ask({ type: "agent-send", week: mounted.week, task: st.id, text: st.prompt, guided: true, clientId: clientId() }).then((/** @type {any} */ r) => {
-          if (!r.ok) toast(r.error ?? "It didn't send.");
-          mounted?.el.querySelector("[data-agent-log]")?.scrollIntoView({ block: "start" });
-        });
+        sent(st, ask({ type: "agent-send", week: mounted.week, task: st.id, text: st.prompt, guided: true, clientId: clientId() }));
       } else if (el.dataset.buildTest) {
         actedOn = el.dataset.buildTest;
         void ask({ type: "code-test", week: Number(el.dataset.w), id: el.dataset.buildTest }).then((/** @type {any} */ r) => r.ok || toast(r.error ?? "That didn't run."));
@@ -9393,6 +9489,10 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           const frame = /** @type {HTMLIFrameElement | null} */ (document.querySelector("iframe.board"));
           if (r.ok && frame) frame.src = frame.src;
         });
+      } else if (el.dataset.buildExpand !== undefined || el.dataset.buildCollapse !== undefined) {
+        chatFirst = el.dataset.buildCollapse !== undefined;
+        followCard = true;
+        paintBuild();
       } else if (el.dataset.buildSeen) {
         try {
           localStorage.setItem(seenKey(el.dataset.buildSeen), "1");
