@@ -98,7 +98,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 29;
+export const STUDIO_VERSION = 30;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -5264,28 +5264,26 @@ export function chatMarkdown(markdown) {
   /** @param {string} escaped  the URL as it stands in escaped text @param {string} label */
   const link = (escaped, label) => {
     const url = escaped.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-    return /^https?:\/\/[^\s"'<>`\\]+$/i.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${label}</a>` : label;
+    return /^https?:\/\/[^\s"'<>`\\\u0000]+$/i.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${label}</a>` : label;
   };
-  /** Inline markup on already-escaped text: code, links, bold, italic. @param {string} raw */
-  const inline = (raw) =>
-    raw
-      .split(/(`[^`\n]+`)/)
-      .map((part, i) => {
-        if (i % 2 === 1) return `<code>${esc(part.slice(1, -1))}</code>`;
-        // Links become placeholders first, so emphasis can't reach into their markup or address.
-        /** @type {string[]} */
-        const held = [];
-        const hold = (/** @type {string} */ html) => `\u0000${held.push(html) - 1}\u0000`;
-        return esc(part.replace(/\u0000/g, ""))
-          .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt) => `[image: ${alt}]`)
-          .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => hold(link(url, label)))
-          .replace(/(^|[\s(])(https?:\/\/(?:(?!&quot;|&#39;|&lt;|&gt;)[^\s<\u0000])*[^\s<.,;:!?)&\u0000])/g, (_m, pre, url) => `${pre}${hold(link(url, url))}`)
-          .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-          .replace(/(^|[^*\w])\*([^*\s][^*\n]*)\*/g, "$1<em>$2</em>")
-          .replace(/(^|\W)_([^_\s][^_\n]*)_(?=\W|$)/g, "$1<em>$2</em>")
-          .replace(/\u0000(\d+)\u0000/g, (_m, n) => held[Number(n)] ?? "");
-      })
-      .join("");
+  /** Inline markup: code, links, bold, italic. @param {string} raw */
+  const inline = (raw) => {
+    // Code spans and links become placeholders first: emphasis can wrap them (**Count up in `elapsed`.**)
+    // but can't reach into their text, markup or address.
+    /** @type {string[]} */
+    const held = [];
+    const hold = (/** @type {string} */ html) => `\u0000${held.push(html) - 1}\u0000`;
+    let html = esc(String(raw).replace(/\u0000/g, "").replace(/`([^`\n]+)`/g, (_m, code) => hold(`<code>${esc(code)}</code>`)))
+      .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt) => `[image: ${alt}]`)
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => hold(link(url, label)))
+      .replace(/(^|[\s(])(https?:\/\/(?:(?!&quot;|&#39;|&lt;|&gt;)[^\s<\u0000])*[^\s<.,;:!?)&\u0000])/g, (_m, pre, url) => `${pre}${hold(link(url, url))}`)
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*\w])\*([^*\s][^*\n]*)\*/g, "$1<em>$2</em>")
+      .replace(/(^|\W)_([^_\s][^_\n]*)_(?=\W|$)/g, "$1<em>$2</em>");
+    // A link's label can hold a code span: put back until none is left (each pass one level).
+    for (let n = 0; n < 3 && html.includes("\u0000"); n++) html = html.replace(/\u0000(\d+)\u0000/g, (_m, k) => held[Number(k)] ?? "");
+    return html.replace(/\u0000/g, "");
+  };
   const lines = String(markdown ?? "").replace(/\r\n?/g, "\n").split("\n");
   const listMark = /^(\s*)([-*+]|\d+[.)])\s+/;
   const rule = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
@@ -5332,8 +5330,17 @@ export function chatMarkdown(markdown) {
     const mark = listMark.exec(line);
     if (mark) {
       const ordered = /\d/.test(mark[2]);
+      const first = ordered ? Number.parseInt(mark[2], 10) : 1;
       const items = [];
       while (i < lines.length) {
+        // A blank line between items (a "loose" list) keeps the same list: 1. … 2. …, never 1. … 1. …
+        if (!lines[i].trim()) {
+          let k = i;
+          while (k < lines.length && !lines[k].trim()) k++;
+          const next = listMark.exec(lines[k] ?? "");
+          if (!next || /\d/.test(next[2]) !== ordered) break;
+          i = k;
+        }
         const m = listMark.exec(lines[i]);
         if (!m || /\d/.test(m[2]) !== ordered) break;
         const body = [lines[i].slice(m[0].length)];
@@ -5341,7 +5348,8 @@ export function chatMarkdown(markdown) {
         while (i < lines.length && lines[i].trim() && !listMark.test(lines[i]) && !/^\s*```/.test(lines[i])) body.push(lines[i++].trim());
         items.push(`<li>${inline(body.join(" "))}</li>`);
       }
-      out.push(ordered ? `<ol>${items.join("")}</ol>` : `<ul>${items.join("")}</ul>`);
+      // A list that picks up after something else (3. after a code block) keeps its number.
+      out.push(ordered ? `<ol${first > 1 ? ` start="${first}"` : ""}>${items.join("")}</ol>` : `<ul>${items.join("")}</ul>`);
       continue;
     }
     const para = [line.trim()];
