@@ -19,7 +19,7 @@
 // @ts-check
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -63,6 +63,10 @@ export function pickFolderCommand(platform, initial, prompt, env = process.env) 
 
 /** Where the board's server (Next.js, what `npm run dev` serves) shows the board. */
 export const BOARD_URL = "http://localhost:3005/board";
+/** The live dashboard (the app's root): Add peripheral and Programs, on the running machine. */
+export const LIVE_URL = "http://localhost:3005/";
+/** What the board reads when it starts (a new part's kind, a program): changed after that, it needs a restart. */
+export const BOARD_READS = ["components", "programs"];
 
 /**
  * What `npm run dev:all` runs, as fixed commands the studio can start and stop itself: the demo
@@ -98,7 +102,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 31;
+export const STUDIO_VERSION = 32;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -2599,7 +2603,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
       setupSteps,
       inWork: Boolean(meta.inWork),
       groups: meta.groups ?? [],
-      board: { phase: board.phase, error: board.error, url: BOARD_URL },
+      board: { phase: board.phase, error: board.error, url: BOARD_URL, liveUrl: LIVE_URL, stale: boardStale() },
       checks: { week: checks.week, phase: checks.phase, out: cleanOutput(checks.out) },
       code,
       focus: meta.focus ?? 0,
@@ -2887,6 +2891,35 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
   // here from fixed commands when the student asks, shown in the studio, and stopped with it.
   /** @type {{ phase: "off" | "starting" | "on" | "failed", ours: boolean, error: string }} */
   let board = { phase: "off", ours: false, error: "" };
+  /** When the board came on (ms): files the board reads that changed after it need a restart. */
+  let boardSince = 0;
+  let staleSeen = { at: 0, stale: false };
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let staleTimer = null;
+  /** While the board is on: a file it reads changing (the agent's new part) shows the restart note by itself. */
+  function watchStale() {
+    if (staleTimer) clearInterval(staleTimer);
+    boardSince = Date.now();
+    staleSeen = { at: 0, stale: false };
+    staleTimer = setInterval(() => {
+      if (board.phase !== "on") {
+        if (staleTimer) clearInterval(staleTimer);
+        staleTimer = null;
+        return;
+      }
+      const was = staleSeen.stale;
+      if (boardStale() !== was) publish();
+    }, 3000);
+    staleTimer.unref?.();
+  }
+  /** Has a file the board reads at start (BOARD_READS) changed since it came on? Looked at most every 2 s. */
+  function boardStale() {
+    const dir = ctx.state.repoDir;
+    if (board.phase !== "on" || !boardSince || !dir) return false;
+    if (Date.now() - staleSeen.at < 2000) return staleSeen.stale;
+    staleSeen = { at: Date.now(), stale: BOARD_READS.some((d) => newestChange(join(dir, d), boardSince)) };
+    return staleSeen.stale;
+  }
   /** @type {Running[]} */
   let boardRuns = [];
   let boardLog = "";
@@ -2901,6 +2934,25 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     if (board.ours) board = { phase: "off", ours: false, error: "" };
   }
 
+  /**
+   * Stop the board and start it again (it reads new parts and programs when it starts): its servers
+   * gone and the port free first, so the new start doesn't find the old one still answering. One
+   * started in a terminal isn't the studio's to restart.
+   */
+  async function restartBoard() {
+    if (board.phase !== "on") return startBoard();
+    if (!board.ours) return reject(409, "The board was started in a terminal (npm run dev:all): stop it there with Ctrl-C and start it again.");
+    const runs = boardRuns;
+    stopBoard();
+    board = { phase: "starting", ours: true, error: "" };
+    publish();
+    await Promise.race([Promise.all(runs.map((r) => r.done)), new Promise((r) => setTimeout(r, 10_000))]);
+    const http = ctx.httpStatus ?? (async () => 0);
+    for (let i = 0; i < 20 && (await http(BOARD_URL)) === 200; i++) await new Promise((r) => setTimeout(r, 500));
+    board = { phase: "off", ours: false, error: "" };
+    return startBoard();
+  }
+
   async function startBoard() {
     const dir = ctx.state.repoDir;
     if (!dir) return reject(409, "The course folder isn't set up yet.");
@@ -2908,6 +2960,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     const http = ctx.httpStatus ?? (async () => 0);
     if ((await http(BOARD_URL)) === 200) {
       board = { phase: "on", ours: false, error: "" }; // already running (npm run dev:all in a terminal)
+      watchStale();
       publish();
       return ok;
     }
@@ -2929,7 +2982,8 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     boardRuns = boardCommands(dir).servers.map(([argv, cwd]) => stream(argv, cwd, log));
     for (const r of boardRuns)
       void r.done.then((code) => {
-        if (board.phase === "starting" && board.ours) {
+        // Only this start's servers (a restart's old ones end while the new start is "starting").
+        if (board.phase === "starting" && board.ours && boardRuns.includes(r)) {
           stopBoard();
           board = { phase: "failed", ours: true, error: `Part of the board stopped (exit code ${code}):\n${boardLog.slice(-2000)}` };
           publish();
@@ -2939,6 +2993,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
       await new Promise((r) => setTimeout(r, 1000));
       if ((await http(BOARD_URL)) === 200 && board.phase === "starting") {
         board = { phase: "on", ours: true, error: "" };
+        watchStale();
         publish();
       }
     }
@@ -3299,6 +3354,48 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
   }
 
   /**
+   * Commit these changes (the Files tab): the files the student ticked, from the ones git lists as
+   * changed or new (so nothing .gitignore leaves out, and nothing that isn't changed), with their
+   * message: a new part, its test, a program, a line in index.ts. Like a task's commit, it runs nothing
+   * the folder's config names (hooks off, no fsmonitor, no signing, no filter), as the student's git
+   * identity. Never in the middle of a merge or rebase.
+   * @param {{ paths?: unknown, message?: unknown }} a
+   */
+  function commitFiles(a) {
+    const dir = ctx.state.repoDir;
+    if (!dir) return reject(409, "The course folder isn't set up yet.");
+    const paths = Array.isArray(a.paths) ? [...new Set(a.paths.filter((x) => typeof x === "string"))] : [];
+    if (!paths.length) return reject(400, "Tick at least one file to commit.");
+    if (paths.length > 1000) return reject(400, "That's too many files for one commit here: commit them in the terminal.");
+    const message = String(a.message ?? "").replace(/\r\n?/g, "\n").trim().slice(0, 2000);
+    if (!message) return reject(400, "Write a message for the commit: what these changes are.");
+    const gitDir = ctx.capture(["git", "rev-parse", "--absolute-git-dir"], dir)?.stdout?.trim();
+    if (!gitDir) return reject(409, "git couldn't read this folder.");
+    const midway = [["MERGE_HEAD", "a merge"], ["rebase-merge", "a rebase"], ["rebase-apply", "a rebase"], ["CHERRY_PICK_HEAD", "a cherry-pick"], ["REVERT_HEAD", "a revert"]].find(([f]) => ctx.exists(join(gitDir, f)));
+    if (midway) return reject(409, `Your folder is in the middle of ${midway[1]}, so the studio won't commit now. Finish it (or abort it) in the terminal first.`);
+    if (gitRunsPrograms(ctx, dir, { hooks: false })) return reject(409, "This folder's git settings run a program on commit (a filter in .git/config), so the studio won't commit here: commit it in the terminal with git commit.");
+    const status = viewStatus(ctx, dir);
+    const notChanged = paths.filter((x) => !status[x]);
+    if (notChanged.length) return reject(409, `${notChanged.length === 1 ? `${notChanged[0]} has` : `${notChanged.length} of these files have`} nothing to commit (no change, or .gitignore leaves it out). Look at the list again.`);
+    const conflicted = paths.filter((x) => status[x] === "conflict");
+    if (conflicted.length) return reject(409, `${conflicted[0]} has a merge conflict: fix it in the terminal first.`);
+    const noHooks = process.platform === "win32" ? "NUL" : "/dev/null";
+    const git = ["git", "--literal-pathspecs", "-c", `core.hooksPath=${noHooks}`, "-c", "core.fsmonitor=false", "-c", "commit.gpgSign=false"];
+    // New files are added first (a commit of named paths takes only what git already tracks).
+    const add = ctx.capture([...git, "add", "--", ...paths], dir);
+    const said = (/** @type {any} */ r) => `${r?.stdout ?? ""}${r?.stderr ?? ""}`.trim().split("\n")[0];
+    if (add?.code !== 0) return reject(500, `git couldn't add them: ${said(add)}`);
+    const r = ctx.capture([...git, "commit", "-q", "-m", message, "--", ...paths], dir);
+    if (r?.code !== 0) {
+      ctx.capture([...git, "reset", "-q", "--", ...paths], dir); // back as they were: nothing half done
+      return reject(500, `The commit didn't work: ${said(r)}`);
+    }
+    repoRev++;
+    publish();
+    return { ...ok, said: `Committed ${paths.length} file${paths.length === 1 ? "" : "s"}: ${message.split("\n")[0]}. Push sends it to GitHub.` };
+  }
+
+  /**
    * A turn on a selected task ended: the studio decides green itself from the measured tests,
    * whichever command Codex happened to run. It runs them inside Codex's sandbox, because nobody has
    * pressed anything yet, so agent-written code doesn't run outside it by itself.
@@ -3365,6 +3462,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
       publish();
       return ok;
     }
+    if (a.type === "board-restart") return restartBoard();
     if (a.type === "checks") return runChecks(Number(a.week));
     if (typeof a.type === "string" && a.type.startsWith("agent-")) {
       // Only for a week in the student's work, the same as its page and checks.
@@ -3375,6 +3473,7 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     if (a.type === "code-test") return testCode(a);
     if (a.type === "build-check") return buildCheck(a);
     if (a.type === "code-commit") return commitCode(a);
+    if (a.type === "files-commit") return commitFiles(a);
     if (a.type === "work-push") return pushWork();
     if (a.type === "week-get") return getWeek(Number(a.week));
     if (typeof a.type === "string" && a.type.startsWith("account-")) return accountAct(a);
@@ -3877,7 +3976,8 @@ export const AGENT_POLICY = `You are working with a student inside NetSim Studio
 - After a change, run the task's focused test command and read the result with them.
 - Ask before moving on to a different task. Never edit tests.
 - Don't open or copy from studio/hints/: those are the course's answers for the grey hints in the app.
-- A test failing with "listen EPERM" is the sandbox blocking its local socket, not their code: ask to run it again outside the sandbox and say why.`;
+- A test failing with "listen EPERM" is the sandbox blocking its local socket, not their code: ask to run it again outside the sandbox and say why.
+- Don't run git commit or git push yourself. A course task is committed with its Commit it button. Anything else (a new part, its test, a program, a line in index.ts): tell the student to commit it from the Files tab's "Commit these changes", then press Push.`;
 
 const RPC_TIMEOUT_MS = { initialize: 5 * 60_000, default: 60_000 };
 const AGENT_MAX_ENTRIES = 400;
@@ -6117,6 +6217,39 @@ function viewStatus(ctx, dir, only) {
 }
 
 /**
+ * Has anything under dir (a file, or a folder's list) changed after since (ms)? Skips node_modules and
+ * dot folders; stops at the first one. At most 5000 entries are looked at.
+ * @param {string} dir @param {number} since
+ */
+export function newestChange(dir, since) {
+  const todo = [dir];
+  let seen = 0;
+  while (todo.length && seen < 5000) {
+    const d = /** @type {string} */ (todo.pop());
+    let list;
+    try {
+      if (statSync(d).mtimeMs > since) return true;
+      list = readdirSync(d, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of list) {
+      seen++;
+      if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+      const p = join(d, e.name);
+      if (e.isDirectory()) todo.push(p);
+      else
+        try {
+          if (statSync(p).mtimeMs > since) return true;
+        } catch {
+          // gone meanwhile
+        }
+    }
+  }
+  return false;
+}
+
+/**
  * The course folder's files for the viewer's tree: what git tracks plus new files it doesn't ignore
  * (so node_modules, build output and anything in .gitignore never show), minus paths it can't name,
  * each with its git status. At most 5000.
@@ -7211,6 +7344,14 @@ button.crow.peeking { outline: 2px solid var(--mint); outline-offset: -2px; bord
 .ftree .fth { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); }
 .ftree .fth button { flex: 1; border: 1px solid var(--line); background: var(--panel); border-radius: 7px; font: 600 12px/1.2 "Inter", sans-serif; padding: 4px 6px; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .ftree .fth button.on { background: var(--green); border-color: var(--green); color: #fff; }
+.ftree .fth { flex-wrap: wrap; }
+.ftree .fth .fcbtn { flex-basis: 100%; color: var(--ink); border-color: var(--mint); }
+.fcommit .fvb { padding: 10px 12px; display: grid; gap: 10px; align-content: start; }
+.fcommit .fvb p { margin: 0; }
+.fcl { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font: 12.5px/1.4 "JetBrains Mono", ui-monospace, monospace; }
+.fcl label { display: flex; gap: 6px; align-items: center; cursor: pointer; overflow-wrap: anywhere; }
+.fcmsg { display: grid; gap: 4px; font-weight: 600; font-size: 13px; }
+.fcmsg textarea { font: 13px/1.4 "Inter", sans-serif; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); resize: vertical; }
 .ftree ul { list-style: none; margin: 0; padding: 6px 0; overflow: auto; flex: 1; min-height: 0; font: 12px/1.25 "JetBrains Mono", monospace; }
 .ftree li { padding: 0 8px; }
 .ftree .fvrow .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -7601,6 +7742,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
   let pickedShown = ""; // the last folder from the computer's picker put in the box
   let listedFor = -1; // the step the list last scrolled to
   /** @type {number | null} */
+  let boardView = "board"; // the board pane: "board" (My board) or "live" (the live dashboard)
   let viewingWeek = /^#week-(\d+)/.test(location.hash) ? Number(/^#week-(\d+)/.exec(location.hash)?.[1]) : null; // a week's view is open (its page, note, board)
   let focusShown = false; // npm start -- --week N: N's view opens once, when nothing before it is left to do
   let openWhenIn = 0; // the week "Get week N" asked for: its view opens once its steps are done
@@ -8397,10 +8539,40 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     let mode = ""; // "file" or "diff"; "" = the diff when it has changes
     let mdMode = "rendered";
     let loaded = false;
+    // Commit these changes: the panel is open, the files ticked, the message (as typed, or suggested).
+    let committing = false;
+    /** @type {Set<string>} */
+    let picked = new Set();
+    let commitMsg = "";
+    let msgTyped = false;
+    let commitBusy = false;
     /** The current step, from the Build view, for the "Commit it" under its diff. @type {() => any} */
     let stepNow = () => null;
     const get = (/** @type {string} */ url) => fetch(url, { headers: { "x-studio-token": TOKEN } }).then((r) => r.json()).catch(() => null);
     const changed = () => files.filter((f) => f.status);
+    /** A first message from the ticked files: "Add buzzer.ts and buzz.asm; change index.ts". @param {string[]} paths */
+    function suggestMessage(paths) {
+      const names = (/** @type {string[]} */ list) => {
+        const n = list.map((x) => x.split("/").pop());
+        return n.length > 3 ? `${n.slice(0, 3).join(", ")} and ${n.length - 3} more` : n.length > 1 ? `${n.slice(0, -1).join(", ")} and ${n.at(-1)}` : n[0];
+      };
+      const kind = (/** @type {string} */ x) => { const st = files.find((f) => f.path === x)?.status; return st === "untracked" || st === "added" ? "add" : st === "deleted" ? "remove" : "change"; };
+      const parts = [["add", "add"], ["change", "change"], ["remove", "remove"]].map(([k, verb]) => { const l = paths.filter((x) => kind(x) === k); return l.length ? `${verb} ${names(l)}` : ""; }).filter(Boolean).join("; ");
+      return parts ? parts[0].toUpperCase() + parts.slice(1) : "";
+    }
+    /** The Commit these changes panel, in the viewer's place. */
+    function commitHtml() {
+      const list = changed().filter((f) => f.status !== "conflict");
+      const rows = list.map((f) => `<li><label><input type="checkbox" data-fv-pick="${esc(f.path)}" ${picked.has(f.path) ? "checked" : ""}> <span class="path">${esc(f.path)}</span> <span class="pill now">${esc(STATUS[f.status ?? ""] ?? f.status)}</span></label></li>`).join("");
+      const conflicts = changed().filter((f) => f.status === "conflict");
+      const n = list.filter((f) => picked.has(f.path)).length;
+      return `<div class="fview fcommit"><div class="fvh"><span class="path">Commit these changes</span><span class="sp"></span><button class="btn sm ghost" data-fv-commit-cancel>Cancel</button></div>
+        <div class="fvb"><p class="muted">Tick the files that go in this commit: your new part, its test, a program, the line that adds it. Push then sends the commit to GitHub.</p>
+        ${list.length ? `<ul class="fcl">${rows}</ul>` : `<p class="muted">Nothing uncommitted: every change is committed.</p>`}
+        ${conflicts.length ? `<p class="bsay bad">${esc(conflicts.map((f) => f.path).join(", "))}: a merge conflict. Fix it in the terminal first.</p>` : ""}
+        <label class="fcmsg">Message <textarea data-fv-commit-msg rows="2" spellcheck="true" placeholder="What these changes are">${esc(commitMsg)}</textarea></label></div>
+        <div class="fvfoot"><span>${esc(n)} of ${esc(list.length)} file${list.length === 1 ? "" : "s"}</span><span class="sp"></span><button class="btn primary sm" data-fv-commit-go ${n && commitMsg.trim() && !commitBusy ? "" : "disabled"}>${commitBusy ? "Committing…" : `Commit ${esc(n)} file${n === 1 ? "" : "s"}`}</button></div></div>`;
+    }
     const LANGS = /** @type {Record<string, string>} */ ({ ts: "TypeScript", tsx: "TypeScript (TSX)", js: "JavaScript", json: "JSON", md: "Markdown", asm: "Assembly", text: "Text", image: "Image" });
     const STATUS = /** @type {Record<string, string>} */ ({ modified: "uncommitted", added: "new, staged", untracked: "new", deleted: "deleted", renamed: "renamed", conflict: "conflict" });
 
@@ -8466,7 +8638,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         return dirs.join("") + fs.join("");
       };
       const body = shown.length ? `<ul>${walk("", 0)}</ul>` : `<p class="muted fvempty">${filter === "changed" ? "Nothing uncommitted: every change is committed." : loaded ? "No files." : "Loading…"}</p>`;
-      return `<aside class="ftree"><div class="fth"><button class="${filter === "all" ? "on" : ""}" data-fv-filter="all">All files</button><button class="${filter === "changed" ? "on" : ""}" data-fv-filter="changed">Changed · ${esc(changed().length)}</button></div>${body}</aside>`;
+      return `<aside class="ftree"><div class="fth"><button class="${filter === "all" ? "on" : ""}" data-fv-filter="all">All files</button><button class="${filter === "changed" ? "on" : ""}" data-fv-filter="changed">Changed · ${esc(changed().length)}</button>${changed().length ? `<button class="fcbtn ${committing ? "on" : ""}" data-fv-commit title="Commit changed and new files that aren't a course task (a new part, a program)">Commit these changes</button>` : ""}</div>${body}</aside>`;
     }
 
     /** Line numbers beside highlighted text; the lines of a student region marked. @param {string} text @param {string} lang */
@@ -8529,8 +8701,11 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     function paint() {
       if (!mounted) return;
       const wide = mounted.el.clientWidth >= 760;
-      const html = `<div class="fv ${wide ? "wide" : "narrow"}">${treeHtml()}${viewerHtml(wide)}</div>`;
+      if (committing && !changed().length) committing = false;
+      const html = `<div class="fv ${wide ? "wide" : "narrow"}">${treeHtml()}${committing ? commitHtml() : viewerHtml(wide)}</div>`;
       if (mounted.el.dataset.html === html) return;
+      // Typing a commit message: the box keeps the caret through a redraw.
+      const typing = document.activeElement instanceof HTMLTextAreaElement && document.activeElement.matches("[data-fv-commit-msg]") ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
       // Keep where the reader was scrolled to in the file.
       const was = /** @type {HTMLElement | null} */ (mounted.el.querySelector(".fvb"));
       const top = was?.scrollTop ?? 0;
@@ -8544,10 +8719,15 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const treeNow = /** @type {HTMLElement | null} */ (mounted.el.querySelector(".ftree ul"));
       if (treeNow) treeNow.scrollTop = treeTop;
       mounted.el.dataset.at = `${selected}|${mode}|${mdMode}`;
+      const box = /** @type {HTMLTextAreaElement | null} */ (mounted.el.querySelector("[data-fv-commit-msg]"));
+      if (box && typing) {
+        box.focus();
+        box.setSelectionRange(typing[0], typing[1]);
+      }
     }
 
     document.addEventListener("click", (e) => {
-      const el = /** @type {HTMLElement} */ (e.target).closest("[data-fv-file],[data-fv-dir],[data-fv-filter],[data-fv-mode],[data-fv-md],[data-open-file]");
+      const el = /** @type {HTMLElement} */ (e.target).closest("[data-fv-file],[data-fv-dir],[data-fv-filter],[data-fv-mode],[data-fv-md],[data-open-file],[data-fv-commit],[data-fv-commit-cancel],[data-fv-commit-go]");
       if (!(el instanceof HTMLElement)) return;
       if (el.dataset.openFile) {
         // A path in the chat: the Files tab, on that file.
@@ -8557,6 +8737,38 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         return;
       }
       if (!mounted || !mounted.el.contains(el)) return;
+      if (el.dataset.fvCommit !== undefined) {
+        // Opens with every changed file ticked and a message from their names.
+        committing = !committing;
+        if (committing) {
+          picked = new Set(changed().filter((f) => f.status !== "conflict").map((f) => f.path));
+          if (!msgTyped) commitMsg = suggestMessage([...picked]);
+        }
+        paint();
+        return;
+      }
+      if (el.dataset.fvCommitCancel !== undefined) {
+        committing = false;
+        paint();
+        return;
+      }
+      if (el.dataset.fvCommitGo !== undefined) {
+        const paths = changed().filter((f) => f.status !== "conflict" && picked.has(f.path)).map((f) => f.path);
+        if (!paths.length || !commitMsg.trim() || commitBusy) return;
+        commitBusy = true;
+        paint();
+        void ask({ type: "files-commit", paths, message: commitMsg }).then((/** @type {any} */ r) => {
+          commitBusy = false;
+          toast(r.ok ? (r.said ?? "Committed.") : (r.error ?? "That didn't go through."));
+          if (r.ok) {
+            committing = false;
+            commitMsg = "";
+            msgTyped = false;
+          }
+          void refresh();
+        });
+        return;
+      }
       if (el.dataset.fvFile) open(el.dataset.fvFile);
       else if (el.dataset.fvDir) {
         if (openDirs.has(el.dataset.fvDir)) openDirs.delete(el.dataset.fvDir);
@@ -8572,6 +8784,22 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         mdMode = el.dataset.fvMd;
         paint();
       }
+    });
+    document.addEventListener("change", (e) => {
+      const box = e.target;
+      if (!(box instanceof HTMLInputElement) || box.dataset.fvPick === undefined || !mounted?.el.contains(box)) return;
+      if (box.checked) picked.add(box.dataset.fvPick);
+      else picked.delete(box.dataset.fvPick);
+      if (!msgTyped) commitMsg = suggestMessage([...picked]);
+      paint();
+    });
+    document.addEventListener("input", (e) => {
+      const box = e.target;
+      if (!(box instanceof HTMLTextAreaElement) || !box.matches("[data-fv-commit-msg]") || !mounted?.el.contains(box)) return;
+      commitMsg = box.value;
+      msgTyped = box.value.trim() !== "";
+      const go = /** @type {HTMLButtonElement | null} */ (mounted.el.querySelector("[data-fv-commit-go]"));
+      if (go) go.disabled = !box.value.trim() || commitBusy || !picked.size;
     });
     /** @param {string} path */
     function open(path) {
@@ -9675,8 +9903,15 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
   /** The board, run by the studio: start it, watch it here, stop it (it stops with the studio too). */
   function boardPanel() {
     const b = snap?.board ?? { phase: "off", error: "", url: "" };
-    if (b.phase === "on")
-      return `<div class="row"><button class="btn ghost" data-do="board-stop">Stop the board</button> <a href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">Open it in a new tab</a></div><iframe class="doc board" data-loading title="The board" src="${esc(b.url)}"></iframe>`;
+    if (b.phase === "on") {
+      // Two views of the running machine: My board (the recording), and Live, the app's own dashboard,
+      // where a new part is added (Add peripheral) and programs run.
+      const live = boardView === "live" && b.liveUrl;
+      const url = live ? b.liveUrl : b.url;
+      const seg = b.liveUrl ? `<span class="mseg bseg"><button class="${live ? "" : "on"}" data-board-view="board" title="Your board, tick by tick">My board</button><button class="${live ? "on" : ""}" data-board-view="live" title="The live dashboard: Add peripheral and Programs">Live: add parts and run programs</button></span>` : "";
+      const stale = b.stale ? `<p class="bsay bad" data-board-stale>Files the board reads at start changed (a part or a program). Restart the board to pick up your new part. <button class="btn sm" data-do="board-restart">↻ Restart the board</button></p>` : "";
+      return `<div class="row">${seg}<span class="sp"></span><button class="btn ghost sm" data-do="board-stop">Stop the board</button> <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open ${live ? "Live" : "it"} in a new tab</a></div>${stale}<iframe class="doc board" data-loading title="${live ? "The live dashboard" : "The board"}" src="${esc(url)}"></iframe>`;
+    }
     if (b.phase === "starting") return `<p class="why">Starting the bus, the parts and the board… The first time takes a minute.</p>`;
     const failed = b.phase === "failed" ? `<div class="status bad"><span class="icon">!</span><div><b>The board didn't start.</b><pre class="log">${esc(b.error)}</pre></div></div>` : "";
     return `${failed}<p class="why">The board shows your computer running: the bus, memory, the CPU and the devices, tick by tick. The studio starts everything it needs (what <code>npm run dev:all</code> does) and stops it when you close the studio.</p>
@@ -9874,6 +10109,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       return;
     }
     if (what === "board-start" || what === "board-stop") return act({ type: what });
+    if (what === "board-restart") return act({ type: "board-restart" });
     if (what === "checks") return act({ type: "checks", week: Number(el?.dataset.w) });
     if (what === "week") {
       if (viewingWeek !== Number(el?.dataset.w)) weekTab = "";
@@ -9919,6 +10155,11 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
   }
 
   document.addEventListener("click", (e) => {
+    const view = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (e.target).closest("[data-board-view]"));
+    if (view) {
+      boardView = view.dataset.boardView === "live" ? "live" : "board";
+      return void render();
+    }
     const get = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (e.target).closest("[data-week-get]"));
     if (get) return void getWeek(Number(get.dataset.weekGet), /** @type {HTMLButtonElement} */ (get));
     const el = /** @type {HTMLElement} */ (e.target).closest("[data-do]");
