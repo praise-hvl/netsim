@@ -102,7 +102,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 32;
+export const STUDIO_VERSION = 33;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -8560,18 +8560,72 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const parts = [["add", "add"], ["change", "change"], ["remove", "remove"]].map(([k, verb]) => { const l = paths.filter((x) => kind(x) === k); return l.length ? `${verb} ${names(l)}` : ""; }).filter(Boolean).join("; ");
       return parts ? parts[0].toUpperCase() + parts.slice(1) : "";
     }
-    /** The Commit these changes panel, in the viewer's place. */
-    function commitHtml() {
-      const list = changed().filter((f) => f.status !== "conflict");
+    /** The files the commit panel lists: changed ones without a conflict. */
+    const committable = () => changed().filter((f) => f.status !== "conflict");
+    /** Which files the list shows, and how: it's rebuilt only when this changes. */
+    const listKey = () => committable().map((f) => `${f.path}\t${f.status}`).join("\n");
+    /** The panel's parts that a refresh may redraw: never the message box. */
+    function commitParts() {
+      const list = committable();
       const rows = list.map((f) => `<li><label><input type="checkbox" data-fv-pick="${esc(f.path)}" ${picked.has(f.path) ? "checked" : ""}> <span class="path">${esc(f.path)}</span> <span class="pill now">${esc(STATUS[f.status ?? ""] ?? f.status)}</span></label></li>`).join("");
       const conflicts = changed().filter((f) => f.status === "conflict");
       const n = list.filter((f) => picked.has(f.path)).length;
+      return {
+        list: list.length ? `<ul class="fcl">${rows}</ul>` : `<p class="muted">Nothing uncommitted: every change is committed.</p>`,
+        conflicts: conflicts.length ? `<p class="bsay bad">${esc(conflicts.map((f) => f.path).join(", "))}: a merge conflict. Fix it in the terminal first.</p>` : "",
+        foot: `<span>${esc(n)} of ${esc(list.length)} file${list.length === 1 ? "" : "s"}</span><span class="sp"></span><button class="btn primary sm" data-fv-commit-go ${n && commitMsg.trim() && !commitBusy ? "" : "disabled"}>${commitBusy ? "Committing…" : `Commit ${esc(n)} file${n === 1 ? "" : "s"}`}</button>`,
+      };
+    }
+    /** The Commit these changes panel, in the viewer's place. */
+    function commitHtml() {
+      const p = commitParts();
       return `<div class="fview fcommit"><div class="fvh"><span class="path">Commit these changes</span><span class="sp"></span><button class="btn sm ghost" data-fv-commit-cancel>Cancel</button></div>
         <div class="fvb"><p class="muted">Tick the files that go in this commit: your new part, its test, a program, the line that adds it. Push then sends the commit to GitHub.</p>
-        ${list.length ? `<ul class="fcl">${rows}</ul>` : `<p class="muted">Nothing uncommitted: every change is committed.</p>`}
-        ${conflicts.length ? `<p class="bsay bad">${esc(conflicts.map((f) => f.path).join(", "))}: a merge conflict. Fix it in the terminal first.</p>` : ""}
+        <div data-fc-list data-key="${esc(listKey())}">${p.list}</div><div data-fc-conflicts>${p.conflicts}</div>
         <label class="fcmsg">Message <textarea data-fv-commit-msg rows="2" spellcheck="true" placeholder="What these changes are">${esc(commitMsg)}</textarea></label></div>
-        <div class="fvfoot"><span>${esc(n)} of ${esc(list.length)} file${list.length === 1 ? "" : "s"}</span><span class="sp"></span><button class="btn primary sm" data-fv-commit-go ${n && commitMsg.trim() && !commitBusy ? "" : "disabled"}>${commitBusy ? "Committing…" : `Commit ${esc(n)} file${n === 1 ? "" : "s"}`}</button></div></div>`;
+        <div class="fvfoot" data-fc-foot>${p.foot}</div></div>`;
+    }
+    /**
+     * The commit panel is open: redraw the tree and the panel's list, conflicts and footer in place, and
+     * leave the message box alone (the element, its text, focus and caret: the student may be typing).
+     * Ticks stay the student's: a file that's gone is dropped, a new one comes unticked.
+     * @returns {boolean} false when there's no open panel to update (a full paint is needed)
+     */
+    function updateCommitPanel() {
+      const el = mounted?.el;
+      const panel = el?.querySelector(".fcommit");
+      const tree = el?.querySelector(".ftree");
+      if (!el || !panel || !tree) return false;
+      const paths = new Set(committable().map((f) => f.path));
+      for (const x of [...picked]) if (!paths.has(x)) picked.delete(x);
+      const treeHtmlNow = treeHtml();
+      if (/** @type {HTMLElement} */ (tree).dataset.html !== treeHtmlNow) {
+        const top = tree.querySelector("ul")?.scrollTop ?? 0;
+        tree.outerHTML = treeHtmlNow;
+        const now = /** @type {HTMLElement | null} */ (el.querySelector(".ftree"));
+        if (now) now.dataset.html = treeHtmlNow;
+        const ul = el.querySelector(".ftree ul");
+        if (ul) ul.scrollTop = top;
+      }
+      const p = commitParts();
+      // The list: rebuilt only when its files change; a tick alone just sets the box (keeps keyboard focus).
+      const list = /** @type {HTMLElement | null} */ (panel.querySelector("[data-fc-list]"));
+      const key = listKey();
+      if (list && list.dataset.key !== key) {
+        list.innerHTML = p.list;
+        list.dataset.key = key;
+      } else if (list) for (const box of list.querySelectorAll("input[data-fv-pick]")) /** @type {HTMLInputElement} */ (box).checked = picked.has(/** @type {HTMLInputElement} */ (box).dataset.fvPick ?? "");
+      for (const [sel, html] of /** @type {[string, string][]} */ ([["[data-fc-conflicts]", p.conflicts], ["[data-fc-foot]", p.foot]])) {
+        const part = /** @type {HTMLElement | null} */ (panel.querySelector(sel));
+        if (part && part.dataset.html !== html) {
+          part.innerHTML = html;
+          part.dataset.html = html;
+        }
+      }
+      // A suggested message (nothing typed) follows the ticks, unless the box is in use.
+      const box = /** @type {HTMLTextAreaElement | null} */ (panel.querySelector("[data-fv-commit-msg]"));
+      if (box && !msgTyped && document.activeElement !== box && box.value !== commitMsg) box.value = commitMsg;
+      return true;
     }
     const LANGS = /** @type {Record<string, string>} */ ({ ts: "TypeScript", tsx: "TypeScript (TSX)", js: "JavaScript", json: "JSON", md: "Markdown", asm: "Assembly", text: "Text", image: "Image" });
     const STATUS = /** @type {Record<string, string>} */ ({ modified: "uncommitted", added: "new, staged", untracked: "new", deleted: "deleted", renamed: "renamed", conflict: "conflict" });
@@ -8702,10 +8756,10 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       if (!mounted) return;
       const wide = mounted.el.clientWidth >= 760;
       if (committing && !changed().length) committing = false;
+      // The panel is already open: update it in place (a refresh mustn't replace the box being typed in).
+      if (committing && updateCommitPanel()) return;
       const html = `<div class="fv ${wide ? "wide" : "narrow"}">${treeHtml()}${committing ? commitHtml() : viewerHtml(wide)}</div>`;
       if (mounted.el.dataset.html === html) return;
-      // Typing a commit message: the box keeps the caret through a redraw.
-      const typing = document.activeElement instanceof HTMLTextAreaElement && document.activeElement.matches("[data-fv-commit-msg]") ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
       // Keep where the reader was scrolled to in the file.
       const was = /** @type {HTMLElement | null} */ (mounted.el.querySelector(".fvb"));
       const top = was?.scrollTop ?? 0;
@@ -8719,11 +8773,6 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const treeNow = /** @type {HTMLElement | null} */ (mounted.el.querySelector(".ftree ul"));
       if (treeNow) treeNow.scrollTop = treeTop;
       mounted.el.dataset.at = `${selected}|${mode}|${mdMode}`;
-      const box = /** @type {HTMLTextAreaElement | null} */ (mounted.el.querySelector("[data-fv-commit-msg]"));
-      if (box && typing) {
-        box.focus();
-        box.setSelectionRange(typing[0], typing[1]);
-      }
     }
 
     document.addEventListener("click", (e) => {
