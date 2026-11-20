@@ -102,7 +102,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 33;
+export const STUDIO_VERSION = 34;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -7579,6 +7579,7 @@ textarea.plaincode { width: 100%; box-sizing: border-box; background: #173627; c
 iframe.doc { flex: 1; width: 100%; min-height: calc(100vh - 250px); border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 /* A frame stays hidden until its page has loaded (a blank frame is white: it flashed in dark), and
    shows after 3 s whatever happens, so a page that never says it loaded is never lost. */
+[data-boardpane], [data-boardstale] { display: contents; }
 iframe.doc[data-loading] { visibility: hidden; animation: framelate 0s 3s forwards; }
 @keyframes framelate { to { visibility: visible; } }
 iframe.board { min-height: calc(100vh - 220px); }
@@ -9918,7 +9919,9 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     if (tab === "page") body = framed(`/week/${g.week}`, `Week ${g.week} lesson page`, g.page ? "the lesson" : "the guide");
     else if (tab === "note")
       body = `<p class="sub">Your ${g.kind === "setup" ? "notes" : "design note"}, <code>${esc(g.note ?? "")}</code>. Write it in VS Code (<code>code ${esc(g.note ?? "")}</code>); open this tab again to see what you saved.</p>${framed(`/${g.note ?? ""}`, `Week ${g.week} note`, g.kind === "setup" ? "your notes" : "your note")}`;
-    else if (tab === "board") body = boardPanel();
+    // The board is painted into its pane by paintBoard: its phase never changes the view's HTML (a change
+    // there redrew the whole Build view, and with it the chat's message box).
+    else if (tab === "board") body = `<div data-boardpane></div>`;
     // The tasks are drawn by codeTab (their editors outlive the page's re-renders).
     else if (tab === "code") body = `<div class="codetab" data-codetab="${esc(g.week)}"><p class="why">Loading this week's tasks…</p></div>`;
     // Drawn by agentTab, from the studio's state (its conversation outlives the page's re-renders).
@@ -9934,7 +9937,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
           <div class="cdiv" data-cdiv title="Drag to resize"></div>
           <aside class="cpanel" data-cpanel>
             <div class="ctabs">${[["viz", "Visualizer"], ...(g.page ? [["lesson", "Lesson"]] : []), ["notes", "Design notes"], ["steps", "Steps"], ["files", "Files"]].map(([id, label]) => `<button class="ctab" data-cpane-tab="${id}">${label}<span data-ccount="${id}"></span></button>`).join("")}${g.page ? `<a class="ctab fulllesson" href="/week/${esc(g.week)}" target="_blank" rel="noopener noreferrer">Full lesson ↗</a>` : ""}</div>
-            <div class="cpane" data-pane="viz">${boardPanel()}</div>
+            <div class="cpane" data-pane="viz"><div data-boardpane></div></div>
             <div class="cpane md" data-pane="notes"><div data-bnotes><p class="muted">The notes for the part you're building show here.</p></div></div>
             <div class="cpane" data-pane="steps"><div data-bsteplist></div></div>
             ${g.page ? `<div class="cpane" data-pane="lesson">${framed(`/week/${g.week}`, `Week ${g.week} lesson page`, "the lesson")}</div>` : ""}
@@ -9949,6 +9952,53 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     return `${weekSwitcher(g.week)}<div class="weekhead"><p class="eyebrow">Week ${esc(g.week)}${kindLabel(g)}</p><h1 class="q">${esc(g.title)}</h1></div>${onward}${bar}<div class="tabbody">${body}</div>`;
   }
 
+  /** The board's pane(s), from the studio's state: redrawn only when what they show changed (the frame stays). */
+  function paintBoard() {
+    const html = boardPanel();
+    for (const pane of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll("[data-boardpane]"))) {
+      if (pane.dataset.html === html) continue;
+      // The same frame (same page): only the controls and the restart note change, the page keeps running.
+      const t = document.createElement("template");
+      t.innerHTML = html;
+      const frame = pane.querySelector("iframe.board");
+      const nextFrame = t.content.querySelector("iframe.board");
+      if (frame && nextFrame && frame.getAttribute("src") === nextFrame.getAttribute("src")) {
+        for (const sel of ["[data-boardhead]", "[data-boardstale]"]) {
+          const a = pane.querySelector(sel);
+          const b = t.content.querySelector(sel);
+          if (a && b && a.innerHTML !== b.innerHTML) a.innerHTML = b.innerHTML;
+        }
+      } else pane.innerHTML = html;
+      pane.dataset.html = html;
+    }
+  }
+
+  /**
+   * The week's view changed, but the Build view of the same week is on screen: everything around it
+   * (the week pills, the heading, Week N is out, the tabs) is replaced, the Build view itself is kept.
+   * Replacing it made a new chat: its message box lost focus mid-sentence (the draft was kept, the
+   * typing went nowhere), and its header showed "This week's build" and an empty bar until the steps
+   * loaded again. Returns false when it isn't that case (the caller replaces the whole view).
+   * @param {HTMLElement} detail @param {string} html
+   */
+  function patchBuildView(detail, html) {
+    const old = detail.firstElementChild;
+    const keep = old?.querySelector(":scope > .tabbody");
+    const oldWeek = keep?.querySelector(":scope > [data-chatui] [data-agenttab]")?.getAttribute("data-agenttab");
+    if (!old || !keep || !oldWeek) return false;
+    const t = document.createElement("template");
+    t.innerHTML = html;
+    const next = t.content.firstElementChild;
+    const body = next?.querySelector(":scope > .tabbody");
+    if (!next || !body || next.className !== old.className || body.querySelector(":scope > [data-chatui] [data-agenttab]")?.getAttribute("data-agenttab") !== oldWeek) return false;
+    for (const child of [...old.children]) if (child !== keep) child.remove();
+    const kids = [...next.children];
+    const at = kids.indexOf(body);
+    keep.before(...kids.slice(0, at));
+    keep.after(...kids.slice(at + 1));
+    return true;
+  }
+
   /** The board, run by the studio: start it, watch it here, stop it (it stops with the studio too). */
   function boardPanel() {
     const b = snap?.board ?? { phase: "off", error: "", url: "" };
@@ -9959,7 +10009,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const url = live ? b.liveUrl : b.url;
       const seg = b.liveUrl ? `<span class="mseg bseg"><button class="${live ? "" : "on"}" data-board-view="board" title="Your board, tick by tick">My board</button><button class="${live ? "on" : ""}" data-board-view="live" title="The live dashboard: Add peripheral and Programs">Live: add parts and run programs</button></span>` : "";
       const stale = b.stale ? `<p class="bsay bad" data-board-stale>Files the board reads at start changed (a part or a program). Restart the board to pick up your new part. <button class="btn sm" data-do="board-restart">↻ Restart the board</button></p>` : "";
-      return `<div class="row">${seg}<span class="sp"></span><button class="btn ghost sm" data-do="board-stop">Stop the board</button> <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open ${live ? "Live" : "it"} in a new tab</a></div>${stale}<iframe class="doc board" data-loading title="${live ? "The live dashboard" : "The board"}" src="${esc(url)}"></iframe>`;
+      return `<div class="row" data-boardhead>${seg}<span class="sp"></span><button class="btn ghost sm" data-do="board-stop">Stop the board</button> <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open ${live ? "Live" : "it"} in a new tab</a></div><div data-boardstale>${stale}</div><iframe class="doc board" data-loading title="${live ? "The live dashboard" : "The board"}" src="${esc(url)}"></iframe>`;
     }
     if (b.phase === "starting") return `<p class="why">Starting the bus, the parts and the board… The first time takes a minute.</p>`;
     const failed = b.phase === "failed" ? `<div class="status bad"><span class="icon">!</span><div><b>The board didn't start.</b><pre class="log">${esc(b.error)}</pre></div></div>` : "";
@@ -10098,8 +10148,12 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     const wide = showWeek || (finished && shown === null && snap.groups.length > 0);
     const html = `<div class="inner${wide ? " week" : ""}">${shown !== null ? otherView(snap.steps[shown]) : showWeek ? weekHomeView(/** @type {number} */ (viewingWeek)) : finished ? finishView() : currentView(snap.steps[snap.current])}</div>`;
     // A week's pages and the board are frames: re-render them only when something they show changed.
-    if (!wide || html !== detailHtml) $("[data-detail]").innerHTML = html;
+    if (!wide || html !== detailHtml) {
+      const detail = $("[data-detail]");
+      if (!(wide && showWeek && patchBuildView(detail, html))) detail.innerHTML = html;
+    }
     detailHtml = wide ? html : "";
+    paintBoard();
     paintLine();
     paintOutput();
     codeTab.sync();
@@ -10207,7 +10261,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     const view = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (e.target).closest("[data-board-view]"));
     if (view) {
       boardView = view.dataset.boardView === "live" ? "live" : "board";
-      return void render();
+      return void paintBoard();
     }
     const get = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (e.target).closest("[data-week-get]"));
     if (get) return void getWeek(Number(get.dataset.weekGet), /** @type {HTMLButtonElement} */ (get));
