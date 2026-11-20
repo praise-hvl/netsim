@@ -98,7 +98,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 30;
+export const STUDIO_VERSION = 31;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -7435,7 +7435,11 @@ textarea.plaincode { width: 100%; box-sizing: border-box; background: #173627; c
 .failure { margin-top: 8px; }
 .failure .ftest { font-weight: 600; }
 /* A lesson page or the board at the panel's full width and the window's height, like opening it on its own. */
-iframe.doc { flex: 1; width: 100%; min-height: calc(100vh - 250px); border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+iframe.doc { flex: 1; width: 100%; min-height: calc(100vh - 250px); border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+/* A frame stays hidden until its page has loaded (a blank frame is white: it flashed in dark), and
+   shows after 3 s whatever happens, so a page that never says it loaded is never lost. */
+iframe.doc[data-loading] { visibility: hidden; animation: framelate 0s 3s forwards; }
+@keyframes framelate { to { visibility: visible; } }
 iframe.board { min-height: calc(100vh - 220px); }
 pre.log { background: #0f1f18; color: var(--chrome-ink); border-radius: 8px; padding: 12px 14px; font: 12.5px/1.5 "JetBrains Mono", monospace; max-height: 50vh; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 0; }
 .banner { padding: 10px 14px; border-radius: 8px; background: var(--soft, #f3f7f4); border: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -8208,7 +8212,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         ? `<aside class="prompt walk"><h4>What this code does</h4><ol>${t.steps.map((st, i) => `<li data-step="${i}" data-line="${st.line}">${md(st.explain)}</li>`).join("")}</ol></aside>`
         : "";
       const prompt = t.prompt
-        ? `<aside class="prompt"><h4>Codex prompt</h4><p class="sub">Send it to the Agent tab (add your approach first), or run <code>codex</code> in a terminal in your course folder and paste it. Read what it writes before you keep it.</p><pre>${esc(t.prompt)}</pre><div class="row"><button class="btn" data-code-agent="${esc(t.id)}">Send to the agent</button><button class="btn ghost" data-code-copy="${esc(t.id)}">Copy the prompt</button></div></aside>`
+        ? `<aside class="prompt"><h4><span data-agent-named>${esc(agentTab.name())}</span> prompt</h4><p class="sub">Send it to the Agent tab (add your approach first), or run <code data-agent-cmd>${esc(agentTab.name().toLowerCase())}</code> in a terminal in your course folder and paste it. Read what it writes before you keep it.</p><pre>${esc(t.prompt)}</pre><div class="row"><button class="btn" data-code-agent="${esc(t.id)}">Send to the agent</button><button class="btn ghost" data-code-copy="${esc(t.id)}">Copy the prompt</button></div></aside>`
         : "";
       return `<section class="task" data-task="${esc(t.id)}">
         <div class="taskhead"><span class="tnum">${n}</span><div><h3><code>${esc(t.id)}</code></h3><p class="tdesc">${esc(t.description)}</p></div><span class="tpart ${t.part}">${t.part === "class" ? "in class" : "take-home"}</span></div>
@@ -8871,11 +8875,19 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       }
     }
 
+    /** The assistant changed (or became known): what names it outside this tab (the Code tab's prompts) says so. */
+    function renamed() {
+      for (const x of document.querySelectorAll("[data-agent-named]")) x.textContent = nm();
+      for (const x of document.querySelectorAll("[data-agent-cmd]")) x.textContent = nm().toLowerCase();
+    }
     /** One message from the studio's event stream. @param {any} e */
     function onEvent(e) {
+      const named = state?.providerName;
       if (e.type === "snapshot") {
         state = e.snapshot;
-        return paintAll();
+        paintAll();
+        if (state?.providerName !== named) renamed();
+        return;
       }
       if (!state) return;
       if (e.seq <= state.seq) return;
@@ -8885,6 +8897,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         const entries = state.entries;
         const wasWorking = Boolean(state.turn);
         state = { ...e.state, entries, seq: e.seq };
+        if (state.providerName !== named) renamed();
         // A turn starting (from the step card or the message box): the conversation is what's on screen.
         if (!wasWorking && state.turn) {
           buildSay = { id: "", text: "" };
@@ -9429,6 +9442,10 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         void submit();
       }
     });
+    // A frame's page has loaded: show it (see iframe.doc[data-loading]). Load doesn't bubble: caught on the way down.
+    document.addEventListener("load", (e) => {
+      if (e.target instanceof HTMLIFrameElement) e.target.removeAttribute("data-loading");
+    }, true);
     document.addEventListener("click", (e) => {
       const el = /** @type {HTMLElement} */ (e.target).closest("[data-cpane-tab],[data-build-peek],[data-build-push],[data-course-toggle],[data-composer-file],[data-composer-notes],[data-pick-file],[data-md-copy],[data-agent-answer],[data-agent-stop],[data-agent-login],[data-agent-open],[data-agent-recheck],[data-agent-commit],[data-agent-test],[data-build-send],[data-build-hint],[data-build-test],[data-build-commit],[data-build-seen],[data-build-expand],[data-build-collapse],[data-agent-more]");
       if (!(el instanceof HTMLElement)) return;
@@ -9531,6 +9548,8 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
 
     return {
       onEvent,
+      /** The assistant in use, by name ("Codex", "Claude"). */
+      name: () => nm(),
       /** The Build view's current step (its file, its id, its rev), or null. */
       currentStep: () => {
         const st = mounted && buildList.length ? currentBuildStep() : null;
@@ -9604,7 +9623,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
       const next = snap?.nextGet ?? 0;
       const getting = next === g.week;
       const bar = `<div class="getbar"><div><b>Week ${esc(g.week)} isn't in your work yet.</b> <span class="muted">${getting ? "Read its lesson here, then get it when you're ready: the studio brings its files into your work (a fetch and a merge, as every week)." : next ? `Read its lesson here. The weeks come in order: get week ${esc(next)} first.` : "Read its lesson here."}</span></div>${next ? getWeekButton() : ""}</div>`;
-      return `${weekSwitcher(g.week)}<div class="weekhead"><p class="eyebrow">Week ${esc(g.week)}${kindLabel(g)} · read ahead</p><h1 class="q">${esc(g.title)}</h1></div>${bar}<div class="tabbody"><div class="framebar"><button class="btn ghost" data-do="frame-back">← Back to the lesson</button></div><iframe class="doc" title="Week ${esc(g.week)} lesson page" src="/week/${esc(g.week)}" data-home="/week/${esc(g.week)}"></iframe></div>`;
+      return `${weekSwitcher(g.week)}<div class="weekhead"><p class="eyebrow">Week ${esc(g.week)}${kindLabel(g)} · read ahead</p><h1 class="q">${esc(g.title)}</h1></div>${bar}<div class="tabbody"><div class="framebar"><button class="btn ghost" data-do="frame-back">← Back to the lesson</button></div><iframe class="doc" data-loading title="Week ${esc(g.week)} lesson page" src="/week/${esc(g.week)}" data-home="/week/${esc(g.week)}"></iframe></div>`;
     }
     // From week 4 the class is building: the Build tab (the agent, step by step) comes first. Not the
     // demo week, and not a week whose guide turned out to have no Build steps: those open on their page.
@@ -9618,7 +9637,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
     let body;
     // A page in a frame: links inside it move the frame, so "Back to the lesson" (outside it) brings it home.
     const framed = (/** @type {string} */ src, /** @type {string} */ title, /** @type {string} */ label) =>
-      `<div class="framebar"><button class="btn ghost" data-do="frame-back">← Back to ${esc(label)}</button></div><iframe class="doc" title="${esc(title)}" src="${esc(src)}" data-home="${esc(src)}"></iframe>`;
+      `<div class="framebar"><button class="btn ghost" data-do="frame-back">← Back to ${esc(label)}</button></div><iframe class="doc" data-loading title="${esc(title)}" src="${esc(src)}" data-home="${esc(src)}"></iframe>`;
     if (tab === "page") body = framed(`/week/${g.week}`, `Week ${g.week} lesson page`, g.page ? "the lesson" : "the guide");
     else if (tab === "note")
       body = `<p class="sub">Your ${g.kind === "setup" ? "notes" : "design note"}, <code>${esc(g.note ?? "")}</code>. Write it in VS Code (<code>code ${esc(g.note ?? "")}</code>); open this tab again to see what you saved.</p>${framed(`/${g.note ?? ""}`, `Week ${g.week} note`, g.kind === "setup" ? "your notes" : "your note")}`;
@@ -9657,7 +9676,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
   function boardPanel() {
     const b = snap?.board ?? { phase: "off", error: "", url: "" };
     if (b.phase === "on")
-      return `<div class="row"><button class="btn ghost" data-do="board-stop">Stop the board</button> <a href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">Open it in a new tab</a></div><iframe class="doc board" title="The board" src="${esc(b.url)}"></iframe>`;
+      return `<div class="row"><button class="btn ghost" data-do="board-stop">Stop the board</button> <a href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">Open it in a new tab</a></div><iframe class="doc board" data-loading title="The board" src="${esc(b.url)}"></iframe>`;
     if (b.phase === "starting") return `<p class="why">Starting the bus, the parts and the board… The first time takes a minute.</p>`;
     const failed = b.phase === "failed" ? `<div class="status bad"><span class="icon">!</span><div><b>The board didn't start.</b><pre class="log">${esc(b.error)}</pre></div></div>` : "";
     return `${failed}<p class="why">The board shows your computer running: the bus, memory, the CPU and the devices, tick by tick. The studio starts everything it needs (what <code>npm run dev:all</code> does) and stops it when you close the studio.</p>
@@ -10422,7 +10441,14 @@ export function chooseFlow(ctx, { forceSetup = false, withSetup = false, weekLis
   // ahead of the class, they're labelled as that, not as the week.
   const topGroup = groups.find((g) => g.week === top && g.count > 0 && g.status !== "setup");
   if (topGroup && today > 0 && topGroup.week > today) topGroup.label = topGroup.status === "get" ? "Get this week's work" : "Your work";
-  const home = today > 0 && groups.some((g) => g.week === today && g.status !== "future" && g.status !== "later") ? { home: today } : {};
+  // Home is the student's own week: the class's (weeks.json's "current") until they've gone past it
+  // (the weeks are at their own pace), then the newest week they got one at a time from there. A student
+  // on week 7 while the class is on 5 opens on week 7, not "Today: week 5". Weeks that only came inside
+  // a later week's tag ("open") don't move it: nobody has done them yet.
+  let homeWeek = today;
+  const theirs = (/** @type {number} */ n) => groups.some((g) => g.week === n && ["done", "inwork", "get"].includes(g.status));
+  if (today > 0 && theirs(today)) while (theirs(homeWeek + 1)) homeWeek++;
+  const home = homeWeek > 0 && groups.some((g) => g.week === homeWeek && g.status !== "future" && g.status !== "later") ? { home: homeWeek } : {};
   const setupSteps = groups[0].count;
   if (toGet !== null) return { steps, meta: { mode: "week", week: toGet, published: true, setupSteps, autoSteps, groups, ...home, ...(groups.some((g) => g.update) ? { update: true } : {}) } };
   if (newest > 1 || held !== null) return { steps, meta: { mode: "week", week: newest, published: true, setupSteps, autoSteps, inWork: true, next: held ?? newest + 1, ...(held !== null ? { held } : {}), groups, ...home } };
