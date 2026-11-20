@@ -102,7 +102,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 34;
+export const STUDIO_VERSION = 35;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -9552,7 +9552,7 @@ function studioClient(TOKEN, WEEK1_GUIDE_URL) {
         <div data-agent-status></div>
         <div class="aglog" data-agent-log></div>
         <div data-agent-cards></div>
-        <div class="agworking muted" data-agent-working hidden><i class="spin"></i> <span data-agent-name>Codex</span> is working…</div>
+        <div class="agworking muted" data-agent-working hidden><i class="spin"></i><span><span data-agent-name>Codex</span> is working…</span></div>
         ${chat ? `<div data-build></div></div>` : ""}
         <form class="agcomposer${chat ? " pinned" : ""}" data-agent-composer hidden>
           <label class="sub" ${week >= 4 ? "hidden" : ""}>Working on <select name="agenttask" data-agent-task><option value="">no particular task</option></select></label>
