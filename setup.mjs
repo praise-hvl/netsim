@@ -102,7 +102,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 35;
+export const STUDIO_VERSION = 36;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -864,6 +864,20 @@ export const GH_MISSING = "GitHub's CLI wasn't found outside the course folder, 
 /** The fork's work branch and this folder's both have commits the other lacks: never pushed over. */
 export const FORK_DIVERGED = "Your fork on GitHub already has a work branch with commits this folder doesn't have, and this folder has commits it doesn't have. The studio won't push over your fork's work (that would lose it). Bring both to class, or ask Praise.";
 
+/** The hint under step 12 when the fork's work and this folder's differ (not a sign-in problem). */
+export const FORK_DIVERGED_HINT = "This isn't a sign-in problem: your fork already has your work from before. Keep the commits you made in this folder (nothing is deleted), and bring both to class or ask Praise to combine them.";
+
+/**
+ * Does the fork already have a work branch? Fetched quietly (guarded) into origin/work. False when it
+ * has none, or when GitHub can't be asked.
+ * @param {Context} ctx @param {string} dir
+ */
+export function forkHasWork(ctx, dir) {
+  if (ctx.dryRun || ctx.ghMissing || networkRefusal(ctx, dir, { push: true })) return false;
+  const fetched = ctx.capture(networkGit(ctx, "origin", ["fetch", "-q", "--no-tags", "origin", "+refs/heads/work:refs/remotes/origin/work"], { ssh: originKind(originUrl(ctx, dir)) === "ssh" }), dir);
+  return fetched?.code === 0 && output(ctx, ["git", "rev-parse", "--verify", "-q", "refs/remotes/origin/work"], dir) !== null;
+}
+
 /**
  * Where the fork's work branch stands against this folder's, after fetching it (quietly, guarded):
  * "none" (the fork has none yet, or it couldn't be asked), "same", "ahead" (the fork has everything here
@@ -1455,6 +1469,16 @@ export function courseSteps() {
       plan: (ctx) => {
         const dir = repoDir(ctx);
         const hasWork = output(ctx, ["git", "rev-parse", "--verify", "--quiet", "refs/heads/work"], dir) !== null;
+        // A returning student (a new folder, a new laptop): the fork already has their work branch. Start
+        // from that, never from the newest week: the weeks after it come in as usual (Get week N).
+        if (!hasWork && forkHasWork(ctx, dir))
+          return [
+            cmd("git switch -c work --track origin/work", ["git", "switch", "-c", "work", "--track", "origin/work"], {
+              cwd: dir,
+              what: "Your fork on GitHub already has your work branch from before: this makes work from it, linked to it. The weeks after it come in as usual.",
+              words: [["switch", "move to a branch"], ["-c", "create it first"], ["work", "the new branch's name"], ["--track", "link it to your fork's branch"], ["origin/work", "your fork's work branch"]],
+            }),
+          ];
         return [
           hasWork
             ? cmd("git switch work", ["git", "switch", "work"], { cwd: dir, what: "Moves you onto your work branch.", words: [["switch", "move to a branch"]] })
@@ -1490,6 +1514,25 @@ export function courseSteps() {
         // A new copy of the course on this laptop, with a fork that already has the student's work
         // (an earlier laptop, a reinstall): bring that work in, never push over it.
         const fork = forkWork(ctx, dir);
+        /** @type {any} */ (ctx).forkState = fork;
+        // Diverged, but this folder's work has nothing of the student's (only the course's weeks, as made
+        // by step 11 before it looked at the fork): move work onto the fork's work. Nothing is lost.
+        if (fork === "diverged" && output(ctx, ["git", "rev-list", "work", "--not", "--remotes=upstream", "--remotes=origin"], dir) === "")
+          return [
+            {
+              kind: /** @type {const} */ ("auto"),
+              command: {
+                display: "git checkout -B work --track origin/work",
+                argv: ["git", "checkout", "-B", "work", "--track", "origin/work"],
+                cwd: dir,
+                what: "This folder's work branch has nothing of yours yet (only the course's weeks), and your fork already has your work from before: work now starts from your fork's work, linked to it. Nothing is lost.",
+                judge: (/** @type {RunResult} */ r) =>
+                  r.code === 0
+                    ? { done: true, found: "Your fork already has your work: this folder's work branch is now your fork's work. Nothing was lost." }
+                    : { done: false, found: `Couldn't switch to your fork's work: ${`${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n")[0] || "git refused"}. If it names files you changed here, commit or undo them first, then try again.` },
+              },
+            },
+          ];
         if (fork === "ahead" || fork === "same")
           return [
             ...(fork === "ahead"
@@ -1535,7 +1578,7 @@ export function courseSteps() {
           }),
         ];
       },
-      hint: () => "If GitHub refused, check you're signed in to your own account (step 5) and git uses it (step 6).",
+      hint: (ctx) => (/** @type {any} */ (ctx).forkState === "diverged" ? FORK_DIVERGED_HINT : "If GitHub refused, check you're signed in to your own account (step 5) and git uses it (step 6)."),
     },
     {
       id: "vscode",
