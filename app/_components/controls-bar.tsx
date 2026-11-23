@@ -1,5 +1,6 @@
 "use client";
 // The clock controls, Load demo, and save/restore. Every button is one message to the bus.
+import { connectionProblem, type ConnectionProblem } from "@/app/_lib/connection-words";
 import { useState } from "react";
 import { useActions, useBus } from "@/app/_lib/use-bus";
 import { loadDemo } from "@/app/_lib/demo";
@@ -31,11 +32,13 @@ export function ControlsBar() {
   }
 
   const disabled = !actions || busy;
+  const problem = connection.phase === "closed" ? connectionProblem(connection.error) : null;
 
   return (
+    <>
     <header className="flex flex-wrap items-center gap-2 border-b border-zinc-200 bg-white px-3 py-2">
       <span className="mr-2 text-sm font-bold text-zinc-800">NetSim</span>
-      <ConnectionDot phase={connection.phase} />
+      <ConnectionDot phase={connection.phase} problem={problem} />
       <span className="font-mono text-xs text-zinc-500">tick {system.tick}</span>
       <span className="mx-1 h-5 w-px bg-zinc-200" />
 
@@ -108,16 +111,30 @@ export function ControlsBar() {
         </button>
       </span>
     </header>
+    {problem?.week !== undefined && (
+      <p role="status" className="border-b border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+        {problem.detail}{" "}
+        <a className="font-medium underline" href={problem.href} target="_blank" rel="noopener noreferrer">
+          Week {problem.week}&apos;s guide
+        </a>
+      </p>
+    )}
+    </>
   );
 }
 
-function ConnectionDot({ phase }: { phase: "connecting" | "open" | "closed" }) {
+function ConnectionDot({ phase, problem }: { phase: "connecting" | "open" | "closed"; problem: ConnectionProblem | null }) {
   const color = { connecting: "bg-amber-400 animate-pulse", open: "bg-green-500", closed: "bg-red-500" }[phase];
-  const text = { connecting: "connecting…", open: "connected", closed: "no bus" }[phase];
+  const text = { connecting: "connecting…", open: "connected", closed: problem?.short ?? "no bus" }[phase];
   return (
-    <span className="flex items-center gap-1 text-xs text-zinc-500">
+    <span className="flex items-center gap-1 text-xs text-zinc-500" title={problem?.detail}>
       <span className={`inline-block h-2 w-2 rounded-full ${color}`} />
       {text}
+      {problem?.href && (
+        <a className="ml-1 text-emerald-700 underline" href={problem.href} target="_blank" rel="noopener noreferrer">
+          week {problem.week}
+        </a>
+      )}
     </span>
   );
 }

@@ -13,6 +13,10 @@ const nextConfig: NextConfig = pages
       // Lets the page know it's the Pages build: /board then starts on your in-page machine.
       env: { NEXT_PUBLIC_NETSIM_PAGES: "1" },
     }
-  : {};
+  : {
+      // No Next.js dev badge (the "N" in the corner): it sat on the live dashboard's canvas, in the
+      // studio's Visualizer and in demos. Build errors still show in the overlay.
+      devIndicators: false,
+    };
 
 export default nextConfig;
