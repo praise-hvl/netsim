@@ -102,7 +102,7 @@ export function checkCommand(dir, week) {
  * This studio's version. On start it looks at the newest published week: a newer studio there
  * runs instead (see newerStudio), so every student uses the same one, whatever week their folder has.
  */
-export const STUDIO_VERSION = 36;
+export const STUDIO_VERSION = 37;
 /**
  * The course's weeks, in order. weeks.json in the course is the list the studio shows (read from
  * GitHub on start, so a new title shows up without a new studio); this copy is the fallback offline.
@@ -864,8 +864,27 @@ export const GH_MISSING = "GitHub's CLI wasn't found outside the course folder, 
 /** The fork's work branch and this folder's both have commits the other lacks: never pushed over. */
 export const FORK_DIVERGED = "Your fork on GitHub already has a work branch with commits this folder doesn't have, and this folder has commits it doesn't have. The studio won't push over your fork's work (that would lose it). Bring both to class, or ask Praise.";
 
+/** A merge of the fork's work is still open in this folder (it stopped on conflicts): finish it first. */
+export const FORK_MERGE_OPEN = "A merge of your fork's work is still open in this folder (it stopped on files both changed). Finish it: in VS Code, open each file marked with a C, keep what you want between the <<<<<<< and >>>>>>> lines, save, then git add the files and git commit. Or undo it with git merge --abort. Then press Try again.";
+
+/**
+ * What the merge of the fork's work said, in plain words: done, stopped on files both changed (named),
+ * refused because of uncommitted changes here, or another failure. Never a push.
+ * @param {RunResult} r
+ */
+export function judgeForkMerge(r) {
+  if (r.code === 0) return { done: true, found: "Your fork's work and this folder's are combined: nothing of either was lost." };
+  const text = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  const files = [...text.matchAll(/CONFLICT \([^)]*\): (?:Merge conflict in|.*? in) (\S+)/g)].map((m) => m[1]);
+  if (files.length || /Automatic merge failed/i.test(text))
+    return { done: false, found: `Your fork's work and this folder's both changed the same lines${files.length ? ` in ${files.join(", ")}` : ""}, so git stopped half way. Nothing is lost and nothing was pushed. Open ${files.length === 1 ? "that file" : "those files"} in VS Code, keep what you want between the <<<<<<< and >>>>>>> lines, save, then git add ${files.length ? files.join(" ") : "them"} and git commit. Or undo it with git merge --abort. Then press Try again.` };
+  if (/local changes .* would be overwritten|untracked working tree files would be overwritten/i.test(text))
+    return { done: false, found: "This folder has changes that aren't committed, and the merge would overwrite them, so git didn't start it. Commit them first (git add, then git commit), then press Try again." };
+  return { done: false, found: `The merge didn't work: ${text.trim().split("\n")[0] || "git refused"}. Nothing was pushed.` };
+}
+
 /** The hint under step 12 when the fork's work and this folder's differ (not a sign-in problem). */
-export const FORK_DIVERGED_HINT = "This isn't a sign-in problem: your fork already has your work from before. Keep the commits you made in this folder (nothing is deleted), and bring both to class or ask Praise to combine them.";
+export const FORK_DIVERGED_HINT = "This isn't a sign-in problem: your fork already has your work from before, and this folder has its own. The merge combines them without losing either; if it stopped, do what it says above, then press Try again. Stuck? Bring it to class or ask Praise.";
 
 /**
  * Does the fork already have a work branch? Fetched quietly (guarded) into origin/work. False when it
@@ -1556,20 +1575,33 @@ export function courseSteps() {
               },
             },
           ];
-        if (fork === "diverged")
-          return [
-            {
-              kind: /** @type {const} */ ("auto"),
-              command: {
-                display: "git push -u origin work",
-                argv: refusedCommand(FORK_DIVERGED),
-                cwd: dir,
-                what: "Checks your fork first: its work branch and this folder's have different commits.",
-                judge: () => ({ done: false, found: FORK_DIVERGED }),
-                stop: true,
+        if (fork === "diverged") {
+          // A merge from an earlier try is still open: say how to finish it, don't start another.
+          const gitDir = output(ctx, ["git", "rev-parse", "--absolute-git-dir"], dir);
+          if (gitDir && ctx.exists(join(gitDir, "MERGE_HEAD")))
+            return [
+              {
+                kind: /** @type {const} */ ("auto"),
+                command: { display: "git push -u origin work", argv: refusedCommand(FORK_MERGE_OPEN), cwd: dir, what: "Checks your folder first: a merge is still open.", judge: () => ({ done: false, found: FORK_MERGE_OPEN }), stop: true },
               },
-            },
+            ];
+          // Both have their own commits: combine them (a merge: nothing of either is lost), then push.
+          // Never a force push. On files both changed, it stops and says how to finish.
+          return [
+            cmd("git merge --no-edit origin/work", ["git", "merge", "--no-edit", "origin/work"], {
+              cwd: dir,
+              what: "Your fork on GitHub has your work from before, and this folder has commits of its own. This combines them into one work branch: nothing of either is lost. If both changed the same lines, it stops and says what to do.",
+              words: [["merge", "bring other commits into your branch"], ["--no-edit", "use git's own message for the merge"], ["origin/work", "your fork's work branch"]],
+              judge: judgeForkMerge,
+              stop: true,
+            }),
+            cmd("git push -u origin work", pushArgv(ctx, ["push", "-u", "origin", "work"]), {
+              cwd: dir,
+              what: "Sends the combined work to your fork (it now has everything your fork had, so nothing there is replaced), and remembers the link.",
+              words: [["push", "send commits to GitHub"], ["-u", "from now on, work goes to origin/work"], ["origin", "your fork on GitHub"], ["work", "the branch to send"]],
+            }),
           ];
+        }
         return [
           cmd("git push -u origin work", pushArgv(ctx, ["push", "-u", "origin", "work"]), {
             cwd: dir,
@@ -2858,6 +2890,8 @@ export function createStudio(ctx, steps, meta = {}, options = {}) {
     }
     if (command.judge) {
       const r = command.judge({ code, stdout: cleanOutput(out), stderr: "" });
+      // A judged command before the last (the merge before the push): judged fine, the plan goes on.
+      if (r.done && !last) return next(mine);
       return r.done ? pass(r.found) : fail({ what: r.found, fix: step.hint(ctx), stop: command.stop, items: r.items });
     }
     if (code === 0 && !last) return next(mine);
